@@ -1,0 +1,26 @@
+# Secrets (NEVER commit actual secrets)
+k8s/openbrain-secrets-actual.yaml
+.env
+
+# Node / TypeScript
+node_modules/
+dist/
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.docker/
+
+# Data
+*.db
+*.sqlite3

@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openbrain
+  labels:
+    app: openbrain
+    kubernetes.io/metadata.name: openbrain
+    pod-security.kubernetes.io/enforce: privileged

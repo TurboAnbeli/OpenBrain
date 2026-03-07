@@ -1,0 +1,194 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: openbrain-postgres
+  namespace: openbrain
+  labels:
+    app: openbrain-postgres
+    component: database
+    tier: infrastructure
+spec:
+  serviceName: openbrain-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openbrain-postgres
+  template:
+    metadata:
+      labels:
+        app: openbrain-postgres
+        component: database
+        tier: infrastructure
+      annotations:
+        prometheus.io/scrape: "false"
+    spec:
+      containers:
+      - name: postgres
+        image: pgvector/pgvector:pg17
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: postgres
+          containerPort: 5432
+          protocol: TCP
+        env:
+        - name: POSTGRES_DB
+          value: "openbrain"
+        - name: POSTGRES_USER
+          value: "openbrain"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: openbrain-secrets
+              key: postgres-password
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - openbrain
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - openbrain
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        - name: init-scripts
+          mountPath: /docker-entrypoint-initdb.d
+          readOnly: true
+      volumes:
+      - name: init-scripts
+        configMap:
+          name: openbrain-db-init
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: local-path
+      resources:
+        requests:
+          storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openbrain-postgres
+  namespace: openbrain
+  labels:
+    app: openbrain-postgres
+spec:
+  type: ClusterIP
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: 5432
+    protocol: TCP
+  selector:
+    app: openbrain-postgres
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openbrain-db-init
+  namespace: openbrain
+data:
+  init.sql: |
+    -- Enable pgvector extension
+    CREATE EXTENSION IF NOT EXISTS vector;
+
+    -- Create thoughts table
+    CREATE TABLE IF NOT EXISTS thoughts (
+        id         UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+        content    TEXT        NOT NULL,
+        embedding  VECTOR(768),
+        metadata   JSONB       DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ DEFAULT now(),
+        updated_at TIMESTAMPTZ DEFAULT now()
+    );
+
+    -- Auto-update trigger for updated_at
+    CREATE OR REPLACE FUNCTION update_updated_at_column()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = now();
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    DROP TRIGGER IF EXISTS set_updated_at ON thoughts;
+    CREATE TRIGGER set_updated_at
+        BEFORE UPDATE ON thoughts
+        FOR EACH ROW
+        EXECUTE FUNCTION update_updated_at_column();
+
+    -- HNSW index for vector similarity search (cosine distance)
+    CREATE INDEX IF NOT EXISTS idx_thoughts_embedding
+        ON thoughts
+        USING hnsw (embedding vector_cosine_ops);
+
+    -- GIN index for JSONB metadata queries
+    CREATE INDEX IF NOT EXISTS idx_thoughts_metadata
+        ON thoughts
+        USING gin (metadata);
+
+    -- B-tree index for date ordering
+    CREATE INDEX IF NOT EXISTS idx_thoughts_created_at
+        ON thoughts (created_at DESC);
+
+    -- Semantic search function
+    CREATE OR REPLACE FUNCTION match_thoughts(
+        query_embedding VECTOR(768),
+        match_threshold FLOAT DEFAULT 0.5,
+        match_count     INT   DEFAULT 10,
+        filter          JSONB DEFAULT '{}'::jsonb
+    )
+    RETURNS TABLE (
+        id         UUID,
+        content    TEXT,
+        metadata   JSONB,
+        similarity FLOAT,
+        created_at TIMESTAMPTZ
+    )
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+        RETURN QUERY
+        SELECT
+            t.id,
+            t.content,
+            t.metadata,
+            1 - (t.embedding <=> query_embedding) AS similarity,
+            t.created_at
+        FROM thoughts t
+        WHERE
+            1 - (t.embedding <=> query_embedding) >= match_threshold
+            AND t.metadata @> filter
+        ORDER BY t.embedding <=> query_embedding ASC
+        LIMIT match_count;
+    END;
+    $$;
+
+    -- Enable Row Level Security
+    ALTER TABLE thoughts ENABLE ROW LEVEL SECURITY;
+
+    -- Service role full access (used by the API)
+    -- In self-hosted mode, the API connects directly as the openbrain user
+    -- No anon access is possible since there's no public-facing PostgREST
