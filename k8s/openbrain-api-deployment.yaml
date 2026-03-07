@@ -30,7 +30,7 @@ spec:
     spec:
       containers:
       - name: openbrain-api
-        image: your-registry/openbrain-api:latest
+        image: your-registry.azurecr.io/openbrain/api:latest
         imagePullPolicy: Always
         ports:
         - name: api
@@ -143,6 +143,8 @@ spec:
                   - openbrain-api
               topologyKey: kubernetes.io/hostname
 
+      imagePullSecrets:
+      - name: acr-pull-secret
       terminationGracePeriodSeconds: 30
 ---
 apiVersion: v1
