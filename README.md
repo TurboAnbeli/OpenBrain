@@ -208,6 +208,8 @@ The REST API provides direct HTTP access (no MCP protocol needed).
 
 ### Examples
 
+#### Basic: Capture and search
+
 **Capture a thought:**
 ```bash
 curl -X POST http://localhost:8000/memories \
@@ -232,6 +234,133 @@ curl -X POST http://localhost:8000/memories/list \
 **Get stats:**
 ```bash
 curl http://localhost:8000/stats
+```
+
+---
+
+#### Use Case 1: Multi-Project Developer
+
+Working on 3 projects and need isolated memory per project:
+
+```bash
+# Capture decisions scoped to a project
+curl -X POST http://localhost:8000/memories \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "Architecture: Using event sourcing with PostgreSQL for the order service.",
+    "project": "ecommerce-api"
+  }'
+
+curl -X POST http://localhost:8000/memories \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "Convention: All API routes use kebab-case and return RFC 7807 ProblemDetails on error.",
+    "project": "internal-tools"
+  }'
+
+# Search only within one project — no cross-project contamination
+curl -X POST http://localhost:8000/memories/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "API error handling", "project": "internal-tools"}'
+
+# Stats for a single project
+curl http://localhost:8000/stats?project=ecommerce-api
+```
+
+#### Use Case 2: Superseding a Decision
+
+Your team switched from Redis to Memcached — update the record so AI agents follow current guidance:
+
+```bash
+# Option A: Update the existing thought in place
+curl -X PUT http://localhost:8000/memories/a1b2c3d4-... \
+  -H "Content-Type: application/json" \
+  -d '{"content": "Decision: Switched from Redis to Memcached for session caching. Reason: simpler ops, sufficient for our read pattern."}'
+
+# Option B: Capture a new decision that supersedes the old one
+curl -X POST http://localhost:8000/memories \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "Decision: Using Memcached instead of Redis for session cache. Redis was overkill for simple key-value lookups.",
+    "project": "ecommerce-api",
+    "supersedes": "a1b2c3d4-..."
+  }'
+
+# Option C: Delete the stale decision entirely
+curl -X DELETE http://localhost:8000/memories/a1b2c3d4-...
+```
+
+#### Use Case 3: Filtered Semantic Search
+
+Combine meaning-based search with metadata filters — find *architecture decisions about caching*, not every thought that mentions caching:
+
+```bash
+# Semantic search + type filter
+curl -X POST http://localhost:8000/memories/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "caching strategy",
+    "type": "architecture",
+    "project": "ecommerce-api"
+  }'
+
+# Semantic search + topic filter
+curl -X POST http://localhost:8000/memories/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "what went wrong",
+    "type": "postmortem",
+    "topic": "deployment"
+  }'
+```
+
+#### Use Case 4: Batch Capture After a Phase Completion
+
+After finishing a development phase, capture all lessons learned in one call:
+
+```bash
+curl -X POST http://localhost:8000/memories/batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "thoughts": [
+      {"content": "Postmortem: Database migrations must be tested against a prod-size dataset. Our 5-row dev DB masked a 30-second lock on the users table."},
+      {"content": "Pattern: Always add DB indexes before load testing, not after. We wasted a full day diagnosing slow queries."},
+      {"content": "Convention: All new API endpoints must include OpenAPI annotations from day one. Retrofitting docs after 20 endpoints is painful."},
+      {"content": "Requirement: Rate limiting must be in place before any public beta. We hit abuse within 2 hours of soft launch."}
+    ],
+    "project": "ecommerce-api",
+    "source": "phase-3-postmortem"
+  }'
+```
+
+#### Use Case 5: AI Agent with Source Tracking
+
+When using Open Brain from different AI tools and phases, track where each thought came from:
+
+```bash
+# From a Plan Forge execution phase
+curl -X POST http://localhost:8000/memories \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "Decision: Using Hono instead of Express for the API layer. 3x faster cold starts, native Web API compatibility.",
+    "project": "ecommerce-api",
+    "source": "plan-forge-phase-2-slice-4"
+  }'
+
+# From a code review session
+curl -X POST http://localhost:8000/memories \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "Bug: The batch insert was not wrapped in a transaction. Partial failures left orphan rows in the thoughts table.",
+    "project": "openbrain",
+    "source": "code-review-2026-03-24"
+  }'
+
+# Later, search and see provenance in results
+curl -X POST http://localhost:8000/memories/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "batch insert issues", "project": "openbrain"}'
+# → results include "source": "code-review-2026-03-24" in metadata
 ```
 
 ---
