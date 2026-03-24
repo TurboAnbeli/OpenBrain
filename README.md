@@ -105,32 +105,27 @@ Restart Claude Code. You now have persistent memory across all sessions.
 
 ## MCP Tools
 
-Open Brain exposes four tools via the Model Context Protocol:
+Open Brain exposes seven tools via the Model Context Protocol:
 
 ### `capture_thought`
 
-Save a new thought with auto-generated embedding and metadata extraction.
+Save a new thought with auto-generated embedding and metadata extraction. Supports project scoping and provenance tracking.
 
 ```
 "Save this thought: We decided to use PostgreSQL with pgvector
 instead of Pinecone. Reason: self-hosted, lower cost, simpler stack."
 ```
 
-Returns:
-```json
-{
-  "status": "captured",
-  "id": "a1b2c3d4-...",
-  "type": "decision",
-  "topics": ["database", "infrastructure"],
-  "people": [],
-  "captured_at": "2026-03-07T14:30:00Z"
-}
-```
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `content` | string | *required* | The thought to capture |
+| `project` | string | — | Scope to a project/workspace |
+| `source` | string | `"mcp"` | Provenance tracking (which session/tool) |
+| `supersedes` | string | — | UUID of a prior thought this replaces |
 
 ### `search_thoughts`
 
-Semantic vector search — find thoughts by meaning, not exact keywords.
+Semantic vector search — find thoughts by meaning, not exact keywords. Supports project scoping and metadata filters.
 
 ```
 "Search my brain for database migration decisions"
@@ -141,21 +136,58 @@ Semantic vector search — find thoughts by meaning, not exact keywords.
 | `query` | string | *required* | Natural language search query |
 | `limit` | integer | 10 | Maximum results |
 | `threshold` | float | 0.5 | Minimum similarity score (0-1) |
+| `project` | string | — | Scope to a specific project |
+| `type` | string | — | Filter by thought type |
+| `topic` | string | — | Filter by topic tag |
+| `include_archived` | boolean | false | Include archived thoughts |
 
 ### `list_thoughts`
 
-Browse and filter thoughts by type, topic, person, or time range.
+Browse and filter thoughts by type, topic, person, project, or time range.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `type` | string | Filter: `observation`, `task`, `idea`, `reference`, `person_note`, `decision`, `meeting` |
+| `type` | string | Filter: `observation`, `task`, `idea`, `reference`, `person_note`, `decision`, `meeting`, `architecture`, `pattern`, `postmortem`, `requirement`, `bug`, `convention` |
 | `topic` | string | Filter by topic tag |
 | `person` | string | Filter by person mentioned |
 | `days` | integer | Only thoughts from the last N days |
+| `project` | string | Scope to a specific project |
+| `include_archived` | boolean | Include archived thoughts (default: false) |
 
 ### `thought_stats`
 
-Aggregate statistics: total thoughts, type distribution, top topics, top people.
+Aggregate statistics: total thoughts, type distribution, top topics, top people. Optionally scoped to a project.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `project` | string | Scope stats to a specific project |
+
+### `update_thought`
+
+Update an existing thought's content. Re-generates embedding and re-extracts metadata automatically.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | string | *required* — UUID of the thought to update |
+| `content` | string | *required* — New content |
+
+### `delete_thought`
+
+Permanently delete a thought by ID.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | string | *required* — UUID of the thought to delete |
+
+### `capture_thoughts` (batch)
+
+Batch capture multiple thoughts in one call. Each thought gets independent embedding and metadata extraction.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `thoughts` | array | *required* — Array of `{ content: string }` objects |
+| `project` | string | Scope all thoughts to a project |
+| `source` | string | Provenance tracking (default: `"mcp"`) |
 
 ---
 
@@ -166,10 +198,13 @@ The REST API provides direct HTTP access (no MCP protocol needed).
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/health` | Health check |
-| `POST` | `/memories` | Capture a thought |
-| `POST` | `/memories/search` | Semantic search |
-| `POST` | `/memories/list` | Filtered listing |
-| `GET` | `/stats` | Brain statistics |
+| `POST` | `/memories` | Capture a thought (supports `project`, `supersedes`) |
+| `POST` | `/memories/batch` | Batch capture multiple thoughts |
+| `POST` | `/memories/search` | Semantic search (supports `project`, `type`, `topic`, `include_archived`) |
+| `POST` | `/memories/list` | Filtered listing (supports `project`, `include_archived`) |
+| `PUT` | `/memories/:id` | Update a thought (re-embeds + re-extracts metadata) |
+| `DELETE` | `/memories/:id` | Delete a thought permanently |
+| `GET` | `/stats` | Brain statistics (supports `?project=` query param) |
 
 ### Examples
 
@@ -305,6 +340,9 @@ CREATE TABLE thoughts (
     content    TEXT        NOT NULL,
     embedding  VECTOR(768),
     metadata   JSONB       DEFAULT '{}'::jsonb,
+    project    TEXT,
+    archived   BOOLEAN     DEFAULT false,
+    supersedes UUID        REFERENCES thoughts(id),
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -314,6 +352,9 @@ CREATE TABLE thoughts (
 - `HNSW` on `embedding` — fast approximate nearest neighbor search
 - `GIN` on `metadata` — efficient JSONB containment queries
 - `B-tree` on `created_at DESC` — ordered time queries
+- `B-tree` on `project` — project scoping queries
+- Partial on `archived` — fast non-archived lookups
+- `B-tree` on `supersedes` — thought chain traversal
 
 **Metadata JSONB structure** (auto-extracted by LLM):
 ```json

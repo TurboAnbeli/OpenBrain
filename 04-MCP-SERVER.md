@@ -8,7 +8,7 @@
 
 **Model Context Protocol (MCP)** is Anthropic's open standard for connecting AI assistants to external tools and data sources. It enables any compatible AI client (Claude, ChatGPT, Gemini, Cursor) to call tools exposed by an MCP server over HTTP.
 
-Open Brain's MCP server is a **Supabase Edge Function** that exposes four tools for reading and writing to your thoughts database.
+Open Brain's MCP server exposes seven tools for reading, writing, updating, and deleting thoughts in your memory database.
 
 ---
 
@@ -44,7 +44,7 @@ PostgreSQL + pgvector
 
 ### Tool 1: `search_thoughts`
 
-**Purpose**: Semantic vector search — find thoughts by meaning, not exact keywords.
+**Purpose**: Semantic vector search — find thoughts by meaning, not exact keywords. Supports project scoping and metadata filters.
 
 ```json
 {
@@ -53,39 +53,15 @@ PostgreSQL + pgvector
     "inputSchema": {
         "type": "object",
         "properties": {
-            "query": {
-                "type": "string",
-                "description": "Natural language search query"
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Maximum results to return (default: 10)",
-                "default": 10
-            },
-            "threshold": {
-                "type": "number",
-                "description": "Minimum similarity score 0-1 (default: 0.5)",
-                "default": 0.5
-            }
+            "query": { "type": "string", "description": "Natural language search query" },
+            "limit": { "type": "integer", "description": "Maximum results (default: 10)", "default": 10 },
+            "threshold": { "type": "number", "description": "Minimum similarity 0-1 (default: 0.5)", "default": 0.5 },
+            "project": { "type": "string", "description": "Scope to a specific project" },
+            "type": { "type": "string", "description": "Filter by thought type" },
+            "topic": { "type": "string", "description": "Filter by topic tag" },
+            "include_archived": { "type": "boolean", "description": "Include archived thoughts (default: false)" }
         },
         "required": ["query"]
-    }
-}
-```
-
-**Process:**
-1. Embed the query string via OpenRouter (text-embedding-3-small)
-2. Call `match_thoughts()` RPC with the query embedding
-3. Return results with content, metadata, similarity score, and timestamp
-
-**Example Call:**
-```json
-{
-    "tool": "search_thoughts",
-    "arguments": {
-        "query": "What did we decide about the database migration?",
-        "limit": 5,
-        "threshold": 0.4
     }
 }
 ```
@@ -94,49 +70,21 @@ PostgreSQL + pgvector
 
 ### Tool 2: `list_thoughts`
 
-**Purpose**: Filtered listing — browse thoughts by type, topic, person, or date range.
+**Purpose**: Filtered listing — browse thoughts by type, topic, person, project, or date range.
 
 ```json
 {
     "name": "list_thoughts",
-    "description": "List thoughts filtered by type, topic, person mentioned, or time range.",
     "inputSchema": {
         "type": "object",
         "properties": {
-            "type": {
-                "type": "string",
-                "description": "Filter by thought type: observation, task, idea, reference, person_note, decision, meeting"
-            },
-            "topic": {
-                "type": "string",
-                "description": "Filter by topic tag"
-            },
-            "person": {
-                "type": "string",
-                "description": "Filter by person mentioned"
-            },
-            "days": {
-                "type": "integer",
-                "description": "Only return thoughts from the last N days"
-            }
+            "type": { "type": "string", "description": "Filter by type: observation, task, idea, reference, person_note, decision, meeting, architecture, pattern, postmortem, requirement, bug, convention" },
+            "topic": { "type": "string", "description": "Filter by topic tag" },
+            "person": { "type": "string", "description": "Filter by person mentioned" },
+            "days": { "type": "integer", "description": "Only thoughts from the last N days" },
+            "project": { "type": "string", "description": "Scope to a specific project" },
+            "include_archived": { "type": "boolean", "description": "Include archived thoughts (default: false)" }
         }
-    }
-}
-```
-
-**Process:**
-1. Build Supabase query with applied filters
-2. Use JSONB containment (`@>`) for metadata filters
-3. Use `>=` for date range filtering
-4. Return ordered by `created_at DESC`, limit 50
-
-**Example Call:**
-```json
-{
-    "tool": "list_thoughts",
-    "arguments": {
-        "type": "decision",
-        "days": 30
     }
 }
 ```
@@ -145,49 +93,33 @@ PostgreSQL + pgvector
 
 ### Tool 3: `capture_thought`
 
-**Purpose**: Store a new thought with auto-generated embedding and metadata.
+**Purpose**: Store a new thought with auto-generated embedding and metadata. Supports project scoping and provenance.
 
 ```json
 {
     "name": "capture_thought",
-    "description": "Save a new thought to your brain. Automatically generates embedding and extracts metadata (type, topics, people, action items).",
     "inputSchema": {
         "type": "object",
         "properties": {
-            "content": {
-                "type": "string",
-                "description": "The thought to capture (raw text)"
-            }
+            "content": { "type": "string", "description": "The thought to capture (raw text)" },
+            "project": { "type": "string", "description": "Scope to a project/workspace" },
+            "source": { "type": "string", "description": "Provenance tracking (default: 'mcp')" },
+            "supersedes": { "type": "string", "description": "UUID of a prior thought this replaces" }
         },
         "required": ["content"]
     }
 }
 ```
 
-**Process:**
-1. Run embedding generation and metadata extraction **in parallel**
-2. Insert content + embedding + metadata into `thoughts` table
-3. Tag with `source: "mcp"`
-4. Return confirmation with extracted metadata
-
 **Example Call:**
 ```json
 {
     "tool": "capture_thought",
     "arguments": {
-        "content": "Decision: Using PostgreSQL with pgvector instead of Pinecone. Reason: self-hosted, lower cost, simpler stack. Discussed with Mike."
+        "content": "Decision: Using PostgreSQL with pgvector instead of Pinecone.",
+        "project": "openbrain",
+        "source": "plan-forge-phase-1"
     }
-}
-```
-
-**Example Response:**
-```json
-{
-    "id": "a1b2c3d4-...",
-    "type": "decision",
-    "topics": ["database", "infrastructure"],
-    "people": ["Mike"],
-    "captured_at": "2026-03-07T14:30:00Z"
 }
 ```
 
@@ -195,47 +127,106 @@ PostgreSQL + pgvector
 
 ### Tool 4: `thought_stats`
 
-**Purpose**: Aggregate statistics about your brain's contents.
+**Purpose**: Aggregate statistics about your brain's contents. Optionally scoped to a project.
 
 ```json
 {
     "name": "thought_stats",
-    "description": "Get statistics about your brain: total thoughts, type distribution, top topics, and top people mentioned.",
     "inputSchema": {
         "type": "object",
-        "properties": {}
+        "properties": {
+            "project": { "type": "string", "description": "Scope stats to a specific project" }
+        }
     }
 }
 ```
 
-**Process:**
-1. Count total thoughts
-2. Aggregate by type
-3. Rank top 10 topics and people mentioned
-4. Calculate date range of captures
+---
 
-**Example Response:**
+### Tool 5: `update_thought`
+
+**Purpose**: Update an existing thought. Re-generates embedding and re-extracts metadata automatically.
+
 ```json
 {
-    "total_thoughts": 247,
-    "types": {
-        "observation": 89,
-        "decision": 45,
-        "idea": 38,
-        "task": 32,
-        "person_note": 25,
-        "reference": 18
-    },
-    "top_topics": [
-        ["api-design", 34],
-        ["architecture", 28],
-        ["performance", 22]
-    ],
-    "top_people": [
-        ["Sarah", 15],
-        ["Mike", 12],
-        ["Team", 8]
-    ]
+    "name": "update_thought",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "id": { "type": "string", "description": "UUID of the thought to update" },
+            "content": { "type": "string", "description": "New content for the thought" }
+        },
+        "required": ["id", "content"]
+    }
+}
+```
+
+**Example Call:**
+```json
+{
+    "tool": "update_thought",
+    "arguments": {
+        "id": "a1b2c3d4-...",
+        "content": "Updated: We switched from Redis to Memcached for the session cache."
+    }
+}
+```
+
+---
+
+### Tool 6: `delete_thought`
+
+**Purpose**: Permanently delete a thought by ID.
+
+```json
+{
+    "name": "delete_thought",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "id": { "type": "string", "description": "UUID of the thought to delete" }
+        },
+        "required": ["id"]
+    }
+}
+```
+
+---
+
+### Tool 7: `capture_thoughts` (batch)
+
+**Purpose**: Batch capture multiple thoughts in one call. Each thought gets independent embedding + metadata extraction.
+
+```json
+{
+    "name": "capture_thoughts",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "thoughts": {
+                "type": "array",
+                "items": { "type": "object", "properties": { "content": { "type": "string" } }, "required": ["content"] }
+            },
+            "project": { "type": "string", "description": "Scope all thoughts to a project" },
+            "source": { "type": "string", "description": "Provenance (default: 'mcp')" }
+        },
+        "required": ["thoughts"]
+    }
+}
+```
+
+**Example Call:**
+```json
+{
+    "tool": "capture_thoughts",
+    "arguments": {
+        "thoughts": [
+            { "content": "Lesson: Always add DB indexes before load testing." },
+            { "content": "Decision: Rate limit MCP endpoints to 100 req/min." }
+        ],
+        "project": "openbrain",
+        "source": "phase-3-postmortem"
+    }
 }
 ```
 
