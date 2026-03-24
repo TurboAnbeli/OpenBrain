@@ -10,6 +10,9 @@ CREATE TABLE IF NOT EXISTS thoughts (
     content    TEXT        NOT NULL,
     embedding  VECTOR(768),
     metadata   JSONB       DEFAULT '{}'::jsonb,
+    project    TEXT,
+    archived   BOOLEAN     DEFAULT false,
+    supersedes UUID        REFERENCES thoughts(id),
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -43,12 +46,26 @@ CREATE INDEX IF NOT EXISTS idx_thoughts_metadata
 CREATE INDEX IF NOT EXISTS idx_thoughts_created_at
     ON thoughts (created_at DESC);
 
+-- B-tree index for project scoping
+CREATE INDEX IF NOT EXISTS idx_thoughts_project
+    ON thoughts(project);
+
+-- Partial index for non-archived thoughts
+CREATE INDEX IF NOT EXISTS idx_thoughts_archived
+    ON thoughts(archived) WHERE archived = false;
+
+-- B-tree index for supersedes chain
+CREATE INDEX IF NOT EXISTS idx_thoughts_supersedes
+    ON thoughts(supersedes);
+
 -- Semantic search function
 CREATE OR REPLACE FUNCTION match_thoughts(
-    query_embedding VECTOR(768),
-    match_threshold FLOAT DEFAULT 0.5,
-    match_count     INT   DEFAULT 10,
-    filter          JSONB DEFAULT '{}'::jsonb
+    query_embedding  VECTOR(768),
+    match_threshold  FLOAT   DEFAULT 0.5,
+    match_count      INT     DEFAULT 10,
+    filter           JSONB   DEFAULT '{}'::jsonb,
+    project_filter   TEXT    DEFAULT NULL,
+    include_archived BOOLEAN DEFAULT false
 )
 RETURNS TABLE (
     id         UUID,
@@ -71,6 +88,8 @@ BEGIN
     WHERE
         1 - (t.embedding <=> query_embedding) >= match_threshold
         AND t.metadata @> filter
+        AND (project_filter IS NULL OR t.project = project_filter)
+        AND (include_archived OR t.archived = false)
     ORDER BY t.embedding <=> query_embedding ASC
     LIMIT match_count;
 END;
