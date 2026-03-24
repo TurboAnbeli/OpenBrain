@@ -10,7 +10,7 @@
 
 Open Brain solves the fundamental problem that every AI conversation starts from zero. Your context, decisions, preferences, and knowledge are locked inside individual chat sessions and platforms. Open Brain is a unified backend that any MCP-compatible AI client can read from and write to.
 
-> Based on [Nate B Jones'](https://www.natebjones.com) Open Brain architecture. This is a self-hosted TypeScript implementation with local Ollama embeddings, PostgreSQL + pgvector, and Kubernetes deployment.
+> Based on [Nate B Jones'](https://www.natebjones.com) Open Brain architecture. This is a **significantly extended** self-hosted implementation — see [Differences from Nate's Original](#differences-from-nates-original) below.
 
 ---
 
@@ -795,12 +795,76 @@ openssl rand -hex 32
 
 ---
 
+## Differences from Nate's Original
+
+This implementation started from [Nate B Jones'](https://www.natebjones.com) Open Brain concept but has diverged significantly. If you're coming from Nate's guide or another community fork, here's what's different:
+
+### Infrastructure
+
+| Area | Nate's Original | This Fork |
+|------|----------------|-----------|
+| **Hosting** | Supabase (cloud) | Self-hosted Docker / Kubernetes |
+| **Database** | Supabase PostgreSQL | Dedicated PostgreSQL 17 + pgvector |
+| **Runtime** | Supabase Edge Functions (Deno) | Node.js 22 + TypeScript (ESM) |
+| **REST Framework** | Supabase routing | Hono |
+| **Embeddings** | OpenRouter (`text-embedding-3-small`, 1536-dim) | Ollama (`nomic-embed-text`, 768-dim) — free, local, private |
+| **Metadata LLM** | OpenRouter (`gpt-4o-mini`) | Ollama (`llama3.2`) — free, local |
+| **MCP Transport** | SSE via Edge Function | SSE via raw Node.js HTTP server |
+| **Auth** | `?key=` URL param | `?key=` URL param + Kubernetes Secrets + Tailscale ACLs |
+
+### Features Added (Dev-Ready Upgrade)
+
+These features do not exist in Nate's original and were built for active software development workflows:
+
+| Feature | What It Does | Why |
+|---------|-------------|-----|
+| **Project scoping** | `project` param on all tools — isolates memory per project | Multi-project developers get cross-project contamination without it |
+| **Thought mutation** | `update_thought` + `delete_thought` tools | Decisions get superseded; stale guidance misleads AI agents |
+| **Batch capture** | `capture_thoughts` tool — multiple thoughts in one call | Post-mortem capture of 10+ lessons shouldn't take 10 round trips |
+| **Filtered search** | `type` + `topic` + `project` filters on `search_thoughts` | "Find *architecture decisions* about *caching*" — not just keyword overlap |
+| **Source tracking** | `source` param on capture — provenance for every thought | Dev teams need to know which session/tool/phase a thought came from |
+| **Decision linking** | `supersedes` param — links new decisions to the ones they replace | AI agents see the evolution of decisions, not just the latest |
+| **Thought archival** | `archived` column — soft-archive old thoughts | Long-running projects need search cleanup without data loss |
+| **13 thought types** | Added: `architecture`, `pattern`, `postmortem`, `requirement`, `bug`, `convention` | Development concepts that don't map to the original 7 personal types |
+| **Test suite** | 39 unit tests (Vitest) across DB, MCP, and REST layers | Production system needs automated quality gates |
+| **CI/CD** | GitHub Actions — build, typecheck, test, Docker push to GHCR | Automated on every push and PR |
+
+### MCP Tools: 4 → 7
+
+| Tool | Nate's Original | This Fork |
+|------|----------------|-----------|
+| `search_thoughts` | ✅ query, limit, threshold | ✅ + project, type, topic, include_archived |
+| `list_thoughts` | ✅ type, topic, person, days | ✅ + project, include_archived |
+| `capture_thought` | ✅ content | ✅ + project, source, supersedes |
+| `thought_stats` | ✅ (no params) | ✅ + project |
+| `update_thought` | ❌ | ✅ id, content (re-embeds + re-extracts) |
+| `delete_thought` | ❌ | ✅ id |
+| `capture_thoughts` | ❌ | ✅ batch capture with shared project/source |
+
+### REST API: 5 → 8
+
+| Endpoint | Nate's Original | This Fork |
+|----------|----------------|-----------|
+| `POST /memories` | ✅ content, source | ✅ + project, supersedes |
+| `POST /memories/search` | ✅ query, limit, threshold | ✅ + project, type, topic, include_archived |
+| `POST /memories/list` | ✅ type, topic, person, days | ✅ + project, include_archived |
+| `GET /stats` | ✅ | ✅ + ?project= |
+| `POST /memories/batch` | ❌ | ✅ batch capture |
+| `PUT /memories/:id` | ❌ | ✅ update with re-embed |
+| `DELETE /memories/:id` | ❌ | ✅ hard delete |
+
+### Backward Compatibility
+
+All changes are **additive**. If you're currently using the original 4-tool API, everything still works — new parameters are optional with backward-compatible defaults. Existing thoughts with no `project` are included in unscoped searches.
+
+---
+
 ## Credits
 
-- **[Scott Nichols](https://github.com/srnichols)** — Self-hosted TypeScript implementation with Ollama embeddings, PostgreSQL + pgvector, Docker, and Kubernetes deployment
+- **[Scott Nichols](https://www.linkedin.com/in/srnichols/)** — Self-hosted TypeScript implementation, Ollama embeddings, PostgreSQL + pgvector, Docker/Kubernetes deployment, dev-ready upgrade (project scoping, mutation, batch capture, filtered search, 13 thought types, test suite, CI/CD)
 - **[Nate B Jones](https://www.natebjones.com)** — Creator of the Open Brain concept and architecture
 - **[Jon Edwards](https://x.com/limitededition)** (Limited Edition Jonathan) — Collaborator
-- **[Open Brain Setup Guide](https://promptkit.natebjones.com/20260224_uq1_guide_main)** — Original guide
+- **[Open Brain Setup Guide](https://promptkit.natebjones.com/20260224_uq1_guide_main)** — Nate's original guide
 - **[benclawbot/open-brain](https://github.com/benclawbot/open-brain)** — Community implementation
 - **[MonkeyRun Open Brain](https://github.com/MonkeyRun-com/monkeyrun-open-brain)** — Extended implementation
 
