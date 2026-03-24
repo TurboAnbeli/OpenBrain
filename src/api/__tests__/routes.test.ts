@@ -87,13 +87,25 @@ describe("REST API Routes", () => {
       body: JSON.stringify({
         content: "We chose Redis for caching",
         project: "plan-forge",
-        supersedes: "old-id",
+        supersedes: "a1b2c3d4-1234-5678-9abc-def012345678",
       }),
     });
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as { project: string };
     expect(body.project).toBe("plan-forge");
+  });
+
+  it("POST /memories returns 400 for invalid supersedes UUID", async () => {
+    const res = await app.request("/memories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "Some valid content",
+        supersedes: "not-a-uuid",
+      }),
+    });
+    expect(res.status).toBe(400);
   });
 
   it("POST /memories returns 400 for empty content", async () => {
@@ -135,13 +147,13 @@ describe("REST API Routes", () => {
 
   it("PUT /memories/:id returns updated thought", async () => {
     mockUpdateThought.mockResolvedValueOnce({
-      id: "abc-123",
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
       content: "updated content",
       metadata: { type: "decision" },
       created_at: new Date(),
     });
 
-    const res = await app.request("/memories/abc-123", {
+    const res = await app.request("/memories/a1b2c3d4-1234-5678-9abc-def012345678", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content: "updated content" }),
@@ -150,13 +162,13 @@ describe("REST API Routes", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { status: string; id: string };
     expect(body.status).toBe("updated");
-    expect(body.id).toBe("abc-123");
+    expect(body.id).toBe("a1b2c3d4-1234-5678-9abc-def012345678");
   });
 
   it("PUT /memories/:id returns 404 when not found", async () => {
-    mockUpdateThought.mockRejectedValueOnce(new Error("Thought not found: bad-id"));
+    mockUpdateThought.mockRejectedValueOnce(new Error("Thought not found: 00000000-0000-0000-0000-000000000000"));
 
-    const res = await app.request("/memories/bad-id", {
+    const res = await app.request("/memories/00000000-0000-0000-0000-000000000000", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content: "anything" }),
@@ -165,8 +177,17 @@ describe("REST API Routes", () => {
     expect(res.status).toBe(404);
   });
 
+  it("PUT /memories/:id returns 400 for invalid UUID", async () => {
+    const res = await app.request("/memories/not-a-uuid", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "anything" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("PUT /memories/:id returns 400 for empty content", async () => {
-    const res = await app.request("/memories/abc-123", {
+    const res = await app.request("/memories/00000000-0000-0000-0000-000000000000", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content: "" }),
@@ -177,9 +198,9 @@ describe("REST API Routes", () => {
   // ─── DELETE /memories/:id ──────────────────────────────────────────
 
   it("DELETE /memories/:id returns deletion status", async () => {
-    mockDeleteThought.mockResolvedValueOnce({ deleted: true, id: "abc-123" });
+    mockDeleteThought.mockResolvedValueOnce({ deleted: true, id: "a1b2c3d4-1234-5678-9abc-def012345678" });
 
-    const res = await app.request("/memories/abc-123", {
+    const res = await app.request("/memories/a1b2c3d4-1234-5678-9abc-def012345678", {
       method: "DELETE",
     });
 
@@ -189,13 +210,20 @@ describe("REST API Routes", () => {
   });
 
   it("DELETE /memories/:id returns 404 when not found", async () => {
-    mockDeleteThought.mockResolvedValueOnce({ deleted: false, id: "bad-id" });
+    mockDeleteThought.mockResolvedValueOnce({ deleted: false, id: "00000000-0000-0000-0000-000000000000" });
 
-    const res = await app.request("/memories/bad-id", {
+    const res = await app.request("/memories/00000000-0000-0000-0000-000000000000", {
       method: "DELETE",
     });
 
     expect(res.status).toBe(404);
+  });
+
+  it("DELETE /memories/:id returns 400 for invalid UUID", async () => {
+    const res = await app.request("/memories/not-a-uuid", {
+      method: "DELETE",
+    });
+    expect(res.status).toBe(400);
   });
 
   // ─── POST /memories/batch ──────────────────────────────────────────

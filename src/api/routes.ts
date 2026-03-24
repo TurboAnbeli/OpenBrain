@@ -22,6 +22,8 @@ import {
 } from "../db/queries.js";
 import { getEmbedder } from "../embedder/index.js";
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function createApi(): Hono {
   const app = new Hono();
   const embedder = getEmbedder();
@@ -58,6 +60,10 @@ export function createApi(): Hono {
 
     if (!body.content || body.content.trim().length === 0) {
       return c.json({ error: "content is required" }, 400);
+    }
+
+    if (body.supersedes && !UUID_RE.test(body.supersedes)) {
+      return c.json({ error: "supersedes must be a valid UUID" }, 400);
     }
 
     try {
@@ -233,6 +239,11 @@ export function createApi(): Hono {
 
   app.put("/memories/:id", async (c) => {
     const id = c.req.param("id");
+
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
+
     const body = await c.req.json<{ content: string }>();
 
     if (!body.content || body.content.trim().length === 0) {
@@ -271,6 +282,10 @@ export function createApi(): Hono {
 
   app.delete("/memories/:id", async (c) => {
     const id = c.req.param("id");
+
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
 
     try {
       const result = await deleteThought(pool, id);

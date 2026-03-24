@@ -27,6 +27,8 @@ import {
 } from "../db/queries.js";
 import { getEmbedder } from "../embedder/index.js";
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function createMcpServer(): Server {
   const server = new Server(
     { name: "open-brain", version: "1.0.0" },
@@ -311,6 +313,13 @@ export function createMcpServer(): Server {
           const source = (args?.source as string) ?? "mcp";
           const supersedes = args?.supersedes as string | undefined;
 
+          if (supersedes && !UUID_RE.test(supersedes)) {
+            return {
+              content: [{ type: "text" as const, text: "Error: supersedes must be a valid UUID" }],
+              isError: true,
+            };
+          }
+
           // Generate embedding and extract metadata in parallel
           const [embedding, metadata] = await Promise.all([
             embedder.generateEmbedding(content),
@@ -362,6 +371,13 @@ export function createMcpServer(): Server {
           const id = args?.id as string;
           const content = args?.content as string;
 
+          if (!UUID_RE.test(id)) {
+            return {
+              content: [{ type: "text" as const, text: "Error: id must be a valid UUID" }],
+              isError: true,
+            };
+          }
+
           // Re-generate embedding and re-extract metadata
           const [embedding, metadata] = await Promise.all([
             embedder.generateEmbedding(content),
@@ -393,6 +409,14 @@ export function createMcpServer(): Server {
         // ── delete_thought ──
         case "delete_thought": {
           const id = args?.id as string;
+
+          if (!UUID_RE.test(id)) {
+            return {
+              content: [{ type: "text" as const, text: "Error: id must be a valid UUID" }],
+              isError: true,
+            };
+          }
+
           const result = await deleteThought(pool, id);
 
           return {
