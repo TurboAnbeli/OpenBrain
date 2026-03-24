@@ -38,8 +38,11 @@ async function main(): Promise<void> {
   serve({ fetch: api.fetch, port: apiPort }, () => {
     console.log(`[api] REST API listening on http://0.0.0.0:${apiPort}`);
     console.log(`[api]   POST /memories         — capture thought`);
+    console.log(`[api]   POST /memories/batch    — batch capture`);
     console.log(`[api]   POST /memories/search   — semantic search`);
     console.log(`[api]   POST /memories/list     — filtered listing`);
+    console.log(`[api]   PUT  /memories/:id      — update thought`);
+    console.log(`[api]   DELETE /memories/:id     — delete thought`);
     console.log(`[api]   GET  /stats             — brain statistics`);
     console.log(`[api]   GET  /health            — health check`);
   });

@@ -1,6 +1,7 @@
 /**
  * REST API routes using Hono.
- * Provides /health, /memories, /memories/search, /memories/list, /stats endpoints.
+ * Provides /health, /memories, /memories/search, /memories/list, /memories/batch,
+ * /memories/:id (PUT, DELETE), /stats endpoints.
  */
 
 import { Hono } from "hono";
@@ -13,7 +14,11 @@ import {
   searchThoughts,
   listThoughts,
   getThoughtStats,
+  updateThought,
+  deleteThought,
+  batchInsertThoughts,
   type ListFilters,
+  type BatchThoughtInput,
 } from "../db/queries.js";
 import { getEmbedder } from "../embedder/index.js";
 
@@ -44,27 +49,34 @@ export function createApi(): Hono {
   // ─── Capture Memory ──────────────────────────────────────────────
 
   app.post("/memories", async (c) => {
-    const body = await c.req.json<{ content: string; source?: string }>();
+    const body = await c.req.json<{
+      content: string;
+      source?: string;
+      project?: string;
+      supersedes?: string;
+    }>();
 
     if (!body.content || body.content.trim().length === 0) {
       return c.json({ error: "content is required" }, 400);
     }
 
     try {
-      // Generate embedding and extract metadata in parallel
       const [embedding, metadata] = await Promise.all([
         embedder.generateEmbedding(body.content),
         embedder.extractMetadata(body.content),
       ]);
 
       const fullMetadata = { ...metadata, source: body.source ?? "api" };
-      const result = await insertThought(pool, body.content, embedding, fullMetadata);
+      const result = await insertThought(
+        pool, body.content, embedding, fullMetadata, body.project, body.supersedes
+      );
 
       return c.json({
         id: result.id,
         type: metadata.type,
         topics: metadata.topics,
         people: metadata.people,
+        project: result.project,
         captured_at: result.created_at.toISOString(),
       });
     } catch (err) {
@@ -77,6 +89,65 @@ export function createApi(): Hono {
     }
   });
 
+  // ─── Batch Capture ───────────────────────────────────────────────
+
+  app.post("/memories/batch", async (c) => {
+    const body = await c.req.json<{
+      thoughts: Array<{ content: string }>;
+      project?: string;
+      source?: string;
+    }>();
+
+    if (!body.thoughts || !Array.isArray(body.thoughts) || body.thoughts.length === 0) {
+      return c.json({ error: "thoughts array is required and must not be empty" }, 400);
+    }
+
+    for (const t of body.thoughts) {
+      if (!t.content || t.content.trim().length === 0) {
+        return c.json({ error: "each thought must have non-empty content" }, 400);
+      }
+    }
+
+    try {
+      const source = body.source ?? "api";
+
+      const processed: BatchThoughtInput[] = await Promise.all(
+        body.thoughts.map(async (t) => {
+          const [embedding, metadata] = await Promise.all([
+            embedder.generateEmbedding(t.content),
+            embedder.extractMetadata(t.content),
+          ]);
+          return {
+            content: t.content,
+            embedding,
+            metadata: { ...metadata, source },
+            project: body.project,
+          };
+        })
+      );
+
+      const results = await batchInsertThoughts(pool, processed);
+
+      return c.json({
+        count: results.length,
+        results: results.map((r) => ({
+          id: r.id,
+          content: r.content,
+          metadata: r.metadata,
+          project: r.project,
+          captured_at: r.created_at.toISOString(),
+        })),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Batch capture failed:", message);
+      return c.json(
+        { error: "Failed to batch capture thoughts", detail: message },
+        502
+      );
+    }
+  });
+
   // ─── Search Memories ─────────────────────────────────────────────
 
   app.post("/memories/search", async (c) => {
@@ -84,6 +155,10 @@ export function createApi(): Hono {
       query: string;
       limit?: number;
       threshold?: number;
+      project?: string;
+      type?: string;
+      topic?: string;
+      include_archived?: boolean;
     }>();
 
     if (!body.query || body.query.trim().length === 0) {
@@ -91,12 +166,20 @@ export function createApi(): Hono {
     }
 
     try {
+      // Build JSONB filter from type/topic
+      const filter: Record<string, unknown> = {};
+      if (body.type) filter.type = body.type;
+      if (body.topic) filter.topics = [body.topic];
+
       const queryEmbedding = await embedder.generateEmbedding(body.query);
       const results = await searchThoughts(
         pool,
         queryEmbedding,
         body.limit ?? 10,
-        body.threshold ?? 0.5
+        body.threshold ?? 0.5,
+        filter,
+        body.project,
+        body.include_archived
       );
 
       return c.json({
@@ -132,6 +215,7 @@ export function createApi(): Hono {
           id: r.id,
           content: r.content,
           metadata: r.metadata,
+          project: r.project,
           created_at: r.created_at.toISOString(),
         })),
       });
@@ -145,11 +229,73 @@ export function createApi(): Hono {
     }
   });
 
+  // ─── Update Memory ───────────────────────────────────────────────
+
+  app.put("/memories/:id", async (c) => {
+    const id = c.req.param("id");
+    const body = await c.req.json<{ content: string }>();
+
+    if (!body.content || body.content.trim().length === 0) {
+      return c.json({ error: "content is required" }, 400);
+    }
+
+    try {
+      const [embedding, metadata] = await Promise.all([
+        embedder.generateEmbedding(body.content),
+        embedder.extractMetadata(body.content),
+      ]);
+
+      const result = await updateThought(pool, id, body.content, embedding, metadata);
+
+      return c.json({
+        status: "updated",
+        id: result.id,
+        type: metadata.type,
+        topics: metadata.topics,
+        content: result.content,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("not found")) {
+        return c.json({ error: message }, 404);
+      }
+      console.error("[api] Update failed:", message);
+      return c.json(
+        { error: "Failed to update thought", detail: message },
+        502
+      );
+    }
+  });
+
+  // ─── Delete Memory ───────────────────────────────────────────────
+
+  app.delete("/memories/:id", async (c) => {
+    const id = c.req.param("id");
+
+    try {
+      const result = await deleteThought(pool, id);
+
+      if (!result.deleted) {
+        return c.json({ error: `Thought not found: ${id}` }, 404);
+      }
+
+      return c.json({ status: "deleted", id: result.id });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Delete failed:", message);
+      return c.json(
+        { error: "Failed to delete thought", detail: message },
+        502
+      );
+    }
+  });
+
   // ─── Stats ───────────────────────────────────────────────────────
 
   app.get("/stats", async (c) => {
     try {
-      const stats = await getThoughtStats(pool);
+      const project = c.req.query("project");
+      const stats = await getThoughtStats(pool, project);
       return c.json(stats);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
