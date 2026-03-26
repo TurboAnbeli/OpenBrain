@@ -25,6 +25,7 @@
     "dev": "tsx watch src/index.ts",
     "lint": "eslint src/",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
