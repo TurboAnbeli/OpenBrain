@@ -353,9 +353,40 @@ Add to `.cursor/mcp.json`:
 
 #### Gemini
 
-Use Funnel URL (Gemini needs public access):
+1. Go to **Settings → Extensions → MCP Tools**
+2. Add connector URL (use Funnel URL — Gemini needs public access):
+   ```
+   https://openbrain.tailfb4202.ts.net/sse?key=<MCP_ACCESS_KEY>
+   ```
+3. Transport: **SSE**
+4. Authentication: **None** (key is in URL)
+
+**Verify:** Ask Gemini: *"Use the thought_stats tool to show my brain statistics."*
+
+#### Windsurf
+
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+**On tailnet:**
+```json
+{
+  "mcpServers": {
+    "openbrain": {
+      "serverUrl": "http://openbrain.tailfb4202.ts.net:8080/sse?key=<MCP_ACCESS_KEY>"
+    }
+  }
+}
 ```
-https://openbrain.tailfb4202.ts.net/sse?key=<MCP_ACCESS_KEY>
+
+**Off tailnet (Funnel):**
+```json
+{
+  "mcpServers": {
+    "openbrain": {
+      "serverUrl": "https://openbrain.tailfb4202.ts.net/sse?key=<MCP_ACCESS_KEY>"
+    }
+  }
+}
 ```
 
 ---

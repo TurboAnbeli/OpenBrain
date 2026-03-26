@@ -268,6 +268,49 @@ curl -X POST http://localhost:8000/memories/list \
 curl http://localhost:8000/stats
 ```
 
+<details>
+<summary><strong>PowerShell equivalents (click to expand)</strong></summary>
+
+```powershell
+# Capture a thought
+Invoke-RestMethod -Uri "http://localhost:8000/memories" -Method Post `
+  -ContentType "application/json" `
+  -Body '{"content": "Met with Sarah about the Q3 roadmap. Key decision: prioritize mobile app over desktop."}'
+
+# Search by meaning
+Invoke-RestMethod -Uri "http://localhost:8000/memories/search" -Method Post `
+  -ContentType "application/json" `
+  -Body '{"query": "what did we decide about mobile?", "limit": 5}'
+
+# List recent decisions
+Invoke-RestMethod -Uri "http://localhost:8000/memories/list" -Method Post `
+  -ContentType "application/json" `
+  -Body '{"type": "decision", "days": 30}'
+
+# Get stats
+Invoke-RestMethod -Uri "http://localhost:8000/stats"
+
+# With project and created_by
+Invoke-RestMethod -Uri "http://localhost:8000/memories" -Method Post `
+  -ContentType "application/json" `
+  -Body '{"content": "Decision: Using Redis for session caching.", "project": "my-api", "created_by": "sarah"}'
+
+# Search with filters
+Invoke-RestMethod -Uri "http://localhost:8000/memories/search" -Method Post `
+  -ContentType "application/json" `
+  -Body '{"query": "caching decisions", "project": "my-api", "created_by": "sarah", "type": "decision"}'
+
+# Update
+Invoke-RestMethod -Uri "http://localhost:8000/memories/<UUID>" -Method Put `
+  -ContentType "application/json" `
+  -Body '{"content": "Updated: Switched from Redis to Memcached for session caching."}'
+
+# Delete
+Invoke-RestMethod -Uri "http://localhost:8000/memories/<UUID>" -Method Delete
+```
+
+</details>
+
 ---
 
 #### Use Case 1: Multi-Project Developer
@@ -453,7 +496,11 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
+**Verify:** Restart Claude Code, then ask: *"Use the thought_stats tool to show brain statistics."* You should see a stats response.
+
 ### Claude Desktop
+
+Claude Desktop uses **stdio** transport, so you need `mcp-remote` as a bridge. Requires Node.js installed.
 
 Add to `claude_desktop_config.json`:
 
@@ -464,12 +511,16 @@ Add to `claude_desktop_config.json`:
 {
   "mcpServers": {
     "openbrain": {
-      "type": "sse",
-      "url": "http://<host>:8080/sse?key=<YOUR_MCP_ACCESS_KEY>"
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://<host>:8080/sse?key=<YOUR_MCP_ACCESS_KEY>"]
     }
   }
 }
 ```
+
+**Verify:** Fully quit Claude Desktop (system tray → Quit), relaunch, then ask: *"Use the thought_stats tool to show brain statistics."*
+
+> If your server is behind HTTPS (e.g., Tailscale Funnel), use the `https://` URL instead.
 
 ### Cursor
 
@@ -485,6 +536,24 @@ Add to `.cursor/mcp.json` in your project:
   }
 }
 ```
+
+**Verify:** Open a Cursor chat, then ask: *"Use the thought_stats tool to show my brain statistics."*
+
+### Windsurf
+
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "openbrain": {
+      "serverUrl": "http://<host>:8080/sse?key=<YOUR_MCP_ACCESS_KEY>"
+    }
+  }
+}
+```
+
+**Verify:** Open Windsurf Cascade, then ask: *"Use the thought_stats tool to show brain statistics."*
 
 ### VS Code + GitHub Copilot
 
@@ -561,6 +630,8 @@ ChatGPT supports MCP via **Connectors** in Developer Mode.
 
 > **Note**: ChatGPT disables its built-in memory when Developer Mode is active. Open Brain replaces that functionality with project-scoped, searchable, persistent memory.
 
+**Verify:** In a new conversation, ask: *"Use the search_thoughts tool to search for recent decisions."* ChatGPT may need explicit instructions the first time — it becomes automatic after 1-2 uses.
+
 **Usage:**
 ```
 Search my brain for architecture decisions in the "my-api" project
@@ -589,6 +660,19 @@ Invoke-RestMethod -Uri "http://<host>:8000/memories/search" -Method Post `
 **Custom GPT / Copilot Studio:** You can import the REST API as a custom action/connector using the endpoint reference in the [REST API](#rest-api) section above.
 
 > **When MCP lands**: Microsoft has announced MCP support for Copilot. When available, the config will work similarly to the VS Code setup.
+
+### Gemini
+
+Gemini supports MCP connectors:
+
+1. Go to **Settings → Extensions → MCP Tools**
+2. Add connector with URL: `http://<host>:8080/sse?key=<YOUR_MCP_ACCESS_KEY>`
+3. Transport: **SSE**
+4. Authentication: **None**
+
+> Gemini requires a publicly accessible URL. If self-hosted, use Tailscale Funnel or a public reverse proxy.
+
+**Verify:** Ask: *"Use the thought_stats tool to show my brain statistics."*
 
 ### Grok
 
