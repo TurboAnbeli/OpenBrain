@@ -46,16 +46,16 @@ Open Brain exposes 7 tools. Here's when to use each one:
 
 ```mermaid
 flowchart TD
-    A{\"What do you want to do?\"} -->|\"Save something\"| B[\"capture_thought\"]
-    A -->|\"Save many at once\"| C[\"capture_thoughts\"]
-    A -->|\"Find by meaning\"| D[\"search_thoughts\"]
-    A -->|\"Browse by filters\"| E[\"list_thoughts\"]
-    A -->|\"See overview\"| F[\"thought_stats\"]
-    A -->|\"Fix a thought\"| G[\"update_thought\"]
-    A -->|\"Remove a thought\"| H[\"delete_thought\"]
+    A{What do you want to do?} -->|Save something| B[capture_thought]
+    A -->|Save many at once| C[capture_thoughts]
+    A -->|Find by meaning| D[search_thoughts]
+    A -->|Browse by filters| E[list_thoughts]
+    A -->|See overview| F[thought_stats]
+    A -->|Fix a thought| G[update_thought]
+    A -->|Remove a thought| H[delete_thought]
 
-    D -.- I[\"'What did we decide\\nabout the API?'\"]
-    E -.- J[\"'Show all decisions\\nfrom last 7 days'\"]
+    D -.- I[What did we decide\nabout the API?]
+    E -.- J[Show all decisions\nfrom last 7 days]
 ```
 
 | Tool | Use When | Example Prompt |
