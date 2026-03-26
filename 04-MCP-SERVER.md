@@ -42,6 +42,34 @@ PostgreSQL + pgvector
 
 ## Tool Definitions
 
+Open Brain exposes 7 tools. Here's when to use each one:
+
+```mermaid
+flowchart TD
+    A{\"What do you want to do?\"} -->|\"Save something\"| B[\"capture_thought\"]
+    A -->|\"Save many at once\"| C[\"capture_thoughts\"]
+    A -->|\"Find by meaning\"| D[\"search_thoughts\"]
+    A -->|\"Browse by filters\"| E[\"list_thoughts\"]
+    A -->|\"See overview\"| F[\"thought_stats\"]
+    A -->|\"Fix a thought\"| G[\"update_thought\"]
+    A -->|\"Remove a thought\"| H[\"delete_thought\"]
+
+    D -.- I[\"'What did we decide\\nabout the API?'\"]
+    E -.- J[\"'Show all decisions\\nfrom last 7 days'\"]
+```
+
+| Tool | Use When | Example Prompt |
+|------|----------|---------------|
+| `search_thoughts` | You have a *question* and want semantically related thoughts | *"What do I know about caching strategies?"* |
+| `list_thoughts` | You want to *browse* thoughts by type, topic, person, or date | *"Show all decisions from the last 30 days"* |
+| `capture_thought` | You want to save a single thought | *"Remember this: We chose Redis for caching"* |
+| `capture_thoughts` | You want to save multiple thoughts at once | *"Save these 4 lessons from the postmortem"* |
+| `thought_stats` | You want a high-level overview of your brain | *"How many thoughts do I have? What topics?"* |
+| `update_thought` | A thought's content has changed | *"Update thought X with the new decision"* |
+| `delete_thought` | A thought is wrong or no longer relevant | *"Delete thought X"* |
+
+> **search vs list**: Use `search_thoughts` when you're looking for something specific by meaning (like a search engine). Use `list_thoughts` when you want to browse/filter (like a file manager).
+
 ### Tool 1: `search_thoughts`
 
 **Purpose**: Semantic vector search — find thoughts by meaning, not exact keywords. Supports project scoping and metadata filters.

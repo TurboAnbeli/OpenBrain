@@ -110,7 +110,30 @@ Cross-namespace access: `http://ollama-gpu-bridge.your-namespace.svc.cluster.loc
 
 ## Deployment Steps
 
+Each step creates a specific piece of the system. Here's the order and why it matters:
+
+```mermaid
+flowchart TD
+    A["1. Create Namespace"] --> B["2. Pull Embedding Model"]
+    B --> C["3. Copy ACR Pull Secret"]
+    C --> D["4. Apply Manifests"]
+    D --> D1["Secrets"]
+    D --> D2["PostgreSQL StatefulSet"]
+    D --> D3["API Deployment (2 replicas)"]
+    D --> D4["MetalLB Service"]
+    D --> D5["Tailscale Services"]
+    D1 --> E["5. Wait & Verify"]
+    D2 --> E
+    D3 --> E
+    D4 --> E
+    D5 --> E
+    E --> F["6. Test Endpoints"]
+    F --> G["7. Configure AI Clients"]
+```
+
 ### Step 1: Create Namespace
+
+Isolates all Open Brain resources from your other workloads. The security label allows the pods to run with the permissions they need.
 
 ```bash
 kubectl create namespace openbrain
@@ -119,12 +142,16 @@ kubectl label namespace openbrain pod-security.kubernetes.io/enforce=privileged
 
 ### Step 2: Pull Ollama Embedding Model
 
+Downloads the `nomic-embed-text` model into your existing Ollama instance. This model converts text into 768-dimensional vectors for semantic search. It only needs to be pulled once.
+
 ```bash
 # Exec into Ollama pod and pull the embedding model
 kubectl exec -n your-namespace deploy/ollama-gpu-bridge -- ollama pull nomic-embed-text
 ```
 
 ### Step 3: Copy ACR Pull Secret
+
+Your API container image lives in Azure Container Registry. This copies your existing pull credentials into the new namespace so K8s can pull the image.
 
 ```bash
 # Copy the existing ACR pull secret from your-namespace to openbrain namespace
@@ -134,6 +161,8 @@ kubectl get secret acr-pull-secret -n your-namespace -o yaml \
 ```
 
 ### Step 4: Apply Manifests
+
+Apply the Kubernetes resources in dependency order. The session affinity patch is critical — without it, MCP SSE connections can break when requests land on different pods.
 
 ```bash
 # From E:\GitHub\OpenBrain\k8s\ directory

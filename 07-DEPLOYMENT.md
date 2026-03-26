@@ -4,6 +4,31 @@
 
 ---
 
+## What You're Building
+
+This guide sets up the **Supabase cloud** deployment of Open Brain. By the end, you'll have:
+
+```mermaid
+flowchart LR
+    A["Any AI Client"] -->|"MCP Protocol"| B["Edge Function\n(MCP Server)"]
+    B -->|"SQL + Vectors"| C[("Supabase\nPostgreSQL + pgvector")]
+    B -->|"Embedding + LLM"| D["OpenRouter API"]
+    E["Slack Channel"] -->|"Webhook"| F["Edge Function\n(ingest-thought)"]
+    F --> C
+    F --> D
+```
+
+| Component | What It Does | Cost |
+|-----------|-------------|------|
+| **Supabase** | Hosts your database and serverless edge functions | Free tier |
+| **OpenRouter** | Generates embeddings and extracts metadata via AI | ~$0.10-0.30/month |
+| **MCP Access Key** | Authenticates your AI clients | Free (you generate it) |
+| **Slack App** (optional) | Captures thoughts from a Slack channel | Free |
+
+> **Self-hosted instead?** Use the [Docker Compose Quick Start](README.md#quick-start-docker-compose) or [K8s guide](09-SELF-HOSTED-K8S.md).
+
+---
+
 ## Prerequisites
 
 - A modern web browser
@@ -28,6 +53,15 @@
 ---
 
 ## Step 2: Set Up Database
+
+The database has four parts. Here's what each one does and why it matters:
+
+| Part | What It Does | Why It's Needed |
+|------|-------------|----------------|
+| **pgvector extension** | Adds vector data type and similarity operators to PostgreSQL | Without it, you can't store or search embeddings |
+| **thoughts table** | Stores every captured thought with its embedding and metadata | The core data model — one row per thought |
+| **Indexes** | HNSW (vector search), GIN (metadata filter), B-tree (date sort) | Makes search fast — without indexes, every query scans the full table |
+| **match_thoughts function** | SQL function that combines vector similarity + filters in one call | The edge functions call this instead of writing complex SQL |
 
 ### 2a. Enable pgvector
 

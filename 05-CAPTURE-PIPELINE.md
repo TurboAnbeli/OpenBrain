@@ -4,6 +4,25 @@
 
 ---
 
+## How Capture Works
+
+Every time you save a thought, two things happen **in parallel** — embedding generation and metadata extraction. This typically takes 1-3 seconds.
+
+```mermaid
+flowchart TD
+    A["You: 'Remember this decision...'"] --> B["AI calls capture_thought"]
+    B --> C{"Parallel Processing"}
+    C --> D["Ollama: Generate\n768-dim embedding vector"]
+    C --> E["LLM: Extract metadata\ntype, topics, people, actions"]
+    D --> F[("INSERT into thoughts table")]
+    E --> F
+    F --> G["Confirmation returned\nwith type + topics"]
+```
+
+The result is a single row in the database that's instantly searchable by meaning, filterable by type/topic/person, and scoped to a project or user.
+
+---
+
 ## Capture Philosophy
 
 ### One Row = One Retrievable Idea

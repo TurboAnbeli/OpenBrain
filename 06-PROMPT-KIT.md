@@ -6,6 +6,23 @@
 
 ## Overview
 
+```mermaid
+flowchart LR
+    subgraph "One-Time Setup"
+        A["1. Memory Migration"] --> B["2. Second Brain Migration"]
+        B --> C["3. Open Brain Spark"]
+    end
+    subgraph "Daily Use"
+        D["4. Quick Capture Templates"]
+    end
+    subgraph "Weekly"
+        E["5. Weekly Review"]
+    end
+    C --> D
+    D --> E
+    E --> D
+```
+
 The Open Brain prompt kit covers the complete lifecycle of your personal knowledge system:
 
 | # | Prompt | Purpose | MCP Required? |

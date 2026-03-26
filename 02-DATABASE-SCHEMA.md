@@ -4,9 +4,35 @@
 
 ---
 
+## How the Database Works
+
+Open Brain stores every thought as a single row in one table. Each thought has:
+- The **raw text** you captured
+- A **vector embedding** (a list of 768 numbers) that represents the *meaning* of the text
+- **Auto-extracted metadata** (type, topics, people, action items) as structured JSON
+- Optional **project** and **created_by** fields for scoping
+
+When you search, PostgreSQL compares your query's embedding vector against every stored vector using cosine similarity — finding thoughts by *meaning*, not keywords.
+
+```mermaid
+flowchart LR
+    A["Raw Text"] --> B["Ollama / OpenRouter"]
+    B --> C["768-dim Embedding Vector"]
+    B --> D["Metadata JSON"]
+    C --> E[("thoughts table")]
+    D --> E
+    A --> E
+    F["Search Query"] --> G["Query Embedding"]
+    G --> H{"Cosine Similarity"}
+    E --> H
+    H --> I["Ranked Results"]
+```
+
+---
+
 ## Prerequisites
 
-- **Supabase project** (free tier works)
+- **Supabase project** (free tier works) or self-hosted PostgreSQL 17
 - **pgvector extension** enabled
 
 ---
