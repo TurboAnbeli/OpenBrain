@@ -53,6 +53,8 @@ curl http://localhost:8000/health
 
 ## Project Structure
 
+See [01-ARCHITECTURE.md](01-ARCHITECTURE.md) for the full system architecture and data flows.
+
 ```
 src/
 ├── index.ts              # Entry point — REST + MCP servers

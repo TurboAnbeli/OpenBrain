@@ -81,10 +81,12 @@ Any AI Tool (Claude, ChatGPT, Gemini, Grok)
 - Slack webhook integration for frictionless capture
 - Bulk import from existing systems (Notion, Obsidian, Apple Notes)
 - Memory migration from ChatGPT, Claude, etc.
+- Optional `created_by` user tracking for multi-developer teams
 
 ### Search
 - **Semantic search**: Find thoughts by meaning, not exact keywords
 - **Metadata filtering**: Filter by type, topic, person, date range
+- **User scoping**: Filter search and stats by `created_by` user
 - **Stats**: Aggregate counts, topic distribution, people mentioned
 
 ### Retrieval
@@ -114,6 +116,7 @@ Any AI Tool (Claude, ChatGPT, Gemini, Grok)
 | [06-PROMPT-KIT.md](06-PROMPT-KIT.md) | Prompts and templates |
 | [07-DEPLOYMENT.md](07-DEPLOYMENT.md) | Deployment and configuration |
 | [08-IMPLEMENTATION-ROADMAP.md](08-IMPLEMENTATION-ROADMAP.md) | Build order and milestones |
+| [09-SELF-HOSTED-K8S.md](09-SELF-HOSTED-K8S.md) | Kubernetes self-hosted deployment |
 
 ---
 

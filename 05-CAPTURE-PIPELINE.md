@@ -56,6 +56,8 @@ AI: "Captured as a decision about database and infrastructure."
 3. Insert into `thoughts` table with `source: "mcp"`
 4. Return confirmation to AI client
 
+**Supports optional `created_by` parameter** for multi-developer teams — associates the thought with a specific user.
+
 **Best For**: Real-time capture during AI conversations.
 
 ---

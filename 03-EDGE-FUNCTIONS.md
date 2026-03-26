@@ -15,6 +15,8 @@ Open Brain uses two Supabase Edge Functions (Deno runtime):
 
 Both functions run serverlessly on Supabase's infrastructure — nothing runs on your machine.
 
+> **Dimension note:** This document describes the Supabase/OpenRouter deployment path, which uses 1536-dimensional embeddings (`text-embedding-3-small`). The self-hosted Docker/K8s deployment uses 768-dimensional Ollama embeddings instead. See the [README](README.md#choose-your-deployment-path) for path comparison.
+
 ---
 
 ## Shared Dependencies

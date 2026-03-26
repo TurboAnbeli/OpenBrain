@@ -176,9 +176,9 @@ For long-form content support:
 
 Scale to multiple users:
 
-- Add `user_id` column to `thoughts` table
-- Implement RLS policies for user isolation
-- Add user auth flow to MCP server
+- **Already done:** `created_by` column for provenance tracking and filtering
+- Future: Add RLS policies for full user isolation
+- Future: Add user auth flow to MCP server
 - See [02-DATABASE-SCHEMA.md](02-DATABASE-SCHEMA.md) §7
 
 ### Enhancement 5: Visual Editing Interface

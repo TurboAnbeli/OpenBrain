@@ -46,8 +46,12 @@
 │  │  │                                                          │  │   │
 │  │  │  id          UUID (PK)                                   │  │   │
 │  │  │  content     TEXT (raw thought)                          │  │   │
-│  │  │  embedding   VECTOR(1536) (semantic representation)     │  │   │
+│  │  │  embedding   VECTOR(768) (semantic representation)      │  │   │
 │  │  │  metadata    JSONB (people, topics, type, etc.)         │  │   │
+│  │  │  project     TEXT (optional project scope)               │  │   │
+│  │  │  created_by  TEXT (optional user provenance)             │  │   │
+│  │  │  archived    BOOLEAN (soft-delete flag)                  │  │   │
+│  │  │  supersedes  UUID FK (thought chain)                     │  │   │
 │  │  │  created_at  TIMESTAMPTZ                                │  │   │
 │  │  │  updated_at  TIMESTAMPTZ                                │  │   │
 │  │  └─────────────────────────────────────────────────────────┘  │   │
@@ -56,6 +60,8 @@
 │  │  - HNSW on embedding (cosine similarity)                     │   │
 │  │  - GIN on metadata (structured queries)                      │   │
 │  │  - B-tree on created_at DESC (date range)                    │   │
+│  │  - B-tree on project (project scoping)                       │   │
+│  │  - B-tree on created_by (user filtering)                     │   │
 │  │                                                               │   │
 │  │  Functions:                                                   │   │
 │  │  - match_thoughts() (vector similarity search)               │   │
@@ -116,13 +122,13 @@ The MCP server is the central gateway. It's a Supabase Edge Function built with 
 
 | Tool | Purpose | Key Parameters |
 |---|---|---|
-| `search_thoughts` | Semantic vector search | `query`, `limit`, `threshold`, `project`, `type`, `topic`, `include_archived` |
-| `list_thoughts` | Filtered listing | `type`, `topic`, `person`, `days`, `project`, `include_archived` |
-| `capture_thought` | Store new thought | `content`, `project`, `source`, `supersedes` |
-| `thought_stats` | Aggregate statistics | `project` |
+| `search_thoughts` | Semantic vector search | `query`, `limit`, `threshold`, `project`, `type`, `topic`, `include_archived`, `created_by` |
+| `list_thoughts` | Filtered listing | `type`, `topic`, `person`, `days`, `project`, `include_archived`, `created_by` |
+| `capture_thought` | Store new thought | `content`, `project`, `source`, `supersedes`, `created_by` |
+| `thought_stats` | Aggregate statistics | `project`, `created_by` |
 | `update_thought` | Update existing thought | `id`, `content` |
 | `delete_thought` | Delete thought by ID | `id` |
-| `capture_thoughts` | Batch capture | `thoughts[]`, `project`, `source` |
+| `capture_thoughts` | Batch capture | `thoughts[]`, `project`, `source`, `created_by` |
 
 ### 3. Capture Pipeline (Edge Function: `ingest-thought`)
 
@@ -139,6 +145,8 @@ Handles incoming thoughts from Slack webhooks.
 Single table design with rich JSONB metadata.
 
 **Vector Search**: HNSW index on `embedding` column using cosine distance operator (`<=>`), wrapped in `match_thoughts()` RPC function.
+
+> **Dimension note:** Self-hosted (Docker/K8s) uses 768-dim Ollama vectors. Supabase cloud uses 1536-dim OpenRouter vectors. See [README — Choose Your Deployment Path](README.md#choose-your-deployment-path).
 
 ### 5. External Services
 

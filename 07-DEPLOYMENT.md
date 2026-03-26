@@ -45,6 +45,7 @@ CREATE TABLE thoughts (
     content    TEXT        NOT NULL,
     embedding  VECTOR(1536),
     metadata   JSONB       DEFAULT '{}'::jsonb,
+    created_by TEXT,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -87,12 +88,17 @@ CREATE INDEX idx_thoughts_created_at
 
 ### 2e. Create match_thoughts function
 
+> **Note:** If using Ollama (self-hosted), change `VECTOR(1536)` to `VECTOR(768)` in this function and in the table definition above.
+
 ```sql
 CREATE OR REPLACE FUNCTION match_thoughts(
-    query_embedding VECTOR(1536),
-    match_threshold FLOAT DEFAULT 0.5,
-    match_count     INT   DEFAULT 10,
-    filter          JSONB DEFAULT '{}'::jsonb
+    query_embedding  VECTOR(1536),
+    match_threshold  FLOAT   DEFAULT 0.5,
+    match_count      INT     DEFAULT 10,
+    filter           JSONB   DEFAULT '{}'::jsonb,
+    project_filter   TEXT    DEFAULT NULL,
+    include_archived BOOLEAN DEFAULT false,
+    user_filter      TEXT    DEFAULT NULL
 )
 RETURNS TABLE (
     id         UUID,
@@ -115,6 +121,9 @@ BEGIN
     WHERE
         1 - (t.embedding <=> query_embedding) >= match_threshold
         AND t.metadata @> filter
+        AND (project_filter IS NULL OR t.project = project_filter)
+        AND (include_archived OR t.archived = false)
+        AND (user_filter IS NULL OR t.created_by = user_filter)
     ORDER BY t.embedding <=> query_embedding ASC
     LIMIT match_count;
 END;
@@ -185,6 +194,8 @@ supabase secrets set MCP_ACCESS_KEY=your-64-char-hex-key
    - `MCP_ACCESS_KEY` = your 64-char hex key
 
 **Note**: `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are auto-injected — do not set manually.
+
+> **Self-hosted (Docker/K8s)?** See the [README — Environment Variables](README.md#environment-variables) section for the full env var reference including Ollama config, ports, and database settings.
 
 ---
 

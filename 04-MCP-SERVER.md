@@ -59,7 +59,8 @@ PostgreSQL + pgvector
             "project": { "type": "string", "description": "Scope to a specific project" },
             "type": { "type": "string", "description": "Filter by thought type" },
             "topic": { "type": "string", "description": "Filter by topic tag" },
-            "include_archived": { "type": "boolean", "description": "Include archived thoughts (default: false)" }
+            "include_archived": { "type": "boolean", "description": "Include archived thoughts (default: false)" },
+            "created_by": { "type": "string", "description": "Filter to thoughts by a specific user" }
         },
         "required": ["query"]
     }
@@ -83,7 +84,8 @@ PostgreSQL + pgvector
             "person": { "type": "string", "description": "Filter by person mentioned" },
             "days": { "type": "integer", "description": "Only thoughts from the last N days" },
             "project": { "type": "string", "description": "Scope to a specific project" },
-            "include_archived": { "type": "boolean", "description": "Include archived thoughts (default: false)" }
+            "include_archived": { "type": "boolean", "description": "Include archived thoughts (default: false)" },
+            "created_by": { "type": "string", "description": "Filter to thoughts by a specific user" }
         }
     }
 }
@@ -104,7 +106,8 @@ PostgreSQL + pgvector
             "content": { "type": "string", "description": "The thought to capture (raw text)" },
             "project": { "type": "string", "description": "Scope to a project/workspace" },
             "source": { "type": "string", "description": "Provenance tracking (default: 'mcp')" },
-            "supersedes": { "type": "string", "description": "UUID of a prior thought this replaces" }
+            "supersedes": { "type": "string", "description": "UUID of a prior thought this replaces" },
+            "created_by": { "type": "string", "description": "User who created this thought (optional, for multi-developer teams)" }
         },
         "required": ["content"]
     }
@@ -118,7 +121,8 @@ PostgreSQL + pgvector
     "arguments": {
         "content": "Decision: Using PostgreSQL with pgvector instead of Pinecone.",
         "project": "openbrain",
-        "source": "plan-forge-phase-1"
+        "source": "plan-forge-phase-1",
+        "created_by": "sarah"
     }
 }
 ```
@@ -127,7 +131,7 @@ PostgreSQL + pgvector
 
 ### Tool 4: `thought_stats`
 
-**Purpose**: Aggregate statistics about your brain's contents. Optionally scoped to a project.
+**Purpose**: Aggregate statistics about your brain's contents. Optionally scoped to a project or user.
 
 ```json
 {
@@ -135,7 +139,8 @@ PostgreSQL + pgvector
     "inputSchema": {
         "type": "object",
         "properties": {
-            "project": { "type": "string", "description": "Scope stats to a specific project" }
+            "project": { "type": "string", "description": "Scope stats to a specific project" },
+            "created_by": { "type": "string", "description": "Scope stats to a specific user" }
         }
     }
 }
@@ -208,7 +213,8 @@ PostgreSQL + pgvector
                 "items": { "type": "object", "properties": { "content": { "type": "string" } }, "required": ["content"] }
             },
             "project": { "type": "string", "description": "Scope all thoughts to a project" },
-            "source": { "type": "string", "description": "Provenance (default: 'mcp')" }
+            "source": { "type": "string", "description": "Provenance (default: 'mcp')" },
+            "created_by": { "type": "string", "description": "User who created these thoughts (optional)" }
         },
         "required": ["thoughts"]
     }
@@ -225,7 +231,8 @@ PostgreSQL + pgvector
             { "content": "Decision: Rate limit MCP endpoints to 100 req/min." }
         ],
         "project": "openbrain",
-        "source": "phase-3-postmortem"
+        "source": "phase-3-postmortem",
+        "created_by": "mike"
     }
 }
 ```
@@ -382,6 +389,12 @@ If using the Supabase-hosted version instead of self-hosted K8s:
     }
 }
 ```
+
+---
+
+## REST API Equivalent
+
+Every MCP tool has a REST API counterpart on port 8000, documented in the [README — REST API](README.md#rest-api) section. Use the REST API for integrations that don't support MCP (webhooks, scripts, non-MCP AI clients).
 
 ---
 

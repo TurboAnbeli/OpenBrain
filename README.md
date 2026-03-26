@@ -44,6 +44,20 @@ You capture a thought from **any AI client**. Open Brain generates a vector embe
 
 ---
 
+## Choose Your Deployment Path
+
+Open Brain supports three deployment options. Pick the one that matches your setup:
+
+| Path | Best For | Embeddings | Vector Dimensions | Guide |
+|------|----------|------------|-------------------|-------|
+| **Docker Compose** | Local dev, quickest start | Ollama (local, free) | 768 | [Quick Start](#quick-start-docker-compose) below |
+| **Supabase Cloud** | Zero-infra, hosted | OpenRouter (cloud) | 1536 | [07-DEPLOYMENT.md](07-DEPLOYMENT.md) |
+| **Kubernetes** | Homelab, production self-hosted | Ollama (local, free) | 768 | [09-SELF-HOSTED-K8S.md](09-SELF-HOSTED-K8S.md) |
+
+> **Note on docs 02-08:** The numbered documentation (02-DATABASE-SCHEMA through 08-IMPLEMENTATION-ROADMAP) was originally written for the Supabase/OpenRouter path with 1536-dim vectors. The actual codebase and Docker/K8s deployment use 768-dim Ollama vectors. Both paths are fully functional — just match your `EMBEDDING_DIMENSIONS` env var to your embedder.
+
+---
+
 ## Quick Start (Docker Compose)
 
 ### Prerequisites
@@ -128,6 +142,7 @@ instead of Pinecone. Reason: self-hosted, lower cost, simpler stack."
 | `project` | string | — | Scope to a project/workspace |
 | `source` | string | `"mcp"` | Provenance tracking (which session/tool) |
 | `supersedes` | string | — | UUID of a prior thought this replaces |
+| `created_by` | string | — | User who created this thought (optional, for multi-developer teams) |
 
 ### `search_thoughts`
 
@@ -146,6 +161,7 @@ Semantic vector search — find thoughts by meaning, not exact keywords. Support
 | `type` | string | — | Filter by thought type |
 | `topic` | string | — | Filter by topic tag |
 | `include_archived` | boolean | false | Include archived thoughts |
+| `created_by` | string | — | Filter to thoughts by a specific user |
 
 ### `list_thoughts`
 
@@ -159,14 +175,16 @@ Browse and filter thoughts by type, topic, person, project, or time range.
 | `days` | integer | Only thoughts from the last N days |
 | `project` | string | Scope to a specific project |
 | `include_archived` | boolean | Include archived thoughts (default: false) |
+| `created_by` | string | Filter to thoughts by a specific user |
 
 ### `thought_stats`
 
-Aggregate statistics: total thoughts, type distribution, top topics, top people. Optionally scoped to a project.
+Aggregate statistics: total thoughts, type distribution, top topics, top people. Optionally scoped to a project or user.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `project` | string | Scope stats to a specific project |
+| `created_by` | string | Scope stats to a specific user |
 
 ### `update_thought`
 
@@ -194,6 +212,7 @@ Batch capture multiple thoughts in one call. Each thought gets independent embed
 | `thoughts` | array | *required* — Array of `{ content: string }` objects |
 | `project` | string | Scope all thoughts to a project |
 | `source` | string | Provenance tracking (default: `"mcp"`) |
+| `created_by` | string | User who created these thoughts (optional) |
 
 ---
 
@@ -204,13 +223,13 @@ The REST API provides direct HTTP access (no MCP protocol needed).
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/health` | Health check |
-| `POST` | `/memories` | Capture a thought (supports `project`, `supersedes`) |
+| `POST` | `/memories` | Capture a thought (supports `project`, `supersedes`, `created_by`) |
 | `POST` | `/memories/batch` | Batch capture multiple thoughts |
-| `POST` | `/memories/search` | Semantic search (supports `project`, `type`, `topic`, `include_archived`) |
-| `POST` | `/memories/list` | Filtered listing (supports `project`, `include_archived`) |
+| `POST` | `/memories/search` | Semantic search (supports `project`, `type`, `topic`, `created_by`, `include_archived`) |
+| `POST` | `/memories/list` | Filtered listing (supports `project`, `created_by`, `include_archived`) |
 | `PUT` | `/memories/:id` | Update a thought (re-embeds + re-extracts metadata) |
 | `DELETE` | `/memories/:id` | Delete a thought permanently |
-| `GET` | `/stats` | Brain statistics (supports `?project=` query param) |
+| `GET` | `/stats` | Brain statistics (supports `?project=` and `?created_by=` query params) |
 
 ### Examples
 
@@ -368,6 +387,45 @@ curl -X POST http://localhost:8000/memories/search \
   -d '{"query": "batch insert issues", "project": "openbrain"}'
 # → results include "source": "code-review-2026-03-24" in metadata
 ```
+
+#### Use Case 6: Multi-Developer Team
+
+When 2-3 developers share an Open Brain instance on the same project, use `created_by` to track who captured each thought and filter by author:
+
+```bash
+# Developer 1 captures a decision
+curl -X POST http://localhost:8000/memories \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "Decision: Using row-level security in PostgreSQL instead of application-level tenant filtering.",
+    "project": "saas-platform",
+    "created_by": "sarah"
+  }'
+
+# Developer 2 captures a different insight
+curl -X POST http://localhost:8000/memories \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "Pattern: Always validate webhook signatures before processing. We got hit with replay attacks in staging.",
+    "project": "saas-platform",
+    "created_by": "mike"
+  }'
+
+# Search the whole team's knowledge
+curl -X POST http://localhost:8000/memories/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "security decisions", "project": "saas-platform"}'
+
+# Or filter to just one developer's contributions
+curl -X POST http://localhost:8000/memories/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "security decisions", "project": "saas-platform", "created_by": "sarah"}'
+
+# Stats for one team member
+curl http://localhost:8000/stats?project=saas-platform&created_by=mike
+```
+
+The `created_by` parameter is fully optional — omit it and everything works exactly as before. It's available on `capture_thought`, `capture_thoughts`, `search_thoughts`, `list_thoughts`, and `thought_stats` in both the REST API and MCP tools.
 
 ---
 
@@ -608,6 +666,7 @@ CREATE TABLE thoughts (
     embedding  VECTOR(768),
     metadata   JSONB       DEFAULT '{}'::jsonb,
     project    TEXT,
+    created_by TEXT,
     archived   BOOLEAN     DEFAULT false,
     supersedes UUID        REFERENCES thoughts(id),
     created_at TIMESTAMPTZ DEFAULT now(),
@@ -620,6 +679,7 @@ CREATE TABLE thoughts (
 - `GIN` on `metadata` — efficient JSONB containment queries
 - `B-tree` on `created_at DESC` — ordered time queries
 - `B-tree` on `project` — project scoping queries
+- `B-tree` on `created_by` — user filtering queries
 - Partial on `archived` — fast non-archived lookups
 - `B-tree` on `supersedes` — thought chain traversal
 
