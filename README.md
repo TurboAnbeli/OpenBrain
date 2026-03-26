@@ -130,7 +130,9 @@ Restart Claude Code. You now have persistent memory across all sessions.
 
 ## MCP Tools
 
-Open Brain exposes seven tools via the Model Context Protocol:
+Open Brain exposes seven tools via the Model Context Protocol.
+
+> **Prompting tip:** Metadata (type, topics, people, action items) is extracted automatically — just write naturally. Optional parameters like `project`, `created_by`, and `source` require you to mention them in your prompt. See the [Prompt Kit](06-PROMPT-KIT.md) for full guidance on prompting your AI to use all features.
 
 ### `capture_thought`
 
