@@ -44,19 +44,35 @@ If you use [Plan Forge](https://github.com/srnichols/plan-forge) for agentic pro
 
 ## How It Works
 
-```
-Any AI Tool (Claude, ChatGPT, Gemini, Cursor, etc.)
-        |  MCP Protocol (SSE)
-        v
-   Open Brain MCP Server (:8080)
-        |
-        v
-   PostgreSQL + pgvector
-        |
-   Your thoughts, searchable by meaning
+```mermaid
+flowchart TD
+    A[Any AI Tool\nClaude · ChatGPT · Cursor · Copilot · Windsurf · Gemini] -->|MCP Protocol| B[Open Brain Server\nREST :8000 · MCP :8080]
+    B -->|Generate embedding\n+ extract metadata| C[Ollama or Azure OpenAI]
+    B -->|Store & search| D[(PostgreSQL + pgvector\nVector similarity search)]
+    D -->|Ranked results| B
+    B -->|Thoughts + metadata| A
 ```
 
-You capture a thought from **any AI client**. Open Brain generates a vector embedding (via Ollama or OpenRouter), extracts metadata (type, topics, people mentioned), and stores it. Later, **any AI client** can semantically search your memories by meaning, not keywords.
+You capture a thought from **any AI client**. Open Brain generates a vector embedding, extracts metadata (type, topics, people mentioned), and stores it. Later, **any AI client** can semantically search your memories by meaning, not keywords.
+
+```mermaid
+flowchart LR
+    subgraph Capture
+        A[You say:\nRemember this decision] --> B[AI calls capture_thought]
+        B --> C{Parallel}
+        C --> D[Embedding\n768 or 1536 dims]
+        C --> E[Metadata\ntype · topics · people]
+        D --> F[(Stored)]
+        E --> F
+    end
+    subgraph Search
+        G[You ask:\nWhat did we decide?] --> H[AI calls search_thoughts]
+        H --> I[Query embedding]
+        I --> J{Cosine similarity}
+        F --> J
+        J --> K[Ranked results\nwith metadata]
+    end
+```
 
 ---
 
