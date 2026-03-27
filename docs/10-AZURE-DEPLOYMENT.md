@@ -144,7 +144,7 @@ Use the MCP Endpoint + Key from the output:
 }
 ```
 
-See [README — Client Configuration](README.md#client-configuration) for all 9 supported clients.
+See [README — Client Configuration](../README.md#client-configuration) for all 9 supported clients.
 
 ### Verify
 

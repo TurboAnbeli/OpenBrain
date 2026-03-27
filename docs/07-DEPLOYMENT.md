@@ -25,7 +25,7 @@ flowchart LR
 | **MCP Access Key** | Authenticates your AI clients | Free (you generate it) |
 | **Slack App** (optional) | Captures thoughts from a Slack channel | Free |
 
-> **Self-hosted instead?** Use the [Docker Compose Quick Start](README.md#quick-start-docker-compose) or [K8s guide](09-SELF-HOSTED-K8S.md).
+> **Self-hosted instead?** Use the [Docker Compose Quick Start](../README.md#quick-start-docker-compose) or [K8s guide](09-SELF-HOSTED-K8S.md).
 
 ---
 
@@ -229,7 +229,7 @@ supabase secrets set MCP_ACCESS_KEY=your-64-char-hex-key
 
 **Note**: `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are auto-injected — do not set manually.
 
-> **Self-hosted (Docker/K8s)?** See the [README — Environment Variables](README.md#environment-variables) section for the full env var reference including Ollama config, ports, and database settings.
+> **Self-hosted (Docker/K8s)?** See the [README — Environment Variables](../README.md#environment-variables) section for the full env var reference including Ollama config, ports, and database settings.
 
 ---
 

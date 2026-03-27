@@ -146,7 +146,7 @@ Single table design with rich JSONB metadata.
 
 **Vector Search**: HNSW index on `embedding` column using cosine distance operator (`<=>`), wrapped in `match_thoughts()` RPC function.
 
-> **Dimension note:** Self-hosted (Docker/K8s) uses 768-dim Ollama vectors. Supabase cloud uses 1536-dim OpenRouter vectors. See [README — Choose Your Deployment Path](README.md#choose-your-deployment-path).
+> **Dimension note:** Self-hosted (Docker/K8s) uses 768-dim Ollama vectors. Supabase cloud uses 1536-dim OpenRouter vectors. See [README — Choose Your Deployment Path](../README.md#choose-your-deployment-path).
 
 ### 5. External Services
 

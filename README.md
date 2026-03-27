@@ -51,9 +51,9 @@ Open Brain supports four deployment options. Pick the one that matches your setu
 | Path | Best For | Embeddings | Vector Dimensions | Guide |
 |------|----------|------------|-------------------|-------|
 | **Docker Compose** | Local dev, quickest start | Ollama (local, free) | 768 | [Quick Start](#quick-start-docker-compose) below |
-| **Azure** | Teams, production cloud, fully managed | Azure OpenAI | 1536 | [10-AZURE-DEPLOYMENT.md](10-AZURE-DEPLOYMENT.md) |
-| **Kubernetes** | Homelab, production self-hosted | Ollama (local, free) | 768 | [09-SELF-HOSTED-K8S.md](09-SELF-HOSTED-K8S.md) |
-| **Supabase Cloud** | Zero-infra, hosted | OpenRouter (cloud) | 1536 | [07-DEPLOYMENT.md](07-DEPLOYMENT.md) |
+| **Azure** | Teams, production cloud, fully managed | Azure OpenAI | 1536 | [10-AZURE-DEPLOYMENT.md](docs/10-AZURE-DEPLOYMENT.md) |
+| **Kubernetes** | Homelab, production self-hosted | Ollama (local, free) | 768 | [09-SELF-HOSTED-K8S.md](docs/09-SELF-HOSTED-K8S.md) |
+| **Supabase Cloud** | Zero-infra, hosted | OpenRouter (cloud) | 1536 | [07-DEPLOYMENT.md](docs/07-DEPLOYMENT.md) |
 
 > **Note on docs 02-08:** The numbered documentation (02-DATABASE-SCHEMA through 08-IMPLEMENTATION-ROADMAP) was originally written for the Supabase/OpenRouter path with 1536-dim vectors. The actual codebase and Docker/K8s deployment use 768-dim Ollama vectors. Both paths are fully functional — just match your `EMBEDDING_DIMENSIONS` env var to your embedder.
 
@@ -133,7 +133,7 @@ Restart Claude Code. You now have persistent memory across all sessions.
 
 Open Brain exposes seven tools via the Model Context Protocol.
 
-> **Prompting tip:** Metadata (type, topics, people, action items) is extracted automatically — just write naturally. Optional parameters like `project`, `created_by`, and `source` require you to mention them in your prompt. See the [Prompt Kit](06-PROMPT-KIT.md) for full guidance on prompting your AI to use all features.
+> **Prompting tip:** Metadata (type, topics, people, action items) is extracted automatically — just write naturally. Optional parameters like `project`, `created_by`, and `source` require you to mention them in your prompt. See the [Prompt Kit](docs/06-PROMPT-KIT.md) for full guidance on prompting your AI to use all features.
 
 ### `capture_thought`
 
@@ -844,7 +844,7 @@ kubectl get pods -n openbrain
 | **Tailscale** | Any device on your tailnet, anywhere | Apply `openbrain-tailscale-service.yaml` (requires Tailscale K8s Operator) |
 | **Cloudflare Tunnel** | Public internet | Configure tunnel to ClusterIP service |
 
-See [09-SELF-HOSTED-K8S.md](09-SELF-HOSTED-K8S.md) for the full deployment guide.
+See [09-SELF-HOSTED-K8S.md](docs/09-SELF-HOSTED-K8S.md) for the full deployment guide.
 
 ---
 
@@ -1032,14 +1032,14 @@ MIT
 
 | Document | Description |
 |----------|-------------|
-| [00-OVERVIEW.md](00-OVERVIEW.md) | Project overview and philosophy |
-| [01-ARCHITECTURE.md](01-ARCHITECTURE.md) | System architecture and data flows |
-| [02-DATABASE-SCHEMA.md](02-DATABASE-SCHEMA.md) | PostgreSQL + pgvector schema details |
-| [03-EDGE-FUNCTIONS.md](03-EDGE-FUNCTIONS.md) | Edge Functions reference (Supabase variant) |
-| [04-MCP-SERVER.md](04-MCP-SERVER.md) | MCP server implementation and tool definitions |
-| [05-CAPTURE-PIPELINE.md](05-CAPTURE-PIPELINE.md) | Ingestion and capture workflows |
-| [06-PROMPT-KIT.md](06-PROMPT-KIT.md) | Prompts and templates for AI clients |
-| [07-DEPLOYMENT.md](07-DEPLOYMENT.md) | Deployment and configuration guide |
-| [08-IMPLEMENTATION-ROADMAP.md](08-IMPLEMENTATION-ROADMAP.md) | Build order and milestones |
-| [09-SELF-HOSTED-K8S.md](09-SELF-HOSTED-K8S.md) | Kubernetes self-hosted deployment guide |
-| [10-AZURE-DEPLOYMENT.md](10-AZURE-DEPLOYMENT.md) | Azure cloud deployment (Container Apps + Azure OpenAI) |
+| [00-OVERVIEW.md](docs/00-OVERVIEW.md) | Project overview and philosophy |
+| [01-ARCHITECTURE.md](docs/01-ARCHITECTURE.md) | System architecture and data flows |
+| [02-DATABASE-SCHEMA.md](docs/02-DATABASE-SCHEMA.md) | PostgreSQL + pgvector schema details |
+| [03-EDGE-FUNCTIONS.md](docs/03-EDGE-FUNCTIONS.md) | Edge Functions reference (Supabase variant) |
+| [04-MCP-SERVER.md](docs/04-MCP-SERVER.md) | MCP server implementation and tool definitions |
+| [05-CAPTURE-PIPELINE.md](docs/05-CAPTURE-PIPELINE.md) | Ingestion and capture workflows |
+| [06-PROMPT-KIT.md](docs/06-PROMPT-KIT.md) | Prompts and templates for AI clients |
+| [07-DEPLOYMENT.md](docs/07-DEPLOYMENT.md) | Deployment and configuration guide |
+| [08-IMPLEMENTATION-ROADMAP.md](docs/08-IMPLEMENTATION-ROADMAP.md) | Build order and milestones |
+| [09-SELF-HOSTED-K8S.md](docs/09-SELF-HOSTED-K8S.md) | Kubernetes self-hosted deployment guide |
+| [10-AZURE-DEPLOYMENT.md](docs/10-AZURE-DEPLOYMENT.md) | Azure cloud deployment (Container Apps + Azure OpenAI) |

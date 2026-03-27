@@ -453,7 +453,7 @@ If using the Supabase-hosted version instead of self-hosted K8s:
 
 ## REST API Equivalent
 
-Every MCP tool has a REST API counterpart on port 8000, documented in the [README — REST API](README.md#rest-api) section. Use the REST API for integrations that don't support MCP (webhooks, scripts, non-MCP AI clients).
+Every MCP tool has a REST API counterpart on port 8000, documented in the [README — REST API](../README.md#rest-api) section. Use the REST API for integrations that don't support MCP (webhooks, scripts, non-MCP AI clients).
 
 ---
 
