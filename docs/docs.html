@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Documentation — Open Brain</title>
+    <meta name="description" content="Open Brain documentation: architecture, database schema, MCP server, deployment guides, and more.">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="style.css">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#faf5ff', 100: '#f3e8ff', 200: '#e9d5ff', 300: '#d8b4fe',
+                            400: '#c084fc', 500: '#a855f7', 600: '#9333ea', 700: '#7e22ce',
+                            800: '#6b21a8', 900: '#581c87',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-white text-gray-900 antialiased">
+
+    <!-- Nav -->
+    <nav class="fixed top-0 w-full bg-white/80 backdrop-blur-md border-b border-gray-100 z-50">
+        <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+            <a href="index.html" class="flex items-center gap-2 font-bold text-lg">
+                <img src="favicon.svg" alt="Open Brain" class="w-8 h-8">
+                <span>Open Brain</span>
+            </a>
+            <div class="hidden md:flex items-center gap-8 text-sm text-gray-600">
+                <a href="index.html" class="hover:text-gray-900 transition">Home</a>
+                <a href="docs.html" class="text-gray-900 font-medium">Docs</a>
+                <a href="https://github.com/srnichols/OpenBrain" class="hover:text-gray-900 transition flex items-center gap-1">
+                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    GitHub
+                </a>
+            </div>
+            <button id="sidebar-toggle" class="md:hidden p-2 text-gray-600">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+                </svg>
+            </button>
+        </div>
+    </nav>
+
+    <div class="max-w-7xl mx-auto flex pt-16">
+        <!-- Sidebar -->
+        <aside id="sidebar" class="hidden md:block w-64 shrink-0 border-r border-gray-100 h-[calc(100vh-4rem)] sticky top-16 overflow-y-auto">
+            <nav class="p-6 space-y-1 text-sm">
+                <div class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Getting Started</div>
+                <a href="#overview" class="sidebar-link block py-1.5 px-3 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 border-l-2 border-transparent">Overview</a>
+                <a href="#architecture" class="sidebar-link block py-1.5 px-3 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 border-l-2 border-transparent">Architecture</a>
+
+                <div class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 mt-6">Core</div>
+                <a href="#database" class="sidebar-link block py-1.5 px-3 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 border-l-2 border-transparent">Database Schema</a>
+                <a href="#mcp-server" class="sidebar-link block py-1.5 px-3 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 border-l-2 border-transparent">MCP Server</a>
+                <a href="#capture" class="sidebar-link block py-1.5 px-3 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 border-l-2 border-transparent">Capture Pipeline</a>
+                <a href="#prompts" class="sidebar-link block py-1.5 px-3 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 border-l-2 border-transparent">Prompt Kit</a>
+
+                <div class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 mt-6">Deployment</div>
+                <a href="#deployment" class="sidebar-link block py-1.5 px-3 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 border-l-2 border-transparent">Supabase Deploy</a>
+                <a href="#docker" class="sidebar-link block py-1.5 px-3 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 border-l-2 border-transparent">Docker Compose</a>
+                <a href="#kubernetes" class="sidebar-link block py-1.5 px-3 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 border-l-2 border-transparent">Kubernetes</a>
+                <a href="#roadmap" class="sidebar-link block py-1.5 px-3 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 border-l-2 border-transparent">Roadmap</a>
+
+                <div class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 mt-6">Reference</div>
+                <a href="#client-config" class="sidebar-link block py-1.5 px-3 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 border-l-2 border-transparent">Client Configuration</a>
+                <a href="#rest-api" class="sidebar-link block py-1.5 px-3 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 border-l-2 border-transparent">REST API</a>
+                <a href="#troubleshooting" class="sidebar-link block py-1.5 px-3 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-50 border-l-2 border-transparent">Troubleshooting</a>
+            </nav>
+        </aside>
+
+        <!-- Content -->
+        <main class="flex-1 min-w-0 px-6 md:px-12 py-12 prose max-w-none">
+
+            <!-- Overview -->
+            <section id="overview" class="mb-20">
+                <h1 class="text-4xl font-bold mb-2">Open Brain Documentation</h1>
+                <p class="text-lg text-gray-500 mb-8">Persistent, searchable memory for every AI tool you use.</p>
+
+                <h2 class="text-2xl font-bold mt-12 mb-4">What is Open Brain?</h2>
+                <p class="text-gray-600 leading-relaxed mb-4">Open Brain is a personal, database-backed AI knowledge system that gives every AI tool persistent memory. Based on <a href="https://www.natebjones.com" class="text-brand-600 hover:underline">Nate B Jones'</a> architecture, it turns your scattered conversations across Claude, ChatGPT, Cursor, and other tools into a single, searchable knowledge base.</p>
+
+                <div class="p-4 rounded-lg border border-brand-100 bg-brand-50/30 text-sm my-6">
+                    <strong>Credit:</strong> Open Brain was created by <a href="https://www.natebjones.com" class="text-brand-600 hover:underline">Nate B Jones</a>.
+                    See his <a href="https://promptkit.natebjones.com/20260224_uq1_guide_main" class="text-brand-600 hover:underline">setup guide</a>,
+                    <a href="https://promptkit.natebjones.com/20260224_uq1_promptkit_1" class="text-brand-600 hover:underline">prompt kit</a>, and
+                    <a href="https://natesnewsletter.substack.com/p/every-ai-you-use-forgets-you-heres" class="text-brand-600 hover:underline">Substack post</a>
+                    for the original vision.
+                </div>
+
+                <div class="grid md:grid-cols-2 gap-4 my-8">
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <h4 class="font-semibold text-sm mb-2">The Problem</h4>
+                        <p class="text-sm text-gray-500">Every AI conversation starts from zero. Decisions, preferences, and context are lost across sessions and tools.</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-brand-100 bg-brand-50/30">
+                        <h4 class="font-semibold text-sm mb-2">The Solution</h4>
+                        <p class="text-sm text-gray-500">A unified memory backend — capture once, recall everywhere. Semantic search finds thoughts by meaning, not keywords.</p>
+                    </div>
+                </div>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Philosophy</h3>
+                <ul class="space-y-2 text-gray-600 text-sm">
+                    <li class="flex gap-2"><span class="text-brand-500">→</span> <strong>One row = one retrievable idea</strong> — Zettelkasten-style atomic notes</li>
+                    <li class="flex gap-2"><span class="text-brand-500">→</span> <strong>Vector search = associative retrieval</strong> — search by meaning, not keywords</li>
+                    <li class="flex gap-2"><span class="text-brand-500">→</span> <strong>Metadata extraction is automatic</strong> — LLM classifies and tags on ingest</li>
+                    <li class="flex gap-2"><span class="text-brand-500">→</span> <strong>Backend, not frontend</strong> — use with any UI or AI tool you prefer</li>
+                    <li class="flex gap-2"><span class="text-brand-500">→</span> <strong>Your memory is portable</strong> — self-hosted, open protocol, compounding</li>
+                </ul>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Cost</h3>
+                <table>
+                    <thead><tr><th>Deployment</th><th>Monthly Cost</th></tr></thead>
+                    <tbody>
+                        <tr><td>Docker Compose (self-hosted)</td><td>$0</td></tr>
+                        <tr><td>Kubernetes homelab</td><td>$0 (adds to existing cluster)</td></tr>
+                        <tr><td>Supabase Cloud + OpenRouter</td><td>$0.10 – $0.30</td></tr>
+                        <tr><td>Azure Managed</td><td>Varies by tier</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- Architecture -->
+            <section id="architecture" class="mb-20">
+                <h2 class="text-2xl font-bold mb-4">Architecture</h2>
+                <p class="text-gray-600 leading-relaxed mb-6">Open Brain has a simple, layered architecture — AI clients talk to the MCP server via SSE, which handles tool dispatch, embedding generation, metadata extraction, and database operations.</p>
+
+                <pre><code>AI Client (Claude, ChatGPT, Cursor, etc.)
+    ↓ MCP Protocol (SSE transport)
+    ↓ Auth: x-brain-key header or ?key= param
+    ↓
+MCP Server (Node.js + Hono / Deno Edge Function)
+    ├─ Tool dispatch (7 MCP tools)
+    ├─ Embedding generation (OpenRouter or Ollama)
+    ├─ Metadata extraction (LLM)
+    └─ Database client
+    ↓
+PostgreSQL + pgvector
+    ├─ thoughts table (content + embedding + metadata)
+    ├─ HNSW index (vector search)
+    ├─ GIN index (metadata filtering)
+    └─ match_thoughts() RPC function</code></pre>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Data Flows</h3>
+                <div class="space-y-4 text-sm">
+                    <div class="p-4 rounded-lg bg-gray-50">
+                        <h4 class="font-semibold mb-1">Capture Flow</h4>
+                        <p class="text-gray-500">Client → <code>capture_thought</code> → Embed (parallel) + Extract metadata (parallel) → Insert row → Return confirmation with metadata</p>
+                    </div>
+                    <div class="p-4 rounded-lg bg-gray-50">
+                        <h4 class="font-semibold mb-1">Search Flow</h4>
+                        <p class="text-gray-500">Client → <code>search_thoughts</code> → Embed query → <code>match_thoughts()</code> RPC → Return ranked results with similarity scores</p>
+                    </div>
+                </div>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Scaling</h3>
+                <table>
+                    <thead><tr><th>Scale</th><th>Thoughts</th><th>Notes</th></tr></thead>
+                    <tbody>
+                        <tr><td>Personal</td><td>1 – 10K</td><td>Single instance, no tuning needed</td></tr>
+                        <tr><td>Power User</td><td>10K – 100K</td><td>HNSW index handles smoothly</td></tr>
+                        <tr><td>Team</td><td>100K+</td><td>Consider dedicated Postgres, read replicas</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- Database -->
+            <section id="database" class="mb-20">
+                <h2 class="text-2xl font-bold mb-4">Database Schema</h2>
+                <p class="text-gray-600 leading-relaxed mb-6">Single table design on PostgreSQL with pgvector extension. Rich JSONB metadata enables flexible filtering without schema migrations.</p>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">The <code>thoughts</code> Table</h3>
+                <table>
+                    <thead><tr><th>Column</th><th>Type</th><th>Purpose</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>id</code></td><td>UUID</td><td>Primary key (auto-generated)</td></tr>
+                        <tr><td><code>content</code></td><td>TEXT</td><td>The thought itself</td></tr>
+                        <tr><td><code>embedding</code></td><td>VECTOR(768/1536)</td><td>Semantic embedding vector</td></tr>
+                        <tr><td><code>metadata</code></td><td>JSONB</td><td>Type, topics, people, action items, source</td></tr>
+                        <tr><td><code>created_at</code></td><td>TIMESTAMPTZ</td><td>When captured</td></tr>
+                        <tr><td><code>updated_at</code></td><td>TIMESTAMPTZ</td><td>Last modified (auto-trigger)</td></tr>
+                        <tr><td><code>created_by</code></td><td>TEXT</td><td>User provenance for multi-dev teams</td></tr>
+                    </tbody>
+                </table>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Metadata Fields</h3>
+                <p class="text-gray-600 text-sm mb-4">Extracted automatically by the LLM on capture:</p>
+                <div class="flex flex-wrap gap-2 text-xs">
+                    <span class="px-2 py-1 rounded bg-brand-50 text-brand-700">type</span>
+                    <span class="px-2 py-1 rounded bg-brand-50 text-brand-700">topics[]</span>
+                    <span class="px-2 py-1 rounded bg-brand-50 text-brand-700">people[]</span>
+                    <span class="px-2 py-1 rounded bg-brand-50 text-brand-700">action_items[]</span>
+                    <span class="px-2 py-1 rounded bg-brand-50 text-brand-700">dates[]</span>
+                    <span class="px-2 py-1 rounded bg-brand-50 text-brand-700">source</span>
+                    <span class="px-2 py-1 rounded bg-brand-50 text-brand-700">project</span>
+                    <span class="px-2 py-1 rounded bg-brand-50 text-brand-700">created_by</span>
+                    <span class="px-2 py-1 rounded bg-brand-50 text-brand-700">supersedes</span>
+                </div>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Indexes</h3>
+                <table>
+                    <thead><tr><th>Index</th><th>Type</th><th>Purpose</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>thoughts_embedding_idx</code></td><td>HNSW</td><td>Fast vector similarity search</td></tr>
+                        <tr><td><code>thoughts_metadata_idx</code></td><td>GIN</td><td>JSONB metadata containment queries</td></tr>
+                        <tr><td><code>thoughts_created_at_idx</code></td><td>B-tree</td><td>Date range filtering</td></tr>
+                    </tbody>
+                </table>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3"><code>match_thoughts()</code> Function</h3>
+                <p class="text-gray-600 text-sm mb-4">The core search RPC — combines vector similarity with a configurable threshold:</p>
+                <pre><code>SELECT * FROM match_thoughts(
+    query_embedding := '[0.1, 0.2, ...]'::vector,
+    match_count := 10,
+    match_threshold := 0.5
+);</code></pre>
+            </section>
+
+            <!-- MCP Server -->
+            <section id="mcp-server" class="mb-20">
+                <h2 class="text-2xl font-bold mb-4">MCP Server</h2>
+                <p class="text-gray-600 leading-relaxed mb-6">Open Brain's MCP server exposes 7 tools via the <a href="https://modelcontextprotocol.io" class="text-brand-600 hover:underline">Model Context Protocol</a>, Anthropic's open standard for AI-to-tool integration. Uses SSE transport over HTTP.</p>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Tools</h3>
+                <div class="space-y-4">
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <div class="flex items-center gap-2 mb-2">
+                            <code class="text-sm bg-brand-50 text-brand-700 px-2 py-0.5 rounded">search_thoughts</code>
+                            <span class="text-xs text-gray-400">query, limit?, threshold?</span>
+                        </div>
+                        <p class="text-sm text-gray-500">Semantic vector search — finds thoughts by meaning, ranked by similarity score.</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <div class="flex items-center gap-2 mb-2">
+                            <code class="text-sm bg-brand-50 text-brand-700 px-2 py-0.5 rounded">capture_thought</code>
+                            <span class="text-xs text-gray-400">content</span>
+                        </div>
+                        <p class="text-sm text-gray-500">Store a thought. Auto-generates embedding and extracts metadata (type, topics, people, action items) in parallel.</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <div class="flex items-center gap-2 mb-2">
+                            <code class="text-sm bg-brand-50 text-brand-700 px-2 py-0.5 rounded">capture_thoughts</code>
+                            <span class="text-xs text-gray-400">thoughts[]</span>
+                        </div>
+                        <p class="text-sm text-gray-500">Batch capture — store multiple thoughts in one call.</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <div class="flex items-center gap-2 mb-2">
+                            <code class="text-sm bg-brand-50 text-brand-700 px-2 py-0.5 rounded">list_thoughts</code>
+                            <span class="text-xs text-gray-400">type?, topic?, person?, days?</span>
+                        </div>
+                        <p class="text-sm text-gray-500">Filtered listing — browse by type, topic, person mentioned, or date range.</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <div class="flex items-center gap-2 mb-2">
+                            <code class="text-sm bg-brand-50 text-brand-700 px-2 py-0.5 rounded">update_thought</code>
+                            <span class="text-xs text-gray-400">id, content</span>
+                        </div>
+                        <p class="text-sm text-gray-500">Edit a thought's content and regenerate its embedding.</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <div class="flex items-center gap-2 mb-2">
+                            <code class="text-sm bg-brand-50 text-brand-700 px-2 py-0.5 rounded">delete_thought</code>
+                            <span class="text-xs text-gray-400">id</span>
+                        </div>
+                        <p class="text-sm text-gray-500">Remove a thought by ID.</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <div class="flex items-center gap-2 mb-2">
+                            <code class="text-sm bg-brand-50 text-brand-700 px-2 py-0.5 rounded">thought_stats</code>
+                        </div>
+                        <p class="text-sm text-gray-500">Aggregate stats — total count, type distribution, top topics, top people mentioned.</p>
+                    </div>
+                </div>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Authentication</h3>
+                <p class="text-gray-600 text-sm mb-4">API key sent via <code>x-brain-key</code> header (preferred) or <code>?key=</code> URL parameter.</p>
+                <pre><code># Auth is enforced on /sse connection only.
+# /messages endpoint uses sessionId for implicit auth.
+GET /sse?key=YOUR_64_CHAR_HEX_KEY     → SSE stream
+POST /messages?sessionId=xxx           → JSON-RPC calls (no key needed)</code></pre>
+            </section>
+
+            <!-- Capture Pipeline -->
+            <section id="capture" class="mb-20">
+                <h2 class="text-2xl font-bold mb-4">Capture Pipeline</h2>
+                <p class="text-gray-600 leading-relaxed mb-6">Multiple ways to feed thoughts into Open Brain — from AI tool conversations to Slack messages to bulk imports.</p>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Capture Methods</h3>
+                <table>
+                    <thead><tr><th>Method</th><th>How</th><th>Best For</th></tr></thead>
+                    <tbody>
+                        <tr><td><strong>MCP Tool</strong></td><td><code>capture_thought</code> from any AI client</td><td>Daily workflow captures</td></tr>
+                        <tr><td><strong>REST API</strong></td><td><code>POST /memories</code></td><td>Scripts, automations, webhooks</td></tr>
+                        <tr><td><strong>Slack Webhook</strong></td><td>DM the Slack bot</td><td>Quick captures, mobile</td></tr>
+                        <tr><td><strong>Bulk Import</strong></td><td>Migration scripts</td><td>Notion, Obsidian, Apple Notes, ChatGPT exports</td></tr>
+                    </tbody>
+                </table>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Quick Capture Templates</h3>
+                <div class="space-y-3 text-sm">
+                    <div class="p-3 rounded-lg bg-gray-50">
+                        <span class="font-semibold text-gray-700">Decision:</span>
+                        <span class="text-gray-500"> "Decision: Using PostgreSQL with pgvector instead of Pinecone. Reason: self-hosted, lower cost."</span>
+                    </div>
+                    <div class="p-3 rounded-lg bg-gray-50">
+                        <span class="font-semibold text-gray-700">Person Note:</span>
+                        <span class="text-gray-500"> "Mike prefers async communication, Slack over email. Timezone: PST."</span>
+                    </div>
+                    <div class="p-3 rounded-lg bg-gray-50">
+                        <span class="font-semibold text-gray-700">Insight:</span>
+                        <span class="text-gray-500"> "Vector search with 768-dim nomic-embed-text is nearly as good as 1536-dim for short content."</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Prompt Kit -->
+            <section id="prompts" class="mb-20">
+                <h2 class="text-2xl font-bold mb-4">Prompt Kit</h2>
+                <p class="text-gray-600 leading-relaxed mb-6">Five core prompts covering the full lifecycle — from migration to daily capture to weekly review.</p>
+
+                <div class="space-y-4">
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <h4 class="font-semibold text-sm mb-1">Prompt 1: Memory Migration</h4>
+                        <p class="text-sm text-gray-500">Import memories from Claude, ChatGPT, or other AI platforms into Open Brain.</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <h4 class="font-semibold text-sm mb-1">Prompt 2: Second Brain Migration</h4>
+                        <p class="text-sm text-gray-500">Migrate from Notion, Obsidian, Apple Notes, Google Keep, or Evernote.</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <h4 class="font-semibold text-sm mb-1">Prompt 3: Open Brain Spark</h4>
+                        <p class="text-sm text-gray-500">System prompt that teaches your AI to proactively capture and search thoughts.</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <h4 class="font-semibold text-sm mb-1">Prompt 4: Quick Capture Templates</h4>
+                        <p class="text-sm text-gray-500">Structured templates for decisions, meetings, person notes, and insights.</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <h4 class="font-semibold text-sm mb-1">Prompt 5: The Weekly Review</h4>
+                        <p class="text-sm text-gray-500">Review your week's captures — surface patterns, stale tasks, and connections.</p>
+                    </div>
+                </div>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Daily Rhythm</h3>
+                <div class="text-sm text-gray-600 space-y-2">
+                    <p>☀️ <strong>Morning</strong> — Quick review of recent captures</p>
+                    <p>💻 <strong>During work</strong> — Capture decisions and insights as they happen</p>
+                    <p>🤝 <strong>After meetings</strong> — Debrief with capture templates</p>
+                    <p>🌙 <strong>End of day</strong> — Save key takeaways</p>
+                    <p>📊 <strong>Friday</strong> — Run the weekly review prompt</p>
+                </div>
+            </section>
+
+            <!-- Deployment -->
+            <section id="deployment" class="mb-20">
+                <h2 class="text-2xl font-bold mb-4">Supabase Deployment</h2>
+                <p class="text-gray-600 leading-relaxed mb-6">Deploy to Supabase's free tier with Edge Functions. ~45 minutes, ~$0.10-$0.30/month.</p>
+                <p class="text-gray-500 text-sm mb-4">Full step-by-step guide in <a href="https://github.com/srnichols/OpenBrain/blob/master/07-DEPLOYMENT.md" class="text-brand-600 hover:underline">07-DEPLOYMENT.md</a>.</p>
+
+                <ol class="space-y-3 text-sm text-gray-600">
+                    <li class="flex gap-3"><span class="font-bold text-brand-600 shrink-0">1.</span> Create Supabase project</li>
+                    <li class="flex gap-3"><span class="font-bold text-brand-600 shrink-0">2.</span> Set up database (pgvector extension, thoughts table, indexes, match_thoughts function)</li>
+                    <li class="flex gap-3"><span class="font-bold text-brand-600 shrink-0">3.</span> Get OpenRouter API key</li>
+                    <li class="flex gap-3"><span class="font-bold text-brand-600 shrink-0">4.</span> Generate MCP access key (<code>openssl rand -hex 32</code>)</li>
+                    <li class="flex gap-3"><span class="font-bold text-brand-600 shrink-0">5.</span> Set Supabase secrets</li>
+                    <li class="flex gap-3"><span class="font-bold text-brand-600 shrink-0">6.</span> Deploy Edge Functions</li>
+                    <li class="flex gap-3"><span class="font-bold text-brand-600 shrink-0">7.</span> Configure AI clients</li>
+                    <li class="flex gap-3"><span class="font-bold text-brand-600 shrink-0">8.</span> Slack integration (optional)</li>
+                    <li class="flex gap-3"><span class="font-bold text-brand-600 shrink-0">9.</span> Verify everything works</li>
+                </ol>
+            </section>
+
+            <!-- Docker -->
+            <section id="docker" class="mb-20">
+                <h2 class="text-2xl font-bold mb-4">Docker Compose</h2>
+                <p class="text-gray-600 leading-relaxed mb-6">The fastest path — PostgreSQL + pgvector + Ollama + API server in one command.</p>
+
+                <pre><code># Clone the repo
+git clone https://github.com/srnichols/OpenBrain.git
+cd OpenBrain
+
+# Configure
+cp .env.example .env
+# Edit .env with your settings
+
+# Start everything
+docker compose up -d
+
+# Verify
+curl http://localhost:8000/health
+curl http://localhost:8080/health</code></pre>
+
+                <p class="text-sm text-gray-500 mt-4">The Docker Compose stack includes PostgreSQL with pgvector pre-configured, Ollama for local embeddings (nomic-embed-text), and the Open Brain API + MCP server.</p>
+            </section>
+
+            <!-- Kubernetes -->
+            <section id="kubernetes" class="mb-20">
+                <h2 class="text-2xl font-bold mb-4">Kubernetes Deployment</h2>
+                <p class="text-gray-600 leading-relaxed mb-6">Full homelab deployment with Tailscale networking, MetalLB, Ollama GPU, and monitoring integration.</p>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Stack</h3>
+                <table>
+                    <thead><tr><th>Component</th><th>Technology</th></tr></thead>
+                    <tbody>
+                        <tr><td>Container Runtime</td><td>K8s + containerd</td></tr>
+                        <tr><td>Database</td><td>PostgreSQL + pgvector (StatefulSet)</td></tr>
+                        <tr><td>Embeddings</td><td>Ollama (nomic-embed-text, local GPU)</td></tr>
+                        <tr><td>Networking</td><td>MetalLB (LAN) + Tailscale (VPN + Funnel)</td></tr>
+                        <tr><td>Monitoring</td><td>Prometheus + Grafana + Loki</td></tr>
+                        <tr><td>Cost</td><td>$0/month (uses existing cluster resources)</td></tr>
+                    </tbody>
+                </table>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Networking Options</h3>
+                <table>
+                    <thead><tr><th>Option</th><th>Access</th><th>URL Pattern</th></tr></thead>
+                    <tbody>
+                        <tr><td>Tailscale MagicDNS</td><td>Tailnet only</td><td><code>http://openbrain.your-tailnet.ts.net:8080</code></td></tr>
+                        <tr><td>MetalLB</td><td>LAN only</td><td><code>http://192.168.x.x:8080</code></td></tr>
+                        <tr><td>Tailscale Funnel</td><td>Public internet</td><td><code>https://openbrain.your-tailnet.ts.net</code></td></tr>
+                        <tr><td>Cloudflare Tunnel</td><td>Public (custom domain)</td><td><code>https://brain.yourdomain.com</code></td></tr>
+                    </tbody>
+                </table>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Important Notes</h3>
+                <ul class="space-y-2 text-sm text-gray-600">
+                    <li>• <strong>Session Affinity</strong> — Required for multi-replica SSE. Set <code>sessionAffinity: ClientIP</code> on the ClusterIP service.</li>
+                    <li>• <strong>Tailscale Funnel</strong> — The K8s Operator (v1.92.4) doesn't auto-configure Funnel serve. Manual <code>tailscale funnel</code> command needed inside the proxy pod.</li>
+                    <li>• <strong>Auth</strong> — API key is checked on <code>/sse</code> only. <code>/messages</code> uses sessionId for implicit auth.</li>
+                </ul>
+
+                <p class="text-sm text-gray-500 mt-4">Full guide in <a href="https://github.com/srnichols/OpenBrain/blob/master/09-SELF-HOSTED-K8S.md" class="text-brand-600 hover:underline">09-SELF-HOSTED-K8S.md</a>.</p>
+            </section>
+
+            <!-- Roadmap -->
+            <section id="roadmap" class="mb-20">
+                <h2 class="text-2xl font-bold mb-4">Implementation Roadmap</h2>
+                <p class="text-gray-600 leading-relaxed mb-6">Four phases, each independently functional. Total time: 2-4 hours.</p>
+
+                <div class="space-y-6">
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <div class="flex items-center gap-3 mb-2">
+                            <span class="text-xs font-bold text-white bg-brand-600 px-2 py-0.5 rounded">Phase 1</span>
+                            <h4 class="font-semibold text-sm">Foundation (45 min)</h4>
+                        </div>
+                        <p class="text-sm text-gray-500">Database → Edge functions → MCP server → CLI test</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <div class="flex items-center gap-3 mb-2">
+                            <span class="text-xs font-bold text-white bg-brand-600 px-2 py-0.5 rounded">Phase 2</span>
+                            <h4 class="font-semibold text-sm">Capture Pipeline (30 min)</h4>
+                        </div>
+                        <p class="text-sm text-gray-500">Slack app → Ingest webhook → Confirmation replies</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <div class="flex items-center gap-3 mb-2">
+                            <span class="text-xs font-bold text-white bg-brand-600 px-2 py-0.5 rounded">Phase 3</span>
+                            <h4 class="font-semibold text-sm">Knowledge Migration (30-60 min)</h4>
+                        </div>
+                        <p class="text-sm text-gray-500">Memory migration from AI platforms + Second brain migration (Notion, Obsidian)</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <div class="flex items-center gap-3 mb-2">
+                            <span class="text-xs font-bold text-white bg-brand-600 px-2 py-0.5 rounded">Phase 4</span>
+                            <h4 class="font-semibold text-sm">Optimization & Habits (30 min)</h4>
+                        </div>
+                        <p class="text-sm text-gray-500">Multi-client setup + Daily habits + Weekly review</p>
+                    </div>
+                </div>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Success Criteria</h3>
+                <div class="text-sm text-gray-600 space-y-2">
+                    <p>📅 <strong>Week 1</strong> — Deployed, 20+ thoughts captured</p>
+                    <p>📅 <strong>Month 1</strong> — 100+ thoughts, 2+ weekly reviews, established daily habit</p>
+                    <p>📅 <strong>Month 3</strong> — Full compounding, knowledge graph effect, AI tools feel contextual</p>
+                </div>
+            </section>
+
+            <!-- Client Config -->
+            <section id="client-config" class="mb-20">
+                <h2 class="text-2xl font-bold mb-4">Client Configuration</h2>
+                <p class="text-gray-600 leading-relaxed mb-6">Copy-paste configs for every supported AI client.</p>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Claude Desktop</h3>
+                <p class="text-sm text-gray-500 mb-2">Requires <code>mcp-remote</code> bridge (Claude Desktop doesn't support SSE natively).</p>
+                <p class="text-xs text-gray-400 mb-3">File: <code>%APPDATA%\Claude\claude_desktop_config.json</code> (Windows) or <code>~/Library/Application Support/Claude/claude_desktop_config.json</code> (macOS)</p>
+                <pre><code>{
+  "mcpServers": {
+    "openbrain": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://YOUR_HOST/sse?key=YOUR_KEY"]
+    }
+  }
+}</code></pre>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Claude Code / VS Code Copilot</h3>
+                <p class="text-xs text-gray-400 mb-3">File: <code>~/.claude/settings.json</code></p>
+                <pre><code>{
+  "mcpServers": {
+    "openbrain": {
+      "type": "sse",
+      "url": "http://YOUR_HOST:8080/sse?key=YOUR_KEY"
+    }
+  }
+}</code></pre>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Cursor</h3>
+                <p class="text-xs text-gray-400 mb-3">File: <code>.cursor/mcp.json</code></p>
+                <pre><code>{
+  "mcpServers": {
+    "openbrain": {
+      "url": "http://YOUR_HOST:8080/sse?key=YOUR_KEY",
+      "transport": "sse"
+    }
+  }
+}</code></pre>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">ChatGPT</h3>
+                <p class="text-sm text-gray-500">Enable Developer Mode → Add MCP connector with your Funnel/public URL. Set auth to "none" (key in URL).</p>
+            </section>
+
+            <!-- REST API -->
+            <section id="rest-api" class="mb-20">
+                <h2 class="text-2xl font-bold mb-4">REST API</h2>
+                <p class="text-gray-600 leading-relaxed mb-6">Every MCP tool has a REST equivalent on port 8000. Useful for scripts, testing, and non-MCP integrations.</p>
+
+                <table>
+                    <thead><tr><th>Method</th><th>Endpoint</th><th>Purpose</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>GET</code></td><td>/health</td><td>Health check</td></tr>
+                        <tr><td><code>POST</code></td><td>/memories</td><td>Capture a thought</td></tr>
+                        <tr><td><code>POST</code></td><td>/memories/search</td><td>Semantic search</td></tr>
+                        <tr><td><code>POST</code></td><td>/memories/list</td><td>Filtered listing</td></tr>
+                        <tr><td><code>GET</code></td><td>/stats</td><td>Aggregate statistics</td></tr>
+                    </tbody>
+                </table>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Example: Capture</h3>
+                <pre><code>curl -X POST http://localhost:8000/memories \
+  -H "Content-Type: application/json" \
+  -d '{"content": "Decision: Using pgvector for embeddings"}'</code></pre>
+
+                <h3 class="text-lg font-semibold mt-8 mb-3">Example: Search</h3>
+                <pre><code>curl -X POST http://localhost:8000/memories/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "database decisions", "limit": 5}'</code></pre>
+            </section>
+
+            <!-- Troubleshooting -->
+            <section id="troubleshooting" class="mb-20">
+                <h2 class="text-2xl font-bold mb-4">Troubleshooting</h2>
+
+                <div class="space-y-6">
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <h4 class="font-semibold text-sm mb-2">"No active session. Connect to /sse first."</h4>
+                        <p class="text-sm text-gray-500 mb-2"><strong>Cause:</strong> SSE connection and <code>/messages</code> POST hitting different pods (multi-replica without session affinity).</p>
+                        <p class="text-sm text-gray-500"><strong>Fix:</strong> <code>kubectl patch svc openbrain-api -n openbrain -p '{"spec":{"sessionAffinity":"ClientIP"}}'</code></p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <h4 class="font-semibold text-sm mb-2">mcp-remote ServerError / OAuth errors</h4>
+                        <p class="text-sm text-gray-500 mb-2"><strong>Cause:</strong> <code>/messages</code> endpoint returning 401, triggering mcp-remote's OAuth flow.</p>
+                        <p class="text-sm text-gray-500"><strong>Fix:</strong> Auth must only be enforced on <code>/sse</code>, not on <code>/messages</code>. The sessionId proves authentication.</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <h4 class="font-semibold text-sm mb-2">Claude Desktop doesn't show OpenBrain tools</h4>
+                        <p class="text-sm text-gray-500 mb-2"><strong>Check:</strong> Verify <code>%APPDATA%\Claude\claude_desktop_config.json</code> has the <code>mcpServers</code> entry. Claude Desktop may overwrite on launch.</p>
+                        <p class="text-sm text-gray-500"><strong>Fix:</strong> Fully quit (system tray → Quit) and relaunch. Check logs at <code>%APPDATA%\Claude\logs\mcp-server-openbrain.log</code>.</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <h4 class="font-semibold text-sm mb-2">Search returns no results</h4>
+                        <p class="text-sm text-gray-500 mb-2"><strong>Check:</strong> Run <code>thought_stats</code>. Under 20-30 entries = sparse data, not broken.</p>
+                        <p class="text-sm text-gray-500"><strong>Fix:</strong> Lower similarity threshold (try 0.3 instead of 0.5). Test with exact captured terminology.</p>
+                    </div>
+                    <div class="p-4 rounded-lg border border-gray-100">
+                        <h4 class="font-semibold text-sm mb-2">Tailscale Funnel not serving</h4>
+                        <p class="text-sm text-gray-500 mb-2"><strong>Cause:</strong> K8s Operator v1.92.4 doesn't auto-configure Funnel serve from the annotation.</p>
+                        <p class="text-sm text-gray-500"><strong>Fix:</strong> Run <code>tailscale funnel --bg --https=443 http://openbrain-api.openbrain.svc.cluster.local:8080</code> inside the proxy pod. Re-run after pod restarts.</p>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <script>
+        // Mobile sidebar toggle
+        const sidebarBtn = document.getElementById('sidebar-toggle');
+        const sidebar = document.getElementById('sidebar');
+        sidebarBtn.addEventListener('click', () => {
+            sidebar.classList.toggle('hidden');
+            sidebar.classList.toggle('fixed');
+            sidebar.classList.toggle('inset-0');
+            sidebar.classList.toggle('top-16');
+            sidebar.classList.toggle('bg-white');
+            sidebar.classList.toggle('z-40');
+            sidebar.classList.toggle('w-full');
+        });
+
+        // Active sidebar link tracking
+        const sections = document.querySelectorAll('section[id]');
+        const sidebarLinks = document.querySelectorAll('.sidebar-link');
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    sidebarLinks.forEach(link => {
+                        link.classList.remove('active');
+                        if (link.getAttribute('href') === '#' + entry.target.id) {
+                            link.classList.add('active');
+                        }
+                    });
+                }
+            });
+        }, { rootMargin: '-20% 0px -80% 0px' });
+
+        sections.forEach(section => observer.observe(section));
+    </script>
+</body>
+</html>

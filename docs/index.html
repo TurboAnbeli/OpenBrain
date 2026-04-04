@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Open Brain — Persistent Memory for Every AI Tool</title>
+    <meta name="description" content="Persistent, searchable memory for every AI tool you use. Semantic vector search, automatic metadata extraction, works with Claude, ChatGPT, Cursor, Copilot, and more.">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="style.css">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#faf5ff',
+                            100: '#f3e8ff',
+                            200: '#e9d5ff',
+                            300: '#d8b4fe',
+                            400: '#c084fc',
+                            500: '#a855f7',
+                            600: '#9333ea',
+                            700: '#7e22ce',
+                            800: '#6b21a8',
+                            900: '#581c87',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-white text-gray-900 antialiased">
+
+    <!-- Nav -->
+    <nav class="fixed top-0 w-full bg-white/80 backdrop-blur-md border-b border-gray-100 z-50">
+        <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+            <a href="/" class="flex items-center gap-2 font-bold text-lg">
+                <img src="favicon.svg" alt="Open Brain" class="w-8 h-8">
+                <span>Open Brain</span>
+            </a>
+            <div class="hidden md:flex items-center gap-8 text-sm text-gray-600">
+                <a href="#features" class="hover:text-gray-900 transition">Features</a>
+                <a href="#how-it-works" class="hover:text-gray-900 transition">How It Works</a>
+                <a href="#deploy" class="hover:text-gray-900 transition">Deploy</a>
+                <a href="docs.html" class="hover:text-gray-900 transition">Docs</a>
+                <a href="https://github.com/srnichols/OpenBrain" class="hover:text-gray-900 transition flex items-center gap-1">
+                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    GitHub
+                </a>
+            </div>
+            <!-- Mobile menu button -->
+            <button id="mobile-menu-btn" class="md:hidden p-2 text-gray-600">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+                </svg>
+            </button>
+        </div>
+        <!-- Mobile menu -->
+        <div id="mobile-menu" class="hidden md:hidden border-t border-gray-100 bg-white px-6 py-4 space-y-3 text-sm">
+            <a href="#features" class="block text-gray-600 hover:text-gray-900">Features</a>
+            <a href="#how-it-works" class="block text-gray-600 hover:text-gray-900">How It Works</a>
+            <a href="#deploy" class="block text-gray-600 hover:text-gray-900">Deploy</a>
+            <a href="docs.html" class="block text-gray-600 hover:text-gray-900">Docs</a>
+            <a href="https://github.com/srnichols/OpenBrain" class="block text-gray-600 hover:text-gray-900">GitHub</a>
+        </div>
+    </nav>
+
+    <!-- Hero -->
+    <section class="pt-32 pb-20 px-6">
+        <div class="max-w-4xl mx-auto text-center">
+            <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-brand-50 text-brand-700 text-sm font-medium mb-8">
+                <span class="w-2 h-2 rounded-full bg-brand-500 animate-pulse"></span>
+                Open Source &middot; Self-Hosted &middot; MCP Native
+            </div>
+            <h1 class="text-5xl md:text-6xl font-bold tracking-tight leading-tight mb-6">
+                Persistent memory for<br>
+                <span class="text-brand-600">every AI tool</span> you use
+            </h1>
+            <p class="text-xl text-gray-500 max-w-2xl mx-auto mb-4 leading-relaxed">
+                A unified semantic memory backend that works across Claude, ChatGPT, Cursor, Copilot, Gemini, and more. Search by meaning, not keywords. Your data stays yours.
+            </p>
+            <p class="text-sm text-gray-400 mb-10">Based on the architecture by <a href="https://www.natebjones.com" class="text-brand-600 hover:underline">Nate B Jones</a></p>
+            <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                <a href="#deploy" class="inline-flex items-center justify-center px-8 py-3 rounded-lg bg-gray-900 text-white font-medium hover:bg-gray-800 transition">
+                    Get Started
+                    <svg class="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+                </a>
+                <a href="docs.html" class="inline-flex items-center justify-center px-8 py-3 rounded-lg border border-gray-200 text-gray-700 font-medium hover:bg-gray-50 transition">
+                    Read the Docs
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Stats bar -->
+    <section class="border-y border-gray-100 bg-gray-50/50">
+        <div class="max-w-6xl mx-auto px-6 py-12 grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
+            <div>
+                <div class="text-3xl font-bold text-gray-900">7</div>
+                <div class="text-sm text-gray-500 mt-1">MCP Tools</div>
+            </div>
+            <div>
+                <div class="text-3xl font-bold text-gray-900">9+</div>
+                <div class="text-sm text-gray-500 mt-1">AI Clients</div>
+            </div>
+            <div>
+                <div class="text-3xl font-bold text-gray-900">4</div>
+                <div class="text-sm text-gray-500 mt-1">Deploy Options</div>
+            </div>
+            <div>
+                <div class="text-3xl font-bold text-gray-900">$0</div>
+                <div class="text-sm text-gray-500 mt-1">Self-Hosted Cost</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section id="features" class="py-24 px-6">
+        <div class="max-w-6xl mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl font-bold mb-4">Everything your AI tools need to remember</h2>
+                <p class="text-gray-500 max-w-2xl mx-auto">Open Brain captures decisions, preferences, project context, and people — then surfaces them exactly when your AI needs them.</p>
+            </div>
+            <div class="grid md:grid-cols-3 gap-8">
+                <!-- Feature 1 -->
+                <div class="p-6 rounded-xl border border-gray-100 hover:border-brand-200 hover:shadow-sm transition">
+                    <div class="w-10 h-10 rounded-lg bg-brand-50 flex items-center justify-center text-brand-600 mb-4">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                    </div>
+                    <h3 class="font-semibold mb-2">Semantic Search</h3>
+                    <p class="text-sm text-gray-500 leading-relaxed">Search by meaning, not keywords. pgvector + HNSW indexing finds related thoughts even when the exact words don't match.</p>
+                </div>
+                <!-- Feature 2 -->
+                <div class="p-6 rounded-xl border border-gray-100 hover:border-brand-200 hover:shadow-sm transition">
+                    <div class="w-10 h-10 rounded-lg bg-brand-50 flex items-center justify-center text-brand-600 mb-4">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/></svg>
+                    </div>
+                    <h3 class="font-semibold mb-2">Auto Metadata</h3>
+                    <p class="text-sm text-gray-500 leading-relaxed">Every thought is automatically classified: type, topics, people mentioned, action items, dates. No manual tagging needed.</p>
+                </div>
+                <!-- Feature 3 -->
+                <div class="p-6 rounded-xl border border-gray-100 hover:border-brand-200 hover:shadow-sm transition">
+                    <div class="w-10 h-10 rounded-lg bg-brand-50 flex items-center justify-center text-brand-600 mb-4">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                    </div>
+                    <h3 class="font-semibold mb-2">MCP Native</h3>
+                    <p class="text-sm text-gray-500 leading-relaxed">Built on Anthropic's Model Context Protocol. Works with any MCP-compatible client — Claude, ChatGPT, Cursor, Copilot, Gemini.</p>
+                </div>
+                <!-- Feature 4 -->
+                <div class="p-6 rounded-xl border border-gray-100 hover:border-brand-200 hover:shadow-sm transition">
+                    <div class="w-10 h-10 rounded-lg bg-brand-50 flex items-center justify-center text-brand-600 mb-4">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                    </div>
+                    <h3 class="font-semibold mb-2">Private & Self-Hosted</h3>
+                    <p class="text-sm text-gray-500 leading-relaxed">Run on your own hardware with Docker, K8s, or your homelab. Your memories never leave your infrastructure.</p>
+                </div>
+                <!-- Feature 5 -->
+                <div class="p-6 rounded-xl border border-gray-100 hover:border-brand-200 hover:shadow-sm transition">
+                    <div class="w-10 h-10 rounded-lg bg-brand-50 flex items-center justify-center text-brand-600 mb-4">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
+                    </div>
+                    <h3 class="font-semibold mb-2">PostgreSQL + pgvector</h3>
+                    <p class="text-sm text-gray-500 leading-relaxed">Battle-tested Postgres with pgvector for embeddings. Single table, rich JSONB metadata, HNSW indexing for fast retrieval.</p>
+                </div>
+                <!-- Feature 6 -->
+                <div class="p-6 rounded-xl border border-gray-100 hover:border-brand-200 hover:shadow-sm transition">
+                    <div class="w-10 h-10 rounded-lg bg-brand-50 flex items-center justify-center text-brand-600 mb-4">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                    </div>
+                    <h3 class="font-semibold mb-2">5-Minute Quickstart</h3>
+                    <p class="text-sm text-gray-500 leading-relaxed">Docker Compose gets you running in minutes. Or choose Supabase cloud, Azure managed, or Kubernetes for production.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- How It Works -->
+    <section id="how-it-works" class="py-24 px-6 bg-gray-50/50">
+        <div class="max-w-6xl mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl font-bold mb-4">How it works</h2>
+                <p class="text-gray-500 max-w-2xl mx-auto">One architecture, every AI client. Thoughts flow in, get embedded and tagged, and are instantly searchable.</p>
+            </div>
+            <div class="max-w-3xl mx-auto">
+                <!-- Step 1 -->
+                <div class="flex gap-6 mb-12">
+                    <div class="flex flex-col items-center">
+                        <div class="w-10 h-10 rounded-full bg-brand-600 text-white flex items-center justify-center font-bold text-sm shrink-0">1</div>
+                        <div class="w-px h-full bg-brand-200 mt-2"></div>
+                    </div>
+                    <div class="pb-8">
+                        <h3 class="font-semibold text-lg mb-2">Capture</h3>
+                        <p class="text-gray-500">Your AI tool calls <code class="text-sm bg-gray-100 px-1.5 py-0.5 rounded">capture_thought</code> via MCP. You can also capture via Slack webhook, REST API, or bulk import from Notion, Obsidian, and other tools.</p>
+                    </div>
+                </div>
+                <!-- Step 2 -->
+                <div class="flex gap-6 mb-12">
+                    <div class="flex flex-col items-center">
+                        <div class="w-10 h-10 rounded-full bg-brand-600 text-white flex items-center justify-center font-bold text-sm shrink-0">2</div>
+                        <div class="w-px h-full bg-brand-200 mt-2"></div>
+                    </div>
+                    <div class="pb-8">
+                        <h3 class="font-semibold text-lg mb-2">Embed & Tag</h3>
+                        <p class="text-gray-500">The thought is embedded into a vector (via OpenRouter or local Ollama) and an LLM extracts metadata — type, topics, people, action items — all in parallel, typically under 3 seconds.</p>
+                    </div>
+                </div>
+                <!-- Step 3 -->
+                <div class="flex gap-6 mb-12">
+                    <div class="flex flex-col items-center">
+                        <div class="w-10 h-10 rounded-full bg-brand-600 text-white flex items-center justify-center font-bold text-sm shrink-0">3</div>
+                        <div class="w-px h-full bg-brand-200 mt-2"></div>
+                    </div>
+                    <div class="pb-8">
+                        <h3 class="font-semibold text-lg mb-2">Store</h3>
+                        <p class="text-gray-500">Stored in PostgreSQL + pgvector. Single <code class="text-sm bg-gray-100 px-1.5 py-0.5 rounded">thoughts</code> table with HNSW index for sub-millisecond vector search, GIN index for metadata filtering.</p>
+                    </div>
+                </div>
+                <!-- Step 4 -->
+                <div class="flex gap-6">
+                    <div class="flex flex-col items-center">
+                        <div class="w-10 h-10 rounded-full bg-brand-600 text-white flex items-center justify-center font-bold text-sm shrink-0">4</div>
+                    </div>
+                    <div>
+                        <h3 class="font-semibold text-lg mb-2">Recall</h3>
+                        <p class="text-gray-500">Any MCP client calls <code class="text-sm bg-gray-100 px-1.5 py-0.5 rounded">search_thoughts</code> to find memories by meaning. Your decision from three weeks ago? Found instantly, even if the words are different.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- MCP Tools -->
+    <section class="py-24 px-6">
+        <div class="max-w-6xl mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl font-bold mb-4">7 MCP tools, one protocol</h2>
+                <p class="text-gray-500 max-w-2xl mx-auto">Every operation is available as an MCP tool and as a REST endpoint.</p>
+            </div>
+            <div class="grid md:grid-cols-2 gap-4 max-w-4xl mx-auto">
+                <div class="flex items-start gap-3 p-4 rounded-lg border border-gray-100">
+                    <code class="text-xs bg-brand-50 text-brand-700 px-2 py-1 rounded font-mono shrink-0">search_thoughts</code>
+                    <span class="text-sm text-gray-500">Semantic vector search — find by meaning</span>
+                </div>
+                <div class="flex items-start gap-3 p-4 rounded-lg border border-gray-100">
+                    <code class="text-xs bg-brand-50 text-brand-700 px-2 py-1 rounded font-mono shrink-0">capture_thought</code>
+                    <span class="text-sm text-gray-500">Store a thought with auto-embedding</span>
+                </div>
+                <div class="flex items-start gap-3 p-4 rounded-lg border border-gray-100">
+                    <code class="text-xs bg-brand-50 text-brand-700 px-2 py-1 rounded font-mono shrink-0">capture_thoughts</code>
+                    <span class="text-sm text-gray-500">Batch capture multiple thoughts at once</span>
+                </div>
+                <div class="flex items-start gap-3 p-4 rounded-lg border border-gray-100">
+                    <code class="text-xs bg-brand-50 text-brand-700 px-2 py-1 rounded font-mono shrink-0">list_thoughts</code>
+                    <span class="text-sm text-gray-500">Filter by type, topic, person, or date</span>
+                </div>
+                <div class="flex items-start gap-3 p-4 rounded-lg border border-gray-100">
+                    <code class="text-xs bg-brand-50 text-brand-700 px-2 py-1 rounded font-mono shrink-0">update_thought</code>
+                    <span class="text-sm text-gray-500">Edit content and re-embed</span>
+                </div>
+                <div class="flex items-start gap-3 p-4 rounded-lg border border-gray-100">
+                    <code class="text-xs bg-brand-50 text-brand-700 px-2 py-1 rounded font-mono shrink-0">delete_thought</code>
+                    <span class="text-sm text-gray-500">Remove a thought by ID</span>
+                </div>
+                <div class="flex items-start gap-3 p-4 rounded-lg border border-gray-100 md:col-span-2 md:max-w-[calc(50%-0.5rem)]">
+                    <code class="text-xs bg-brand-50 text-brand-700 px-2 py-1 rounded font-mono shrink-0">thought_stats</code>
+                    <span class="text-sm text-gray-500">Aggregate stats, top topics, top people</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Deploy -->
+    <section id="deploy" class="py-24 px-6 bg-gray-50/50">
+        <div class="max-w-6xl mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl font-bold mb-4">Deploy your way</h2>
+                <p class="text-gray-500 max-w-2xl mx-auto">From a 5-minute Docker quickstart to a full Kubernetes homelab setup.</p>
+            </div>
+            <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <!-- Docker -->
+                <div class="bg-white p-6 rounded-xl border border-gray-100 hover:shadow-md transition">
+                    <div class="text-2xl mb-3">🐳</div>
+                    <h3 class="font-semibold mb-1">Docker Compose</h3>
+                    <p class="text-sm text-gray-500 mb-4">Up and running in 5 minutes. PostgreSQL + pgvector + Ollama + API in one command.</p>
+                    <div class="text-xs text-gray-400 font-mono bg-gray-50 p-2 rounded">docker compose up -d</div>
+                </div>
+                <!-- Supabase -->
+                <div class="bg-white p-6 rounded-xl border border-gray-100 hover:shadow-md transition">
+                    <div class="text-2xl mb-3">⚡</div>
+                    <h3 class="font-semibold mb-1">Supabase Cloud</h3>
+                    <p class="text-sm text-gray-500 mb-4">Managed PostgreSQL + Edge Functions. ~$0.10-$0.30/month on the free tier.</p>
+                    <div class="text-xs text-brand-600 font-medium">Serverless</div>
+                </div>
+                <!-- K8s -->
+                <div class="bg-white p-6 rounded-xl border border-gray-100 hover:shadow-md transition">
+                    <div class="text-2xl mb-3">☸️</div>
+                    <h3 class="font-semibold mb-1">Kubernetes</h3>
+                    <p class="text-sm text-gray-500 mb-4">Full homelab deployment with Tailscale, MetalLB, Ollama GPU, and monitoring.</p>
+                    <div class="text-xs text-brand-600 font-medium">$0/month add-on</div>
+                </div>
+                <!-- Azure -->
+                <div class="bg-white p-6 rounded-xl border border-gray-100 hover:shadow-md transition">
+                    <div class="text-2xl mb-3">☁️</div>
+                    <h3 class="font-semibold mb-1">Azure Managed</h3>
+                    <p class="text-sm text-gray-500 mb-4">Azure Container Apps + Azure Database for PostgreSQL. Enterprise-ready.</p>
+                    <div class="text-xs text-brand-600 font-medium">Managed</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Clients -->
+    <section class="py-24 px-6">
+        <div class="max-w-6xl mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl font-bold mb-4">Works with the tools you already use</h2>
+                <p class="text-gray-500 max-w-2xl mx-auto">One memory backend, every AI client. Open Brain speaks MCP so your tools don't need to.</p>
+            </div>
+            <div class="flex flex-wrap justify-center gap-6 text-sm text-gray-600">
+                <div class="px-5 py-3 rounded-lg border border-gray-100 bg-white">Claude Desktop</div>
+                <div class="px-5 py-3 rounded-lg border border-gray-100 bg-white">Claude Code</div>
+                <div class="px-5 py-3 rounded-lg border border-gray-100 bg-white">VS Code Copilot</div>
+                <div class="px-5 py-3 rounded-lg border border-gray-100 bg-white">Cursor</div>
+                <div class="px-5 py-3 rounded-lg border border-gray-100 bg-white">ChatGPT</div>
+                <div class="px-5 py-3 rounded-lg border border-gray-100 bg-white">Gemini</div>
+                <div class="px-5 py-3 rounded-lg border border-gray-100 bg-white">Grok</div>
+                <div class="px-5 py-3 rounded-lg border border-gray-100 bg-white">Windsurf</div>
+                <div class="px-5 py-3 rounded-lg border border-gray-100 bg-white">Any MCP Client</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Quickstart code block -->
+    <section class="py-24 px-6 bg-gray-50/50">
+        <div class="max-w-4xl mx-auto">
+            <div class="text-center mb-12">
+                <h2 class="text-3xl font-bold mb-4">Quick start</h2>
+                <p class="text-gray-500">Clone, configure, run. Three commands to persistent AI memory.</p>
+            </div>
+            <div class="bg-gray-900 rounded-xl p-6 text-sm font-mono text-gray-300 overflow-x-auto">
+                <div class="text-gray-500 mb-4"># Clone and start</div>
+                <div><span class="text-brand-400">$</span> git clone https://github.com/srnichols/OpenBrain.git</div>
+                <div><span class="text-brand-400">$</span> cd OpenBrain</div>
+                <div><span class="text-brand-400">$</span> cp .env.example .env   <span class="text-gray-500"># edit with your keys</span></div>
+                <div><span class="text-brand-400">$</span> docker compose up -d</div>
+                <div class="text-gray-500 mt-6 mb-4"># Add to Claude Desktop config</div>
+                <div class="text-green-400">{</div>
+                <div class="text-green-400">  "mcpServers": {</div>
+                <div class="text-green-400">    "openbrain": {</div>
+                <div class="text-green-400">      "command": "npx",</div>
+                <div class="text-green-400">      "args": ["-y", "mcp-remote", "http://localhost:8080/sse?key=YOUR_KEY"]</div>
+                <div class="text-green-400">    }</div>
+                <div class="text-green-400">  }</div>
+                <div class="text-green-400">}</div>
+                <div class="text-gray-500 mt-6 mb-4"># Verify</div>
+                <div><span class="text-brand-400">$</span> curl http://localhost:8000/health</div>
+                <div class="text-green-400">{"status":"healthy","service":"open-brain-api"}</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="border-t border-gray-100 py-12 px-6">
+        <div class="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6 text-sm text-gray-400">
+            <div class="flex items-center gap-2">
+                <img src="favicon.svg" alt="" class="w-5 h-5">
+                <span>Open Brain</span>
+                <span>&middot; Architecture by <a href="https://www.natebjones.com" class="text-gray-600 hover:text-gray-900">Nate B Jones</a></span>
+                <span>&middot; Built by <a href="https://github.com/srnichols" class="text-gray-600 hover:text-gray-900">srnichols</a></span>
+            </div>
+            <div class="flex gap-6">
+                <a href="docs.html" class="hover:text-gray-600 transition">Docs</a>
+                <a href="https://github.com/srnichols/OpenBrain" class="hover:text-gray-600 transition">GitHub</a>
+                <a href="https://github.com/srnichols/OpenBrain/blob/master/LICENSE" class="hover:text-gray-600 transition">MIT License</a>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // Mobile menu toggle
+        const btn = document.getElementById('mobile-menu-btn');
+        const menu = document.getElementById('mobile-menu');
+        btn.addEventListener('click', () => menu.classList.toggle('hidden'));
+        // Close mobile menu on link click
+        menu.querySelectorAll('a').forEach(a => a.addEventListener('click', () => menu.classList.add('hidden')));
+    </script>
+</body>
+</html>

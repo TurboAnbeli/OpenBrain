@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="100%" stop-color="#7e22ce"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="200" y1="100" x2="350" y2="400" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#e9d5ff" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#7e22ce" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded square background -->
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+
+  <!-- Subtle glow -->
+  <circle cx="256" cy="240" r="160" fill="url(#glow)"/>
+
+  <!-- Brain - left hemisphere -->
+  <path d="M180 280c-28 0-48-20-48-48 0-18 10-34 26-42-4-8-6-16-6-26 0-30 24-54 54-54 6 0 12 1 18 3 10-18 30-30 52-30v197c-20 0-38-8-52-20-12 12-28 20-44 20z"
+        fill="white" fill-opacity="0.95"/>
+
+  <!-- Brain - right hemisphere -->
+  <path d="M332 280c28 0 48-20 48-48 0-18-10-34-26-42 4-8 6-16 6-26 0-30-24-54-54-54-6 0-12 1-18 3-10-18-30-30-52-30v197c20 0 38-8 52-20 12 12 28 20 44 20z"
+        fill="white" fill-opacity="0.95"/>
+
+  <!-- Brain stem -->
+  <path d="M244 280h24v40c0 12-5 24-12 32-7-8-12-20-12-32v-40z"
+        fill="white" fill-opacity="0.85"/>
+
+  <!-- Neural connection dots -->
+  <circle cx="220" cy="180" r="6" fill="#7e22ce" fill-opacity="0.6"/>
+  <circle cx="200" cy="220" r="5" fill="#7e22ce" fill-opacity="0.5"/>
+  <circle cx="240" cy="210" r="4" fill="#7e22ce" fill-opacity="0.4"/>
+  <circle cx="292" cy="180" r="6" fill="#7e22ce" fill-opacity="0.6"/>
+  <circle cx="312" cy="220" r="5" fill="#7e22ce" fill-opacity="0.5"/>
+  <circle cx="272" cy="210" r="4" fill="#7e22ce" fill-opacity="0.4"/>
+
+  <!-- Connection lines (neural pathways) -->
+  <line x1="220" y1="180" x2="240" y2="210" stroke="#7e22ce" stroke-width="1.5" stroke-opacity="0.3"/>
+  <line x1="200" y1="220" x2="240" y2="210" stroke="#7e22ce" stroke-width="1.5" stroke-opacity="0.3"/>
+  <line x1="292" y1="180" x2="272" y2="210" stroke="#7e22ce" stroke-width="1.5" stroke-opacity="0.3"/>
+  <line x1="312" y1="220" x2="272" y2="210" stroke="#7e22ce" stroke-width="1.5" stroke-opacity="0.3"/>
+  <line x1="240" y1="210" x2="272" y2="210" stroke="#7e22ce" stroke-width="2" stroke-opacity="0.4"/>
+
+  <!-- Orbiting data points (memory nodes) -->
+  <circle cx="160" cy="150" r="8" fill="white" fill-opacity="0.4"/>
+  <circle cx="352" cy="150" r="8" fill="white" fill-opacity="0.4"/>
+  <circle cx="140" cy="260" r="6" fill="white" fill-opacity="0.3"/>
+  <circle cx="372" cy="260" r="6" fill="white" fill-opacity="0.3"/>
+
+  <!-- Connection arcs from memory nodes to brain -->
+  <path d="M168 150q20 10 30 30" stroke="white" stroke-width="1.5" stroke-opacity="0.3" fill="none"/>
+  <path d="M344 150q-20 10-30 30" stroke="white" stroke-width="1.5" stroke-opacity="0.3" fill="none"/>
+  <path d="M146 258q16-4 30-10" stroke="white" stroke-width="1.5" stroke-opacity="0.25" fill="none"/>
+  <path d="M366 258q-16-4-30-10" stroke="white" stroke-width="1.5" stroke-opacity="0.25" fill="none"/>
+
+  <!-- "Open Brain" text -->
+  <text x="256" y="420" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-weight="700" font-size="52" fill="white" letter-spacing="2">OPEN BRAIN</text>
+</svg>
