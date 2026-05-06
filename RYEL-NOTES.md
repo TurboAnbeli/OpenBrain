@@ -130,6 +130,14 @@ of which collide with upstream files, so merges are clean.
   project's "host pristine" pattern
 - Adminer added for visual DB browsing in lieu of self-hosted Supabase Studio
 - `.env` uses a strong random `DB_PASSWORD` and 64-char hex `MCP_ACCESS_KEY`
+- **`OLLAMA_ENDPOINT` must be `http://ollama:11434`, not `http://localhost:11434`.**
+  Upstream `.env.example` documents `localhost`, which is correct when the api
+  runs on the host but **breaks inside the api container** — `localhost` there
+  resolves to the api container itself, not the ollama sibling. The api emits
+  a `502 fetch failed` on every capture/search until the endpoint is fixed.
+  Use the compose network DNS name `ollama` (see `docker-compose.override.yml`
+  for the full DNS map). Don't edit upstream `.env.example` — it'd conflict
+  on the next `git merge upstream/master`.
 
 ## Column-level encryption
 
