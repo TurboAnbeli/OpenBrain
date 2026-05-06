@@ -1,0 +1,71 @@
+# Open Brain — local overrides for ryel
+#
+# This file is loaded automatically by `docker compose` alongside
+# docker-compose.yml. It customizes the upstream srnichols/OpenBrain stack
+# for the ryel environment:
+#
+#   - Loopback-only host port bindings (no LAN exposure)
+#   - Non-default host ports to avoid collision with ryel-postgres (5432)
+#     and other tools
+#   - Adminer added as a lightweight web DB browser
+#   - Ollama added as a sibling container for fully-local embeddings + LLM
+#     extraction. Mac stays clean; everything runs in OrbStack.
+#
+# Internal compose network DNS:
+#   - postgres:5432, api:8000, api:8080, ollama:11434, adminer:8080
+#
+# Host ports (loopback only):
+#   - 127.0.0.1:5433   → postgres        (5432 reserved for ryel-postgres)
+#   - 127.0.0.1:8001   → api REST
+#   - 127.0.0.1:8081   → api MCP (SSE)
+#   - 127.0.0.1:8082   → adminer web UI
+#   - 127.0.0.1:11434  → ollama API
+
+services:
+  postgres:
+    # !override replaces the upstream `ports:` list entirely. Without it,
+    # Compose Spec merges (appends) the lists and we'd still try to bind
+    # the upstream's 5432:5432 in addition to our 5433:5432 mapping.
+    ports: !override
+      - "127.0.0.1:5433:5432"
+
+  api:
+    ports: !override
+      - "127.0.0.1:8001:8000"
+      - "127.0.0.1:8081:8080"
+    environment:
+      CIPHER_KEY_PATH: /etc/openbrain/cipher.key
+    volumes:
+      # Cipher key for column-level encryption of thoughts.content_enc.
+      # Mounted read-only from ~/.config/ryel/cipher.key (mode 600 on host).
+      - ${HOME}/.config/ryel/cipher.key:/etc/openbrain/cipher.key:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: openbrain-ollama
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  adminer:
+    image: adminer:latest
+    container_name: openbrain-adminer
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8082:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DESIGN: dracula
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  ollama_data:

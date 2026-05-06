@@ -57,6 +57,16 @@ export function createApi(): Hono {
       project?: string;
       created_by?: string;
       supersedes?: string;
+      // ryel-local: when present, the client is supplying pre-extracted
+      // metadata (typically from a stronger LLM than the one running in
+      // openbrain-ollama). Skip the local extractMetadata step.
+      metadata?: {
+        type?: string;
+        topics?: string[];
+        people?: string[];
+        action_items?: string[];
+        dates?: string[];
+      };
     }>();
 
     if (!body.content || body.content.trim().length === 0) {
@@ -68,10 +78,8 @@ export function createApi(): Hono {
     }
 
     try {
-      const [embedding, metadata] = await Promise.all([
-        embedder.generateEmbedding(body.content),
-        embedder.extractMetadata(body.content),
-      ]);
+      const embedding = await embedder.generateEmbedding(body.content);
+      const metadata = body.metadata ?? (await embedder.extractMetadata(body.content));
 
       const fullMetadata = { ...metadata, source: body.source ?? "api" };
       const result = await insertThought(
@@ -100,7 +108,17 @@ export function createApi(): Hono {
 
   app.post("/memories/batch", async (c) => {
     const body = await c.req.json<{
-      thoughts: Array<{ content: string }>;
+      thoughts: Array<{
+        content: string;
+        // ryel-local: optional client-supplied metadata; skip local extraction.
+        metadata?: {
+          type?: string;
+          topics?: string[];
+          people?: string[];
+          action_items?: string[];
+          dates?: string[];
+        };
+      }>;
       project?: string;
       created_by?: string;
       source?: string;
@@ -121,10 +139,8 @@ export function createApi(): Hono {
 
       const processed: BatchThoughtInput[] = await Promise.all(
         body.thoughts.map(async (t) => {
-          const [embedding, metadata] = await Promise.all([
-            embedder.generateEmbedding(t.content),
-            embedder.extractMetadata(t.content),
-          ]);
+          const embedding = await embedder.generateEmbedding(t.content);
+          const metadata = t.metadata ?? (await embedder.extractMetadata(t.content));
           return {
             content: t.content,
             embedding,

@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd schedule for monthly Open Brain backup verification.
+  Runs the round-trip restore + count comparison on the 1st of every
+  month at 04:30 (45 min after the daily backup at 03:45 — gives the
+  daily run plenty of room to finish first).
+
+  Install:
+    cp tools/openbrain/com.ryel.openbrain-verify.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/com.ryel.openbrain-verify.plist
+
+  Verify it's loaded:
+    launchctl list | grep ryel.openbrain-verify
+
+  Trigger immediately (test):
+    launchctl start com.ryel.openbrain-verify
+
+  Disable:
+    launchctl unload -w ~/Library/LaunchAgents/com.ryel.openbrain-verify.plist
+
+  Logs:
+    ~/.openbrain-backups/verify.log         — full run history
+    ~/.openbrain-backups/verify.log.summary — one PASS/FAIL line per run
+    ~/.openbrain-backups/launchd.verify.{out,err}.log — process stdio
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ryel.openbrain-verify</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/ryan/dev/ryel/tools/openbrain/verify.sh</string>
+    </array>
+
+    <!-- 1st of every month at 04:30. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Day</key>
+        <integer>1</integer>
+        <key>Hour</key>
+        <integer>4</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/ryan/.openbrain-backups/launchd.verify.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/ryan/.openbrain-backups/launchd.verify.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/ryan</string>
+    </dict>
+</dict>
+</plist>

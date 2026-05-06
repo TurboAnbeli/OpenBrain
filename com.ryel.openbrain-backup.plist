@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd schedule for nightly Open Brain backup.
+  Mirrors com.ryel.postgres-backup but runs 30 minutes later so the two
+  jobs don't compete for Docker / disk I/O.
+
+  Install:
+    cp tools/openbrain/com.ryel.openbrain-backup.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/com.ryel.openbrain-backup.plist
+
+  Verify:
+    launchctl list | grep ryel.openbrain-backup
+
+  Trigger immediately (test):
+    launchctl start com.ryel.openbrain-backup
+
+  Disable:
+    launchctl unload -w ~/Library/LaunchAgents/com.ryel.openbrain-backup.plist
+
+  Logs:
+    ~/.openbrain-backups/launchd.out.log
+    ~/.openbrain-backups/launchd.err.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ryel.openbrain-backup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/ryan/dev/ryel/tools/openbrain/backup.sh</string>
+    </array>
+
+    <!-- Daily at 03:45 — 30 min after the ryel-postgres backup at 03:15. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>45</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/ryan/.openbrain-backups/launchd.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/ryan/.openbrain-backups/launchd.err.log</string>
+
+    <!-- Make sure docker, age, etc. are on PATH for cron-like context -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/ryan</string>
+    </dict>
+</dict>
+</plist>

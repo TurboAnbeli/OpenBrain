@@ -3,11 +3,42 @@
  * Singleton pool with pgvector support.
  */
 
+import fs from "node:fs";
 import pg from "pg";
 
 const { Pool } = pg;
 
 let pool: pg.Pool | null = null;
+let cipherKey: string | null = null;
+
+/**
+ * Read the symmetric cipher key for column-level content encryption.
+ * Cached after first read. Path comes from CIPHER_KEY_PATH (typically
+ * a docker-mounted file at /etc/openbrain/cipher.key, sourced from
+ * the host at ~/.config/ryel/cipher.key, mode 600).
+ *
+ * Throws on missing or short keys — an unencrypted writable system is
+ * a config error, not a state we should silently fall through.
+ */
+export function getCipherKey(): string {
+  if (cipherKey) return cipherKey;
+  const path = process.env.CIPHER_KEY_PATH;
+  if (!path) {
+    throw new Error(
+      "CIPHER_KEY_PATH is not set. Refusing to start: column encryption requires a key. " +
+        "Generate one at ~/.config/ryel/cipher.key and mount it via docker-compose.override.yml."
+    );
+  }
+  const raw = fs.readFileSync(path, "utf8").trim();
+  if (raw.length < 32) {
+    throw new Error(
+      `Cipher key at ${path} is too short (${raw.length} chars). ` +
+        "Use at least 32 base64 characters (24 bytes of entropy)."
+    );
+  }
+  cipherKey = raw;
+  return raw;
+}
 
 export function getPool(): pg.Pool {
   if (!pool) {
@@ -38,10 +69,14 @@ export function getPool(): pg.Pool {
 }
 
 export async function initializeDatabase(): Promise<void> {
+  // Fail fast at boot if cipher key isn't loadable, before serving traffic.
+  getCipherKey();
+
   const db = getPool();
   const client = await db.connect();
   try {
     await client.query("CREATE EXTENSION IF NOT EXISTS vector");
+    await client.query("CREATE EXTENSION IF NOT EXISTS pgcrypto");
     const result = await client.query("SELECT COUNT(*) FROM thoughts");
     console.log(`[db] Connected. ${result.rows[0]?.count ?? 0} thoughts in database.`);
   } finally {

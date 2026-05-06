@@ -1,9 +1,17 @@
 /**
  * Database queries for thoughts: insert, search, list, stats.
  * All queries use parameterized SQL (no interpolation).
+ *
+ * ─── ryel-local: column-level encryption ────────────────────────────
+ * `thoughts.content` (plaintext) was replaced by `thoughts.content_enc`
+ * (bytea, pgcrypto AES via PGP message format). Every read decrypts via
+ * pgp_sym_decrypt(content_enc, $cipher_key); every write encrypts via
+ * pgp_sym_encrypt($plaintext, $cipher_key). The cipher key is loaded
+ * once at boot from CIPHER_KEY_PATH (see connection.ts:getCipherKey).
  */
 
 import type pg from "pg";
+import { getCipherKey } from "./connection.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -61,12 +69,23 @@ export async function insertThought(
   created_by?: string
 ): Promise<ThoughtRow> {
   const embeddingStr = `[${embedding.join(",")}]`;
+  const key = getCipherKey();
 
   const { rows } = await pool.query<ThoughtRow>(
-    `INSERT INTO thoughts (content, embedding, metadata, project, supersedes, created_by)
-     VALUES ($1, $2::vector, $3::jsonb, $4, $5, $6)
-     RETURNING id, content, metadata, project, created_by, archived, supersedes, created_at`,
-    [content, embeddingStr, JSON.stringify(metadata), project ?? null, supersedes ?? null, created_by ?? null]
+    `INSERT INTO thoughts (content_enc, embedding, metadata, project, supersedes, created_by)
+     VALUES (pgp_sym_encrypt($1, $7), $2::vector, $3::jsonb, $4, $5, $6)
+     RETURNING id,
+               pgp_sym_decrypt(content_enc, $7)::text AS content,
+               metadata, project, created_by, archived, supersedes, created_at`,
+    [
+      content,
+      embeddingStr,
+      JSON.stringify(metadata),
+      project ?? null,
+      supersedes ?? null,
+      created_by ?? null,
+      key,
+    ]
   );
 
   return rows[0]!;
@@ -85,10 +104,14 @@ export async function searchThoughts(
   created_by?: string
 ): Promise<SearchResult[]> {
   const embeddingStr = `[${queryEmbedding.join(",")}]`;
+  const key = getCipherKey();
 
   const { rows } = await pool.query<SearchResult>(
+    // match_thoughts() signature was extended to take cipher_key as the
+    // second positional parameter (see migration 003). It returns content
+    // already decrypted, so callers see the same shape as before.
     `SELECT id, content, metadata, similarity, created_at
-     FROM match_thoughts($1::vector, $2, $3, $4::jsonb, $5, $6, $7)`,
+     FROM match_thoughts($1::vector, $8, $2, $3, $4::jsonb, $5, $6, $7)`,
     [
       embeddingStr,
       threshold,
@@ -97,6 +120,7 @@ export async function searchThoughts(
       project ?? null,
       include_archived ?? false,
       created_by ?? null,
+      key,
     ]
   );
 
@@ -159,14 +183,22 @@ export async function listThoughts(
   idx++;
   params.push(limit);
 
+  // Cipher key is the last bound parameter — pgp_sym_decrypt reads it
+  // by position. listThoughts builds parameters dynamically so we append
+  // and reference it with $${idx + 1}.
+  idx++;
+  params.push(getCipherKey());
+
   const whereClause = conditions.length > 0 ? conditions.join(" AND ") : "TRUE";
 
   const { rows } = await pool.query<ThoughtRow>(
-    `SELECT id, content, metadata, created_by, created_at
+    `SELECT id,
+            pgp_sym_decrypt(content_enc, $${idx})::text AS content,
+            metadata, created_by, created_at
      FROM thoughts
      WHERE ${whereClause}
      ORDER BY created_at DESC
-     LIMIT $${idx}`,
+     LIMIT $${idx - 1}`,
     params
   );
 
@@ -290,13 +322,18 @@ export async function updateThought(
   metadata: ThoughtMetadata
 ): Promise<ThoughtRow> {
   const embeddingStr = `[${embedding.join(",")}]`;
+  const key = getCipherKey();
 
   const { rows, rowCount } = await pool.query<ThoughtRow>(
     `UPDATE thoughts
-     SET content = $2, embedding = $3::vector, metadata = $4::jsonb
+     SET content_enc = pgp_sym_encrypt($2, $5),
+         embedding = $3::vector,
+         metadata = $4::jsonb
      WHERE id = $1
-     RETURNING id, content, metadata, project, archived, supersedes, created_at`,
-    [id, content, embeddingStr, JSON.stringify(metadata)]
+     RETURNING id,
+               pgp_sym_decrypt(content_enc, $5)::text AS content,
+               metadata, project, archived, supersedes, created_at`,
+    [id, content, embeddingStr, JSON.stringify(metadata), key]
   );
 
   if (!rowCount || rowCount === 0) {
@@ -342,6 +379,7 @@ export async function batchInsertThoughts(
 ): Promise<ThoughtRow[]> {
   const client = await pool.connect();
   const results: ThoughtRow[] = [];
+  const key = getCipherKey();
 
   try {
     await client.query("BEGIN");
@@ -350,15 +388,18 @@ export async function batchInsertThoughts(
       const embeddingStr = `[${thought.embedding.join(",")}]`;
 
       const { rows } = await client.query<ThoughtRow>(
-        `INSERT INTO thoughts (content, embedding, metadata, project, created_by)
-         VALUES ($1, $2::vector, $3::jsonb, $4, $5)
-         RETURNING id, content, metadata, project, created_by, archived, supersedes, created_at`,
+        `INSERT INTO thoughts (content_enc, embedding, metadata, project, created_by)
+         VALUES (pgp_sym_encrypt($1, $6), $2::vector, $3::jsonb, $4, $5)
+         RETURNING id,
+                   pgp_sym_decrypt(content_enc, $6)::text AS content,
+                   metadata, project, created_by, archived, supersedes, created_at`,
         [
           thought.content,
           embeddingStr,
           JSON.stringify(thought.metadata),
           thought.project ?? null,
           thought.created_by ?? null,
+          key,
         ]
       );
 
