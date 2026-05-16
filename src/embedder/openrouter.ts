@@ -24,7 +24,7 @@ export class OpenRouterEmbedder implements Embedder {
       throw new Error("OPENROUTER_API_KEY is required when using openrouter provider");
     }
 
-    console.log(
+    console.error(
       `[embedder] OpenRouter (embed: ${this.embedModel}, llm: ${this.llmModel})`
     );
   }

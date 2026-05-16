@@ -61,7 +61,7 @@ export function getPool(): pg.Pool {
       console.error("[db] Unexpected pool error:", err.message);
     });
 
-    console.log(
+    console.error(
       `[db] Pool created → ${process.env.DB_HOST ?? "openbrain-postgres"}:${process.env.DB_PORT ?? "5432"}/${process.env.DB_NAME ?? "openbrain"}`
     );
   }
@@ -78,7 +78,7 @@ export async function initializeDatabase(): Promise<void> {
     await client.query("CREATE EXTENSION IF NOT EXISTS vector");
     await client.query("CREATE EXTENSION IF NOT EXISTS pgcrypto");
     const result = await client.query("SELECT COUNT(*) FROM thoughts");
-    console.log(`[db] Connected. ${result.rows[0]?.count ?? 0} thoughts in database.`);
+    console.error(`[db] Connected. ${result.rows[0]?.count ?? 0} thoughts in database.`);
   } finally {
     client.release();
   }
@@ -88,6 +88,6 @@ export async function closePool(): Promise<void> {
   if (pool) {
     await pool.end();
     pool = null;
-    console.log("[db] Pool closed.");
+    console.error("[db] Pool closed.");
   }
 }

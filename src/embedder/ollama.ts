@@ -20,7 +20,7 @@ export class OllamaEmbedder implements Embedder {
     this.embedModel = process.env.OLLAMA_EMBED_MODEL ?? "nomic-embed-text";
     this.llmModel = process.env.OLLAMA_LLM_MODEL ?? "llama3.2";
 
-    console.log(
+    console.error(
       `[embedder] Ollama → ${this.endpoint} (embed: ${this.embedModel}, llm: ${this.llmModel})`
     );
   }

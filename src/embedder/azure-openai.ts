@@ -37,7 +37,7 @@ export class AzureOpenAIEmbedder implements Embedder {
       );
     }
 
-    console.log(
+    console.error(
       `[embedder] Azure OpenAI (embed: ${this.embedDeployment}, llm: ${this.llmDeployment}, endpoint: ${this.endpoint})`
     );
   }
