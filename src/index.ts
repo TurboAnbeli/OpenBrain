@@ -38,9 +38,10 @@ async function main(): Promise<void> {
 
   const api = createApi();
   const apiPort = parseInt(process.env.API_PORT ?? "8000", 10);
+  const apiHost = process.env.API_HOST ?? "0.0.0.0";
 
-  serve({ fetch: api.fetch, port: apiPort }, () => {
-    console.log(`[api] REST API listening on http://0.0.0.0:${apiPort}`);
+  serve({ fetch: api.fetch, port: apiPort, hostname: apiHost }, () => {
+    console.log(`[api] REST API listening on http://${apiHost}:${apiPort}`);
     console.log(`[api]   POST /memories         — capture thought`);
     console.log(`[api]   POST /memories/batch    — batch capture`);
     console.log(`[api]   POST /memories/search   — semantic search`);
@@ -54,6 +55,7 @@ async function main(): Promise<void> {
   // ── MCP Server (HTTP, both transports) ─────────────────────────
 
   const mcpPort = parseInt(process.env.MCP_PORT ?? "8080", 10);
+  const mcpHost = process.env.MCP_HOST ?? "0.0.0.0";
   const mcpAccessKey = process.env.MCP_ACCESS_KEY ?? "";
 
   // Track active transports for cleanup, separated by protocol
@@ -187,8 +189,8 @@ async function main(): Promise<void> {
     res.end(JSON.stringify({ error: "Not found" }));
   });
 
-  mcpHttpServer.listen(mcpPort, "0.0.0.0", () => {
-    console.log(`[mcp] MCP HTTP server listening on http://0.0.0.0:${mcpPort}`);
+  mcpHttpServer.listen(mcpPort, mcpHost, () => {
+    console.log(`[mcp] MCP HTTP server listening on http://${mcpHost}:${mcpPort}`);
     console.log(`[mcp]   POST /mcp                — Streamable HTTP (preferred)`);
     console.log(`[mcp]   GET  /mcp                — Streamable HTTP SSE stream`);
     console.log(`[mcp]   DELETE /mcp              — terminate Streamable HTTP session`);
