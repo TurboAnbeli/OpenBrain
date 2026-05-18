@@ -22,6 +22,7 @@ import { serve } from "@hono/node-server";
 import { initializeDatabase, closePool } from "./db/connection.js";
 import { createApi } from "./api/routes.js";
 import { createMcpServer } from "./mcp/server.js";
+import { checkAuth, oauthProtectedResourceMetadata } from "./auth.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
@@ -56,7 +57,6 @@ async function main(): Promise<void> {
 
   const mcpPort = parseInt(process.env.MCP_PORT ?? "8080", 10);
   const mcpHost = process.env.MCP_HOST ?? "0.0.0.0";
-  const mcpAccessKey = process.env.MCP_ACCESS_KEY ?? "";
 
   // Track active transports for cleanup, separated by protocol
   const sseTransports = new Map<string, SSEServerTransport>();
@@ -68,9 +68,9 @@ async function main(): Promise<void> {
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
     res.setHeader(
       "Access-Control-Allow-Headers",
-      "Content-Type, x-brain-key, mcp-session-id"
+      "Content-Type, Authorization, x-brain-key, mcp-session-id"
     );
-    res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
+    res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id, WWW-Authenticate");
 
     if (req.method === "OPTIONS") {
       res.writeHead(204);
@@ -84,6 +84,14 @@ async function main(): Promise<void> {
     if (url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ status: "healthy", service: "open-brain-mcp" }));
+      return;
+    }
+
+    // RFC 9728 protected-resource metadata — unauthenticated by design so MCP
+    // clients can discover the AS in response to a 401.
+    if (url.pathname === "/.well-known/oauth-protected-resource") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(oauthProtectedResourceMetadata()));
       return;
     }
 
@@ -104,15 +112,17 @@ async function main(): Promise<void> {
           return;
         }
 
-        // Auth check on new-session creation only
-        const key =
-          (req.headers["x-brain-key"] as string | undefined) ??
-          url.searchParams.get("key");
-        if (mcpAccessKey && key !== mcpAccessKey) {
-          res.writeHead(401, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Unauthorized" }));
+        // Auth check on new-session creation only (OAuth Bearer JWT or legacy key
+        // per OPENBRAIN_AUTH_MODE — see src/auth.ts).
+        const auth = await checkAuth(req, url);
+        if (!auth.ok) {
+          const headers: Record<string, string> = { "Content-Type": "application/json" };
+          if (auth.wwwAuthenticate) headers["WWW-Authenticate"] = auth.wwwAuthenticate;
+          res.writeHead(auth.status, headers);
+          res.end(JSON.stringify(auth.body));
           return;
         }
+        console.log(auth.logLine);
 
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
@@ -143,14 +153,15 @@ async function main(): Promise<void> {
     // Auth is checked here; /messages skips the key check because
     // having a valid sessionId proves the client already authenticated.
     if (url.pathname === "/sse" && req.method === "GET") {
-      const key =
-        (req.headers["x-brain-key"] as string | undefined) ??
-        url.searchParams.get("key");
-      if (mcpAccessKey && key !== mcpAccessKey) {
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Unauthorized" }));
+      const auth = await checkAuth(req, url);
+      if (!auth.ok) {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (auth.wwwAuthenticate) headers["WWW-Authenticate"] = auth.wwwAuthenticate;
+        res.writeHead(auth.status, headers);
+        res.end(JSON.stringify(auth.body));
         return;
       }
+      console.log(auth.logLine);
 
       const transport = new SSEServerTransport("/messages", res);
       const sessionId = transport.sessionId;
@@ -197,10 +208,7 @@ async function main(): Promise<void> {
     console.log(`[mcp]   GET  /sse                — legacy SSE connection`);
     console.log(`[mcp]   POST /messages           — legacy SSE JSON-RPC`);
     console.log(`[mcp]   GET  /health             — health check`);
-    console.log("");
-    console.log("[mcp] Connect AI clients to:");
-    console.log(`[mcp]   http://<host>:${mcpPort}/mcp?key=<MCP_ACCESS_KEY>  (preferred)`);
-    console.log(`[mcp]   http://<host>:${mcpPort}/sse?key=<MCP_ACCESS_KEY>  (legacy)`);
+    console.log(`[mcp]   GET  /.well-known/oauth-protected-resource  — RFC 9728 metadata`);
   });
 }
 
