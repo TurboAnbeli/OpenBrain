@@ -37,8 +37,8 @@ services:
       CIPHER_KEY_PATH: /etc/openbrain/cipher.key
     volumes:
       # Cipher key for column-level encryption of thoughts.content_enc.
-      # Mounted read-only from ~/.config/ryel/cipher.key (mode 600 on host).
-      - ${HOME}/.config/ryel/cipher.key:/etc/openbrain/cipher.key:ro
+      # Mounted read-only from the VM-canonical secrets dir (mode 600 on host).
+      - /home/ryan/workspace/secrets/cipher.key:/etc/openbrain/cipher.key:ro
     depends_on:
       postgres:
         condition: service_healthy

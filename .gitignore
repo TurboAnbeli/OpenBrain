@@ -3,6 +3,9 @@ k8s/openbrain-secrets-actual.yaml
 deploy/on-prem/k8s/openbrain-secrets-actual.yaml
 .env
 .mcp-key.txt
+# Backups of any of the above (e.g. .env.bak, .env.bak-pre-<reason>-<date>);
+# also catches docker-compose.override.yml.bak and other config backups.
+*.bak*
 
 # Node / TypeScript
 node_modules/
