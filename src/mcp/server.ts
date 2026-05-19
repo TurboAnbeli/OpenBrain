@@ -29,6 +29,46 @@ import { getEmbedder } from "../embedder/index.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// ─── Audit Logging ─────────────────────────────────────────────────────────
+const CONTENT_TOOLS = new Set(["capture_thought", "capture_thoughts", "update_thought"]);
+
+function sanitizeArgs(tool: string, args: Record<string, unknown>): string {
+  const safe = { ...args };
+  // Redact full content on write tools
+  if (CONTENT_TOOLS.has(tool) && "content" in safe) {
+    (safe as Record<string, unknown>).content_length = String(safe.content).length;
+    delete safe.content;
+  }
+  // For batch capture, redact each thought's content
+  if (tool === "capture_thoughts" && Array.isArray(safe.thoughts)) {
+    safe.thoughts = (safe.thoughts as Array<{ content: string }>).map((t) => ({
+      content_length: t.content?.length ?? 0,
+    }));
+  }
+  return JSON.stringify(safe).slice(0, 500);
+}
+
+async function auditLog(
+  pool: ReturnType<typeof getPool>,
+  consumerId: string,
+  transport: string,
+  tool: string,
+  argsSummary: string,
+  success: boolean,
+  errorMsg: string | null,
+  durationMs: number
+): Promise<void> {
+  try {
+    await pool.query(
+      `INSERT INTO audit_log (consumer_id, transport, tool, args_summary, success, error_msg, duration_ms)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [consumerId, transport, tool, argsSummary, success, errorMsg?.slice(0, 200) ?? null, durationMs]
+    );
+  } catch (e) {
+    console.error("[audit] log write failed:", e);
+  }
+}
+
 export function createMcpServer(): Server {
   const server = new Server(
     { name: "open-brain", version: "1.0.0" },
@@ -256,6 +296,9 @@ export function createMcpServer(): Server {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    const consumerId = process.env.OPENBRAIN_CONSUMER_ID ?? "unknown";
+    const transport = process.env.OPENBRAIN_TRANSPORT ?? "stdio";
+    const t0 = Date.now();
 
     try {
       switch (name) {
@@ -287,6 +330,8 @@ export function createMcpServer(): Server {
             created_at: r.created_at.toISOString(),
           }));
 
+          const durSearch = Date.now() - t0;
+          await auditLog(pool, consumerId, transport, name, sanitizeArgs(name, (args ?? {}) as Record<string, unknown>), true, null, durSearch);
           return {
             content: [
               {
@@ -318,6 +363,8 @@ export function createMcpServer(): Server {
             created_at: r.created_at.toISOString(),
           }));
 
+          const durList = Date.now() - t0;
+          await auditLog(pool, consumerId, transport, name, sanitizeArgs(name, (args ?? {}) as Record<string, unknown>), true, null, durList);
           return {
             content: [
               {
@@ -352,6 +399,8 @@ export function createMcpServer(): Server {
           const fullMetadata = { ...metadata, source };
           const result = await insertThought(pool, content, embedding, fullMetadata, project, supersedes, created_by);
 
+          const durCap = Date.now() - t0;
+          await auditLog(pool, consumerId, transport, name, sanitizeArgs(name, (args ?? {}) as Record<string, unknown>), true, null, durCap);
           return {
             content: [
               {
@@ -380,6 +429,8 @@ export function createMcpServer(): Server {
           const created_by = args?.created_by as string | undefined;
           const stats = await getThoughtStats(pool, project, created_by);
 
+          const durStats = Date.now() - t0;
+          await auditLog(pool, consumerId, transport, name, sanitizeArgs(name, (args ?? {}) as Record<string, unknown>), true, null, durStats);
           return {
             content: [
               {
@@ -410,6 +461,8 @@ export function createMcpServer(): Server {
 
           const result = await updateThought(pool, id, content, embedding, metadata);
 
+          const durUpd = Date.now() - t0;
+          await auditLog(pool, consumerId, transport, name, sanitizeArgs(name, (args ?? {}) as Record<string, unknown>), true, null, durUpd);
           return {
             content: [
               {
@@ -443,6 +496,8 @@ export function createMcpServer(): Server {
 
           const result = await deleteThought(pool, id);
 
+          const durDel = Date.now() - t0;
+          await auditLog(pool, consumerId, transport, name, sanitizeArgs(name, (args ?? {}) as Record<string, unknown>), true, null, durDel);
           return {
             content: [
               {
@@ -486,6 +541,8 @@ export function createMcpServer(): Server {
             captured_at: r.created_at.toISOString(),
           }));
 
+          const durBatch = Date.now() - t0;
+          await auditLog(pool, consumerId, transport, name, sanitizeArgs(name, (args ?? {}) as Record<string, unknown>), true, null, durBatch);
           return {
             content: [
               {
@@ -496,15 +553,20 @@ export function createMcpServer(): Server {
           };
         }
 
-        default:
+        default: {
+          const durUnk = Date.now() - t0;
+          await auditLog(pool, consumerId, transport, name, sanitizeArgs(name, (args ?? {}) as Record<string, unknown>), false, `Unknown tool: ${name}`, durUnk);
           return {
             content: [{ type: "text" as const, text: `Unknown tool: ${name}` }],
             isError: true,
           };
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[mcp] Tool "${name}" failed:`, message);
+      const durErr = Date.now() - t0;
+      await auditLog(pool, consumerId, transport, name, sanitizeArgs(name, (args ?? {}) as Record<string, unknown>), false, message, durErr);
       return {
         content: [{ type: "text" as const, text: `Error: ${message}` }],
         isError: true,
