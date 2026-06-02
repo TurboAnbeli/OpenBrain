@@ -67,6 +67,10 @@ export async function generateHydeAnswer(
         model: opts.model,
         prompt: HYDE_PROMPT_TEMPLATE(query),
         stream: false,
+        // top-level think:false disables qwen3's reasoning chain so the full
+        // num_predict budget goes to the answer, not <think> tokens.
+        // Ollama silently ignores this for models that don't support it.
+        think: false,
         options: { num_predict: 60, temperature: 0, seed: 42 },
       }),
       signal: controller.signal,
