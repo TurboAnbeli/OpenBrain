@@ -35,12 +35,13 @@ describe("MCP Server Tool Listing", () => {
     expect(handler).toBeDefined();
 
     const result = await handler({ method: "tools/list" });
-    expect(result.tools).toHaveLength(7);
+    expect(result.tools).toHaveLength(8);
 
     const toolNames = result.tools.map((t: any) => t.name).sort();
     expect(toolNames).toEqual([
       "capture_thought",
       "capture_thoughts",
+      "consolidate_observations",
       "delete_thought",
       "list_thoughts",
       "search_thoughts",

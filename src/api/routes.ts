@@ -18,6 +18,10 @@ import {
   updateThought,
   deleteThought,
   batchInsertThoughts,
+  findNearDuplicate,
+  bumpProofCount,
+  getThoughtsByIds,
+  archiveThoughts,
   type ListFilters,
   type BatchThoughtInput,
 } from "../db/queries.js";
@@ -28,10 +32,25 @@ import {
   generateHydeAnswer,
   reciprocalRankFusion,
 } from "./query_expansion.js";
+import { rerankResults, shouldRerank } from "./rerank.js";
+import { applyProofCountBoost } from "./proof_count_boost.js";
+import { synthesizeObservation } from "./synthesize.js";
 
 const HYDE_MODEL = process.env.OPENBRAIN_HYDE_MODEL ?? "smollm2:1.7b";
 const HYDE_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
 const HYDE_ENABLED = (process.env.OPENBRAIN_HYDE_ENABLED ?? "true").toLowerCase() !== "false";
+const RERANK_MODEL =
+  process.env.OPENBRAIN_RERANK_MODEL ??
+  process.env.OPENBRAIN_HYDE_MODEL ??
+  "smollm2:1.7b";
+const RERANK_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
+const RERANK_ENABLED = (process.env.OPENBRAIN_RERANK_ENABLED ?? "true").toLowerCase() !== "false";
+const RERANK_TOPN = parseInt(process.env.OPENBRAIN_RERANK_TOPN ?? "6", 10);
+const DEDUP_ENABLED = (process.env.OPENBRAIN_DEDUP_ENABLED ?? "true").toLowerCase() !== "false";
+const DEDUP_THRESHOLD = parseFloat(process.env.OPENBRAIN_DEDUP_THRESHOLD ?? "0.95");
+const SYNTHESIS_MODEL =
+  process.env.OPENBRAIN_SYNTHESIS_MODEL ?? "hf.co/unsloth/gemma-4-E4B-it-GGUF:Q4_0";
+const SYNTHESIS_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -90,8 +109,26 @@ export function createApi(): Hono {
 
     try {
       const embedding = await embedder.generateEmbedding(body.content);
-      const metadata = body.metadata ?? (await embedder.extractMetadata(body.content));
 
+      // Dedup gate: skip if supersedes is set (explicit replacement always inserts).
+      if (DEDUP_ENABLED && !body.supersedes) {
+        const dup = await findNearDuplicate(pool, embedding, body.project, body.created_by, DEDUP_THRESHOLD);
+        if (dup) {
+          const bumped = await bumpProofCount(pool, dup.id);
+          return c.json({
+            id: bumped.id,
+            type: bumped.metadata.type,
+            topics: bumped.metadata.topics,
+            people: bumped.metadata.people,
+            project: bumped.project,
+            captured_at: bumped.created_at.toISOString(),
+            deduplicated: true,
+            proof_count: bumped.proof_count,
+          });
+        }
+      }
+
+      const metadata = body.metadata ?? (await embedder.extractMetadata(body.content));
       const fullMetadata = {
         ...metadata,
         source: body.source ?? "api",
@@ -108,6 +145,8 @@ export function createApi(): Hono {
         people: metadata.people,
         project: result.project,
         captured_at: result.created_at.toISOString(),
+        deduplicated: false,
+        proof_count: result.proof_count,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -215,10 +254,11 @@ export function createApi(): Hono {
 
       const requestedLimit = body.limit ?? 10;
       const boost = hasSpecificityMarker(body.query);
+      const rerank = !boost && RERANK_ENABLED && shouldRerank(body.query);
       // HyDE fires only when recency boost does NOT (mutually exclusive — keeps
       // recency-gated queries on the fast path and avoids stacking two re-rankers).
       const hyde = !boost && HYDE_ENABLED && shouldExpand(body.query);
-      const fetchLimit = overfetchLimit(requestedLimit, boost || hyde);
+      const fetchLimit = overfetchLimit(requestedLimit, boost || hyde || rerank);
 
       const threshold = body.threshold ?? 0.5;
       const [queryEmbedding, bm25Results] = await Promise.all([
@@ -250,7 +290,16 @@ export function createApi(): Hono {
       } else if (boost) {
         denseFused = applyRecencyBoost(rawResults);
       }
-      const results = reciprocalRankFusion([denseFused, bm25Results], 60, requestedLimit);
+      const fusedLimit = rerank ? Math.max(requestedLimit * 2, RERANK_TOPN) : requestedLimit;
+      const fusedResults = applyProofCountBoost(
+        reciprocalRankFusion([denseFused, bm25Results], 60, fusedLimit)
+      );
+      const rerankedResults = rerank ? await rerankResults(body.query, fusedResults, {
+        endpoint: RERANK_ENDPOINT,
+        model: RERANK_MODEL,
+        topN: RERANK_TOPN,
+      }) : null;
+      const results = (rerankedResults ?? fusedResults).slice(0, requestedLimit);
 
       return c.json({
         query: body.query,
@@ -258,6 +307,7 @@ export function createApi(): Hono {
         recency_boosted: boost,
         hyde_expanded: hyde && hydeAnswer !== null,
         bm25_fused: true,
+        reranked: rerankedResults !== null,
         results: results.map((r) => ({
           id: r.id,
           content: r.content,
@@ -369,6 +419,76 @@ export function createApi(): Hono {
       console.error("[api] Delete failed:", message);
       return c.json(
         { error: "Failed to delete thought", detail: message },
+        502
+      );
+    }
+  });
+
+  // ─── Consolidate Observations ────────────────────────────────────────
+
+  app.post("/observations", async (c) => {
+    const body = await c.req.json<{
+      thought_ids: string[];
+      project?: string;
+      created_by?: string;
+    }>();
+
+    if (!Array.isArray(body.thought_ids) || body.thought_ids.length < 2) {
+      return c.json({ error: "thought_ids must be an array of at least 2 UUIDs" }, 400);
+    }
+    for (const id of body.thought_ids) {
+      if (!UUID_RE.test(id)) {
+        return c.json({ error: `invalid UUID: ${id}` }, 400);
+      }
+    }
+
+    try {
+      const sources = await getThoughtsByIds(pool, body.thought_ids);
+      if (sources.length < 2) {
+        return c.json(
+          { error: "at least 2 source thoughts must exist and not be archived" },
+          422
+        );
+      }
+
+      const synthesis = await synthesizeObservation(
+        sources.map((s) => s.content),
+        { endpoint: SYNTHESIS_ENDPOINT, model: SYNTHESIS_MODEL }
+      );
+      if (!synthesis) {
+        return c.json(
+          { error: "synthesis quality gate failed — try again or check the synthesis model" },
+          422
+        );
+      }
+
+      const [embedding, metadata] = await Promise.all([
+        embedder.generateEmbedding(synthesis),
+        embedder.extractMetadata(synthesis),
+      ]);
+      const fullMetadata = {
+        ...metadata,
+        type: "observation" as const,
+        source: "observations-api",
+        embedder_version: embedder.getVersion(),
+        consolidates: sources.map((s) => s.id),
+      };
+
+      const result = await insertThought(
+        pool, synthesis, embedding, fullMetadata, body.project, undefined, body.created_by
+      );
+      const archived = await archiveThoughts(pool, sources.map((s) => s.id));
+
+      return c.json({
+        id: result.id,
+        sources_archived: archived,
+        captured_at: result.created_at.toISOString(),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Consolidate failed:", message);
+      return c.json(
+        { error: "Failed to consolidate observations", detail: message },
         502
       );
     }

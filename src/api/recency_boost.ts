@@ -15,13 +15,19 @@
  * query, per the offline sweep on 2026-05-31. Higher weights swing the
  * baseline harder if the gate ever fires on a non-recency query.
  *
- * Caveat: this uses `created_at` (ingestion time), not metadata.dates[].
- * The two coincide for adv-recency-001 but a future thought ingested today
- * about a 2024 reality would be wrongly boosted.
+ * Temporal signal priority follows the same split Hindsight documents between
+ * "when it happened" and "when you learned it":
+ *   1. explicit occurrence dates from metadata.dates[]
+ *   2. explicit ISO dates parsed from the content itself
+ *   3. created_at as a learned-at fallback
+ *
+ * This keeps late-ingested historical notes from automatically outranking a
+ * slightly older but more exact current-state fact.
  */
 
 export const RECENCY_WEIGHT = 0.2;
 export const RECENCY_HORIZON_DAYS = 90;
+const ISO_DATE_RE = /\b(\d{4}-\d{2}-\d{2})(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?)?\b/g;
 
 const SPECIFICITY_MARKERS: RegExp[] = [
   /\bcurrent\b/,
@@ -52,6 +58,48 @@ function ageFactor(createdAt: Date, nowMs: number = Date.now()): number {
 export interface RankableResult {
   similarity: number;
   created_at: Date;
+  content?: string;
+  metadata?: {
+    dates?: string[];
+  };
+}
+
+function toDate(value: string): Date | null {
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00Z` : value;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function latestDate(values: Iterable<string>): Date | null {
+  let latest: Date | null = null;
+  for (const value of values) {
+    const date = toDate(value);
+    if (!date) continue;
+    if (!latest || date.getTime() > latest.getTime()) {
+      latest = date;
+    }
+  }
+  return latest;
+}
+
+function parseLatestDateFromContent(content?: string): Date | null {
+  if (!content) return null;
+  const matches = content.matchAll(ISO_DATE_RE);
+  const dates: string[] = [];
+  for (const match of matches) {
+    if (match[0]) dates.push(match[0]);
+  }
+  return latestDate(dates);
+}
+
+export function getEffectiveDate(result: RankableResult): Date {
+  const metadataDate = latestDate(result.metadata?.dates ?? []);
+  if (metadataDate) return metadataDate;
+
+  const contentDate = parseLatestDateFromContent(result.content);
+  if (contentDate) return contentDate;
+
+  return result.created_at;
 }
 
 export function applyRecencyBoost<T extends RankableResult>(
@@ -60,8 +108,8 @@ export function applyRecencyBoost<T extends RankableResult>(
   nowMs: number = Date.now()
 ): T[] {
   return [...results].sort((a, b) => {
-    const da = 1 - a.similarity + weight * ageFactor(a.created_at, nowMs);
-    const db = 1 - b.similarity + weight * ageFactor(b.created_at, nowMs);
+    const da = 1 - a.similarity + weight * ageFactor(getEffectiveDate(a), nowMs);
+    const db = 1 - b.similarity + weight * ageFactor(getEffectiveDate(b), nowMs);
     return da - db;
   });
 }

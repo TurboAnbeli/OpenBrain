@@ -23,6 +23,10 @@ import {
   updateThought,
   deleteThought,
   batchInsertThoughts,
+  findNearDuplicate,
+  bumpProofCount,
+  getThoughtsByIds,
+  archiveThoughts,
   type ListFilters,
   type BatchThoughtInput,
 } from "../db/queries.js";
@@ -37,10 +41,25 @@ import {
   generateHydeAnswer,
   reciprocalRankFusion,
 } from "../api/query_expansion.js";
+import { rerankResults, shouldRerank } from "../api/rerank.js";
+import { applyProofCountBoost } from "../api/proof_count_boost.js";
+import { synthesizeObservation } from "../api/synthesize.js";
 
 const HYDE_MODEL = process.env.OPENBRAIN_HYDE_MODEL ?? "smollm2:1.7b";
 const HYDE_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
 const HYDE_ENABLED = (process.env.OPENBRAIN_HYDE_ENABLED ?? "true").toLowerCase() !== "false";
+const RERANK_MODEL =
+  process.env.OPENBRAIN_RERANK_MODEL ??
+  process.env.OPENBRAIN_HYDE_MODEL ??
+  "smollm2:1.7b";
+const RERANK_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
+const RERANK_ENABLED = (process.env.OPENBRAIN_RERANK_ENABLED ?? "true").toLowerCase() !== "false";
+const RERANK_TOPN = parseInt(process.env.OPENBRAIN_RERANK_TOPN ?? "6", 10);
+const DEDUP_ENABLED = (process.env.OPENBRAIN_DEDUP_ENABLED ?? "true").toLowerCase() !== "false";
+const DEDUP_THRESHOLD = parseFloat(process.env.OPENBRAIN_DEDUP_THRESHOLD ?? "0.95");
+const SYNTHESIS_MODEL =
+  process.env.OPENBRAIN_SYNTHESIS_MODEL ?? "hf.co/unsloth/gemma-4-E4B-it-GGUF:Q4_0";
+const SYNTHESIS_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -304,6 +323,31 @@ export function createMcpServer(): Server {
           required: ["thoughts"],
         },
       },
+      {
+        name: "consolidate_observations",
+        description:
+          "Synthesize multiple related thoughts into a single consolidated observation using a local LLM. The source thoughts are archived after consolidation. Returns the new observation's ID.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            thought_ids: {
+              type: "array",
+              description: "UUIDs of the thoughts to consolidate (minimum 2)",
+              items: { type: "string" },
+              minItems: 2,
+            },
+            project: {
+              type: "string",
+              description: "Scope the consolidated observation to a project (optional)",
+            },
+            created_by: {
+              type: "string",
+              description: "User attribution for the consolidated observation (optional)",
+            },
+          },
+          required: ["thought_ids"],
+        },
+      },
     ],
   }));
 
@@ -334,8 +378,9 @@ export function createMcpServer(): Server {
           if (topic) filter.topics = [topic];
 
           const boost = hasSpecificityMarker(query);
+          const rerank = !boost && RERANK_ENABLED && shouldRerank(query);
           const hyde = !boost && HYDE_ENABLED && shouldExpand(query);
-          const fetchLimit = overfetchLimit(limit, boost || hyde);
+          const fetchLimit = overfetchLimit(limit, boost || hyde || rerank);
           const [queryEmbedding, bm25Results] = await Promise.all([
             embedder.generateEmbedding(query),
             bm25SearchThoughts(pool, query, fetchLimit, filter, project, include_archived, created_by),
@@ -359,7 +404,16 @@ export function createMcpServer(): Server {
           } else if (boost) {
             denseFused = applyRecencyBoost(rawResults);
           }
-          const results = reciprocalRankFusion([denseFused, bm25Results], 60, limit);
+          const fusedLimit = rerank ? Math.max(limit * 2, RERANK_TOPN) : limit;
+          const fusedResults = applyProofCountBoost(
+            reciprocalRankFusion([denseFused, bm25Results], 60, fusedLimit)
+          );
+          const rerankedResults = rerank ? await rerankResults(query, fusedResults, {
+            endpoint: RERANK_ENDPOINT,
+            model: RERANK_MODEL,
+            topN: RERANK_TOPN,
+          }) : null;
+          const results = (rerankedResults ?? fusedResults).slice(0, limit);
 
           const formatted = results.map((r) => ({
             id: r.id,
@@ -380,6 +434,7 @@ export function createMcpServer(): Server {
                   recency_boosted: boost,
                   hyde_expanded: hyde && hydeAnswer !== null,
                   bm25_fused: true,
+                  reranked: rerankedResults !== null,
                   results: formatted,
                 }, null, 2),
               },
@@ -435,12 +490,38 @@ export function createMcpServer(): Server {
             };
           }
 
-          // Generate embedding and extract metadata in parallel
-          const [embedding, metadata] = await Promise.all([
-            embedder.generateEmbedding(content),
-            embedder.extractMetadata(content),
-          ]);
+          // Generate embedding first; dedup check happens before extractMetadata
+          // so we skip the metadata roundtrip on near-duplicates.
+          const embedding = await embedder.generateEmbedding(content);
 
+          // Dedup gate: skip when supersedes is set (explicit replacement always inserts).
+          if (DEDUP_ENABLED && !supersedes) {
+            const dup = await findNearDuplicate(pool, embedding, project, created_by, DEDUP_THRESHOLD);
+            if (dup) {
+              const bumped = await bumpProofCount(pool, dup.id);
+              const durCap = Date.now() - t0;
+              await auditLog(pool, consumerId, transport, name, sanitizeArgs(name, (args ?? {}) as Record<string, unknown>), true, null, durCap);
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: JSON.stringify(
+                      {
+                        status: "deduplicated",
+                        id: bumped.id,
+                        proof_count: bumped.proof_count,
+                        captured_at: bumped.created_at.toISOString(),
+                      },
+                      null,
+                      2
+                    ),
+                  },
+                ],
+              };
+            }
+          }
+
+          const metadata = await embedder.extractMetadata(content);
           const fullMetadata = { ...metadata, source, embedder_version: embedder.getVersion() };
           const result = await insertThought(pool, content, embedding, fullMetadata, project, supersedes, created_by);
 
@@ -458,6 +539,7 @@ export function createMcpServer(): Server {
                     topics: metadata.topics,
                     people: metadata.people,
                     action_items: metadata.action_items,
+                    proof_count: result.proof_count,
                     captured_at: result.created_at.toISOString(),
                   },
                   null,
@@ -594,6 +676,82 @@ export function createMcpServer(): Server {
               {
                 type: "text" as const,
                 text: JSON.stringify({ count: formatted.length, results: formatted }, null, 2),
+              },
+            ],
+          };
+        }
+
+        // ── consolidate_observations ──
+        case "consolidate_observations": {
+          const thoughtIds = args?.thought_ids as string[];
+          const project = args?.project as string | undefined;
+          const created_by = args?.created_by as string | undefined;
+
+          if (!Array.isArray(thoughtIds) || thoughtIds.length < 2) {
+            return {
+              content: [{ type: "text" as const, text: "Error: thought_ids must be an array of at least 2 UUIDs" }],
+              isError: true,
+            };
+          }
+          for (const id of thoughtIds) {
+            if (!UUID_RE.test(id)) {
+              return {
+                content: [{ type: "text" as const, text: `Error: invalid UUID: ${id}` }],
+                isError: true,
+              };
+            }
+          }
+
+          const sources = await getThoughtsByIds(pool, thoughtIds);
+          if (sources.length < 2) {
+            return {
+              content: [{ type: "text" as const, text: "Error: at least 2 source thoughts must exist and not be archived" }],
+              isError: true,
+            };
+          }
+
+          const synthesis = await synthesizeObservation(
+            sources.map((s) => s.content),
+            { endpoint: SYNTHESIS_ENDPOINT, model: SYNTHESIS_MODEL }
+          );
+          if (!synthesis) {
+            return {
+              content: [{ type: "text" as const, text: "Error: synthesis quality gate failed — try again or check the synthesis model" }],
+              isError: true,
+            };
+          }
+
+          const [obsEmbedding, obsMetadata] = await Promise.all([
+            embedder.generateEmbedding(synthesis),
+            embedder.extractMetadata(synthesis),
+          ]);
+          const fullObsMetadata = {
+            ...obsMetadata,
+            type: "observation",
+            source: "mcp",
+            embedder_version: embedder.getVersion(),
+            consolidates: sources.map((s) => s.id),
+          };
+
+          const obsResult = await insertThought(pool, synthesis, obsEmbedding, fullObsMetadata, project, undefined, created_by);
+          const archived = await archiveThoughts(pool, sources.map((s) => s.id));
+
+          const durCons = Date.now() - t0;
+          await auditLog(pool, consumerId, transport, name, sanitizeArgs(name, (args ?? {}) as Record<string, unknown>), true, null, durCons);
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(
+                  {
+                    status: "consolidated",
+                    id: obsResult.id,
+                    sources_archived: archived,
+                    captured_at: obsResult.created_at.toISOString(),
+                  },
+                  null,
+                  2
+                ),
               },
             ],
           };

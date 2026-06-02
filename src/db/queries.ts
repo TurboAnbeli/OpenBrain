@@ -22,6 +22,7 @@ export interface ThoughtMetadata {
   action_items?: string[];
   dates?: string[];
   source?: string;
+  consolidates?: string[];
 }
 
 export interface ThoughtRow {
@@ -32,6 +33,7 @@ export interface ThoughtRow {
   created_by?: string | null;
   archived?: boolean;
   supersedes?: string | null;
+  proof_count: number;
   created_at: Date;
 }
 
@@ -77,7 +79,7 @@ export async function insertThought(
      VALUES (pgp_sym_encrypt($1, $7), $2::vector, $3::jsonb, $4, $5, $6, to_tsvector('english', $1))
      RETURNING id,
                pgp_sym_decrypt(content_enc, $7)::text AS content,
-               metadata, project, created_by, archived, supersedes, created_at`,
+               metadata, project, created_by, archived, supersedes, proof_count, created_at`,
     [
       content,
       embeddingStr,
@@ -111,7 +113,7 @@ export async function searchThoughts(
     // match_thoughts() signature was extended to take cipher_key as the
     // second positional parameter (see migration 003). It returns content
     // already decrypted, so callers see the same shape as before.
-    `SELECT id, content, metadata, similarity, created_at
+    `SELECT id, content, metadata, similarity, proof_count, created_at
      FROM match_thoughts($1::vector, $8, $2, $3, $4::jsonb, $5, $6, $7)`,
     [
       embeddingStr,
@@ -383,9 +385,10 @@ export async function bm25SearchThoughts(
     content: string;
     metadata: ThoughtMetadata;
     bm25_rank: number;
+    proof_count: number;
     created_at: Date;
   }>(
-    `SELECT id, content, metadata, bm25_rank, created_at
+    `SELECT id, content, metadata, bm25_rank, proof_count, created_at
      FROM bm25_search_thoughts($1, $2, $3, $4::jsonb, $5, $6, $7)`,
     [
       queryText,
@@ -403,6 +406,7 @@ export async function bm25SearchThoughts(
     content: r.content,
     metadata: r.metadata,
     similarity: r.bm25_rank,
+    proof_count: r.proof_count,
     created_at: r.created_at,
   }));
 }
@@ -416,6 +420,82 @@ export async function backfillFts(pool: pg.Pool): Promise<number> {
      SET fts = to_tsvector('english', pgp_sym_decrypt(content_enc, $1))
      WHERE fts IS NULL`,
     [key]
+  );
+  return rowCount ?? 0;
+}
+
+// ─── Deduplication ───────────────────────────────────────────────────
+
+export async function findNearDuplicate(
+  pool: pg.Pool,
+  embedding: number[],
+  project?: string,
+  created_by?: string,
+  threshold: number = 0.95
+): Promise<{ id: string; similarity: number } | null> {
+  const embeddingStr = `[${embedding.join(",")}]`;
+
+  const { rows } = await pool.query<{ id: string; similarity: number }>(
+    `SELECT id, similarity
+     FROM find_near_duplicate($1::vector, $2, $3, $4)`,
+    [embeddingStr, threshold, project ?? null, created_by ?? null]
+  );
+
+  return rows[0] ?? null;
+}
+
+export async function bumpProofCount(
+  pool: pg.Pool,
+  id: string
+): Promise<ThoughtRow> {
+  const key = getCipherKey();
+
+  const { rows, rowCount } = await pool.query<ThoughtRow>(
+    `UPDATE thoughts
+     SET proof_count = proof_count + 1
+     WHERE id = $1
+     RETURNING id,
+               pgp_sym_decrypt(content_enc, $2)::text AS content,
+               metadata, project, created_by, archived, supersedes, proof_count, created_at`,
+    [id, key]
+  );
+
+  if (!rowCount || rowCount === 0) {
+    throw new Error(`Thought not found: ${id}`);
+  }
+
+  return rows[0]!;
+}
+
+// ─── Consolidation Helpers ───────────────────────────────────────────
+
+export async function getThoughtsByIds(
+  pool: pg.Pool,
+  ids: string[]
+): Promise<ThoughtRow[]> {
+  if (ids.length === 0) return [];
+  const key = getCipherKey();
+  const placeholders = ids.map((_, i) => `$${i + 2}`).join(", ");
+  const { rows } = await pool.query<ThoughtRow>(
+    `SELECT id,
+            pgp_sym_decrypt(content_enc, $1)::text AS content,
+            metadata, project, created_by, archived, supersedes, proof_count, created_at
+     FROM thoughts
+     WHERE id IN (${placeholders}) AND archived = false`,
+    [key, ...ids]
+  );
+  return rows;
+}
+
+export async function archiveThoughts(
+  pool: pg.Pool,
+  ids: string[]
+): Promise<number> {
+  if (ids.length === 0) return 0;
+  const placeholders = ids.map((_, i) => `$${i + 1}`).join(", ");
+  const { rowCount } = await pool.query(
+    `UPDATE thoughts SET archived = true WHERE id IN (${placeholders})`,
+    ids
   );
   return rowCount ?? 0;
 }
@@ -449,7 +529,7 @@ export async function batchInsertThoughts(
          VALUES (pgp_sym_encrypt($1, $6), $2::vector, $3::jsonb, $4, $5, to_tsvector('english', $1))
          RETURNING id,
                    pgp_sym_decrypt(content_enc, $6)::text AS content,
-                   metadata, project, created_by, archived, supersedes, created_at`,
+                   metadata, project, created_by, archived, supersedes, proof_count, created_at`,
         [
           thought.content,
           embeddingStr,
