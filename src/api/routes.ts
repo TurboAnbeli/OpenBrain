@@ -12,6 +12,7 @@ import { getPool } from "../db/connection.js";
 import {
   insertThought,
   searchThoughts,
+  bm25SearchThoughts,
   listThoughts,
   getThoughtStats,
   updateThought,
@@ -21,6 +22,16 @@ import {
   type BatchThoughtInput,
 } from "../db/queries.js";
 import { getEmbedder } from "../embedder/index.js";
+import { hasSpecificityMarker, applyRecencyBoost, overfetchLimit } from "./recency_boost.js";
+import {
+  shouldExpand,
+  generateHydeAnswer,
+  reciprocalRankFusion,
+} from "./query_expansion.js";
+
+const HYDE_MODEL = process.env.OPENBRAIN_HYDE_MODEL ?? "smollm2:1.7b";
+const HYDE_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
+const HYDE_ENABLED = (process.env.OPENBRAIN_HYDE_ENABLED ?? "true").toLowerCase() !== "false";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -81,7 +92,11 @@ export function createApi(): Hono {
       const embedding = await embedder.generateEmbedding(body.content);
       const metadata = body.metadata ?? (await embedder.extractMetadata(body.content));
 
-      const fullMetadata = { ...metadata, source: body.source ?? "api" };
+      const fullMetadata = {
+        ...metadata,
+        source: body.source ?? "api",
+        embedder_version: embedder.getVersion(),
+      };
       const result = await insertThought(
         pool, body.content, embedding, fullMetadata, body.project, body.supersedes, body.created_by
       );
@@ -136,6 +151,7 @@ export function createApi(): Hono {
 
     try {
       const source = body.source ?? "api";
+      const embedder_version = embedder.getVersion();
 
       const processed: BatchThoughtInput[] = await Promise.all(
         body.thoughts.map(async (t) => {
@@ -144,7 +160,7 @@ export function createApi(): Hono {
           return {
             content: t.content,
             embedding,
-            metadata: { ...metadata, source },
+            metadata: { ...metadata, source, embedder_version },
             project: body.project,
             created_by: body.created_by,
           };
@@ -197,22 +213,53 @@ export function createApi(): Hono {
       if (body.type) filter.type = body.type;
       if (body.topic) filter.topics = [body.topic];
 
-      const queryEmbedding = await embedder.generateEmbedding(body.query);
-      const results = await searchThoughts(
-        pool,
-        queryEmbedding,
-        body.limit ?? 10,
-        body.threshold ?? 0.5,
-        filter,
-        body.project,
-        body.include_archived,
-        body.created_by
+      const requestedLimit = body.limit ?? 10;
+      const boost = hasSpecificityMarker(body.query);
+      // HyDE fires only when recency boost does NOT (mutually exclusive — keeps
+      // recency-gated queries on the fast path and avoids stacking two re-rankers).
+      const hyde = !boost && HYDE_ENABLED && shouldExpand(body.query);
+      const fetchLimit = overfetchLimit(requestedLimit, boost || hyde);
+
+      const threshold = body.threshold ?? 0.5;
+      const [queryEmbedding, bm25Results] = await Promise.all([
+        embedder.generateEmbedding(body.query),
+        bm25SearchThoughts(
+          pool, body.query, fetchLimit, filter,
+          body.project, body.include_archived, body.created_by
+        ),
+      ]);
+      const rawResults = await searchThoughts(
+        pool, queryEmbedding, fetchLimit, threshold, filter,
+        body.project, body.include_archived, body.created_by
       );
+
+      let denseFused = rawResults;
+      let hydeAnswer: string | null = null;
+      if (hyde) {
+        hydeAnswer = await generateHydeAnswer(body.query, {
+          endpoint: HYDE_ENDPOINT, model: HYDE_MODEL,
+        });
+        if (hydeAnswer) {
+          const hydeEmbedding = await embedder.generateEmbedding(hydeAnswer);
+          const hydeResults = await searchThoughts(
+            pool, hydeEmbedding, fetchLimit, threshold, filter,
+            body.project, body.include_archived, body.created_by
+          );
+          denseFused = reciprocalRankFusion([rawResults, hydeResults], 60, fetchLimit);
+        }
+      } else if (boost) {
+        denseFused = applyRecencyBoost(rawResults);
+      }
+      const results = reciprocalRankFusion([denseFused, bm25Results], 60, requestedLimit);
 
       return c.json({
         query: body.query,
         count: results.length,
+        recency_boosted: boost,
+        hyde_expanded: hyde && hydeAnswer !== null,
+        bm25_fused: true,
         results: results.map((r) => ({
+          id: r.id,
           content: r.content,
           metadata: r.metadata,
           similarity: Math.round(r.similarity * 1000) / 1000,
@@ -234,7 +281,7 @@ export function createApi(): Hono {
   app.post("/memories/list", async (c) => {
     try {
       const body = await c.req.json<ListFilters>();
-      const results = await listThoughts(pool, body);
+      const results = await listThoughts(pool, body, body.limit ?? 50);
 
       return c.json({
         count: results.length,

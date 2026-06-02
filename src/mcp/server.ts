@@ -17,6 +17,7 @@ import { getPool } from "../db/connection.js";
 import {
   insertThought,
   searchThoughts,
+  bm25SearchThoughts,
   listThoughts,
   getThoughtStats,
   updateThought,
@@ -26,6 +27,20 @@ import {
   type BatchThoughtInput,
 } from "../db/queries.js";
 import { getEmbedder } from "../embedder/index.js";
+import {
+  hasSpecificityMarker,
+  applyRecencyBoost,
+  overfetchLimit,
+} from "../api/recency_boost.js";
+import {
+  shouldExpand,
+  generateHydeAnswer,
+  reciprocalRankFusion,
+} from "../api/query_expansion.js";
+
+const HYDE_MODEL = process.env.OPENBRAIN_HYDE_MODEL ?? "smollm2:1.7b";
+const HYDE_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
+const HYDE_ENABLED = (process.env.OPENBRAIN_HYDE_ENABLED ?? "true").toLowerCase() !== "false";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -318,12 +333,36 @@ export function createMcpServer(): Server {
           if (type) filter.type = type;
           if (topic) filter.topics = [topic];
 
-          const queryEmbedding = await embedder.generateEmbedding(query);
-          const results = await searchThoughts(
-            pool, queryEmbedding, limit, threshold, filter, project, include_archived, created_by
+          const boost = hasSpecificityMarker(query);
+          const hyde = !boost && HYDE_ENABLED && shouldExpand(query);
+          const fetchLimit = overfetchLimit(limit, boost || hyde);
+          const [queryEmbedding, bm25Results] = await Promise.all([
+            embedder.generateEmbedding(query),
+            bm25SearchThoughts(pool, query, fetchLimit, filter, project, include_archived, created_by),
+          ]);
+          const rawResults = await searchThoughts(
+            pool, queryEmbedding, fetchLimit, threshold, filter, project, include_archived, created_by
           );
+          let denseFused = rawResults;
+          let hydeAnswer: string | null = null;
+          if (hyde) {
+            hydeAnswer = await generateHydeAnswer(query, {
+              endpoint: HYDE_ENDPOINT, model: HYDE_MODEL,
+            });
+            if (hydeAnswer) {
+              const hydeEmbedding = await embedder.generateEmbedding(hydeAnswer);
+              const hydeResults = await searchThoughts(
+                pool, hydeEmbedding, fetchLimit, threshold, filter, project, include_archived, created_by
+              );
+              denseFused = reciprocalRankFusion([rawResults, hydeResults], 60, fetchLimit);
+            }
+          } else if (boost) {
+            denseFused = applyRecencyBoost(rawResults);
+          }
+          const results = reciprocalRankFusion([denseFused, bm25Results], 60, limit);
 
           const formatted = results.map((r) => ({
+            id: r.id,
             content: r.content,
             metadata: r.metadata,
             similarity: Math.round(r.similarity * 1000) / 1000,
@@ -336,7 +375,13 @@ export function createMcpServer(): Server {
             content: [
               {
                 type: "text" as const,
-                text: JSON.stringify({ count: formatted.length, results: formatted }, null, 2),
+                text: JSON.stringify({
+                  count: formatted.length,
+                  recency_boosted: boost,
+                  hyde_expanded: hyde && hydeAnswer !== null,
+                  bm25_fused: true,
+                  results: formatted,
+                }, null, 2),
               },
             ],
           };
@@ -396,7 +441,7 @@ export function createMcpServer(): Server {
             embedder.extractMetadata(content),
           ]);
 
-          const fullMetadata = { ...metadata, source };
+          const fullMetadata = { ...metadata, source, embedder_version: embedder.getVersion() };
           const result = await insertThought(pool, content, embedding, fullMetadata, project, supersedes, created_by);
 
           const durCap = Date.now() - t0;
@@ -516,6 +561,7 @@ export function createMcpServer(): Server {
           const created_by = args?.created_by as string | undefined;
 
           // Process each thought: embed + extract metadata
+          const embedder_version = embedder.getVersion();
           const processed: BatchThoughtInput[] = await Promise.all(
             thoughtInputs.map(async (t) => {
               const [embedding, metadata] = await Promise.all([
@@ -525,7 +571,7 @@ export function createMcpServer(): Server {
               return {
                 content: t.content,
                 embedding,
-                metadata: { ...metadata, source },
+                metadata: { ...metadata, source, embedder_version },
                 project,
                 created_by,
               };

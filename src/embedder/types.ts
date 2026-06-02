@@ -39,6 +39,14 @@ export interface Embedder {
 
   /** Use an LLM to extract structured metadata from content. */
   extractMetadata(content: string): Promise<ThoughtMetadataExtracted>;
+
+  /**
+   * Stable identifier of the embedding model behind this embedder.
+   * Stamped into thought metadata at write time so future migrations can
+   * identify which thoughts need re-embedding when the model changes.
+   * Examples: "nomic-embed-text", "text-embedding-3-small".
+   */
+  getVersion(): string;
 }
 
 export const METADATA_PROMPT = `Extract metadata from the following thought. Return JSON with:

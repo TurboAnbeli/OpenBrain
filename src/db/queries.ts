@@ -55,6 +55,7 @@ export interface ListFilters {
   project?: string;
   created_by?: string;
   include_archived?: boolean;
+  limit?: number;
 }
 
 // ─── Insert ──────────────────────────────────────────────────────────
@@ -72,8 +73,8 @@ export async function insertThought(
   const key = getCipherKey();
 
   const { rows } = await pool.query<ThoughtRow>(
-    `INSERT INTO thoughts (content_enc, embedding, metadata, project, supersedes, created_by)
-     VALUES (pgp_sym_encrypt($1, $7), $2::vector, $3::jsonb, $4, $5, $6)
+    `INSERT INTO thoughts (content_enc, embedding, metadata, project, supersedes, created_by, fts)
+     VALUES (pgp_sym_encrypt($1, $7), $2::vector, $3::jsonb, $4, $5, $6, to_tsvector('english', $1))
      RETURNING id,
                pgp_sym_decrypt(content_enc, $7)::text AS content,
                metadata, project, created_by, archived, supersedes, created_at`,
@@ -328,7 +329,8 @@ export async function updateThought(
     `UPDATE thoughts
      SET content_enc = pgp_sym_encrypt($2, $5),
          embedding = $3::vector,
-         metadata = $4::jsonb
+         metadata = $4::jsonb,
+         fts = to_tsvector('english', $2)
      WHERE id = $1
      RETURNING id,
                pgp_sym_decrypt(content_enc, $5)::text AS content,
@@ -363,6 +365,61 @@ export async function deleteThought(
   return { deleted: (rowCount ?? 0) > 0, id };
 }
 
+// ─── BM25 Full-Text Search ───────────────────────────────────────────
+
+export async function bm25SearchThoughts(
+  pool: pg.Pool,
+  queryText: string,
+  limit: number = 10,
+  filter: Record<string, unknown> = {},
+  project?: string,
+  include_archived?: boolean,
+  created_by?: string
+): Promise<SearchResult[]> {
+  const key = getCipherKey();
+
+  const { rows } = await pool.query<{
+    id: string;
+    content: string;
+    metadata: ThoughtMetadata;
+    bm25_rank: number;
+    created_at: Date;
+  }>(
+    `SELECT id, content, metadata, bm25_rank, created_at
+     FROM bm25_search_thoughts($1, $2, $3, $4::jsonb, $5, $6, $7)`,
+    [
+      queryText,
+      key,
+      limit,
+      JSON.stringify(filter),
+      project ?? null,
+      include_archived ?? false,
+      created_by ?? null,
+    ]
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    content: r.content,
+    metadata: r.metadata,
+    similarity: r.bm25_rank,
+    created_at: r.created_at,
+  }));
+}
+
+// ─── FTS Backfill ────────────────────────────────────────────────────
+
+export async function backfillFts(pool: pg.Pool): Promise<number> {
+  const key = getCipherKey();
+  const { rowCount } = await pool.query(
+    `UPDATE thoughts
+     SET fts = to_tsvector('english', pgp_sym_decrypt(content_enc, $1))
+     WHERE fts IS NULL`,
+    [key]
+  );
+  return rowCount ?? 0;
+}
+
 // ─── Batch Insert ────────────────────────────────────────────────────
 
 export interface BatchThoughtInput {
@@ -388,8 +445,8 @@ export async function batchInsertThoughts(
       const embeddingStr = `[${thought.embedding.join(",")}]`;
 
       const { rows } = await client.query<ThoughtRow>(
-        `INSERT INTO thoughts (content_enc, embedding, metadata, project, created_by)
-         VALUES (pgp_sym_encrypt($1, $6), $2::vector, $3::jsonb, $4, $5)
+        `INSERT INTO thoughts (content_enc, embedding, metadata, project, created_by, fts)
+         VALUES (pgp_sym_encrypt($1, $6), $2::vector, $3::jsonb, $4, $5, to_tsvector('english', $1))
          RETURNING id,
                    pgp_sym_decrypt(content_enc, $6)::text AS content,
                    metadata, project, created_by, archived, supersedes, created_at`,

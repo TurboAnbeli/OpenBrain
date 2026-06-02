@@ -25,6 +25,10 @@ export class OllamaEmbedder implements Embedder {
     );
   }
 
+  getVersion(): string {
+    return this.embedModel;
+  }
+
   async generateEmbedding(text: string): Promise<number[]> {
     const response = await fetch(`${this.endpoint}/api/embed`, {
       method: "POST",

@@ -42,6 +42,10 @@ export class AzureOpenAIEmbedder implements Embedder {
     );
   }
 
+  getVersion(): string {
+    return this.embedDeployment;
+  }
+
   async generateEmbedding(text: string): Promise<number[]> {
     const url = `${this.endpoint}/openai/deployments/${this.embedDeployment}/embeddings?api-version=${this.apiVersion}`;
 

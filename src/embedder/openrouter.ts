@@ -29,6 +29,10 @@ export class OpenRouterEmbedder implements Embedder {
     );
   }
 
+  getVersion(): string {
+    return this.embedModel;
+  }
+
   async generateEmbedding(text: string): Promise<number[]> {
     const response = await fetch("https://openrouter.ai/api/v1/embeddings", {
       method: "POST",

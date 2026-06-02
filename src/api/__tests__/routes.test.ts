@@ -30,12 +30,14 @@ vi.mock("../../embedder/index.js", () => ({
   getEmbedder: () => ({
     generateEmbedding: mockGenerateEmbedding,
     extractMetadata: mockExtractMetadata,
+    getVersion: () => "test-embedder",
   }),
 }));
 
 // Mock query functions
 const mockInsertThought = vi.fn();
 const mockSearchThoughts = vi.fn();
+const mockBm25SearchThoughts = vi.fn().mockResolvedValue([]);
 const mockListThoughts = vi.fn();
 const mockGetThoughtStats = vi.fn();
 const mockUpdateThought = vi.fn();
@@ -45,6 +47,7 @@ const mockBatchInsertThoughts = vi.fn();
 vi.mock("../../db/queries.js", () => ({
   insertThought: (...args: any[]) => mockInsertThought(...args),
   searchThoughts: (...args: any[]) => mockSearchThoughts(...args),
+  bm25SearchThoughts: (...args: any[]) => mockBm25SearchThoughts(...args),
   listThoughts: (...args: any[]) => mockListThoughts(...args),
   getThoughtStats: (...args: any[]) => mockGetThoughtStats(...args),
   updateThought: (...args: any[]) => mockUpdateThought(...args),

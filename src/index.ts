@@ -19,7 +19,8 @@ import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { serve } from "@hono/node-server";
 
-import { initializeDatabase, closePool } from "./db/connection.js";
+import { initializeDatabase, closePool, getPool } from "./db/connection.js";
+import { backfillFts } from "./db/queries.js";
 import { createApi } from "./api/routes.js";
 import { createMcpServer } from "./mcp/server.js";
 import { checkAuth, oauthProtectedResourceMetadata } from "./auth.js";
@@ -34,6 +35,12 @@ async function main(): Promise<void> {
 
   // Initialize database connection pool
   await initializeDatabase();
+
+  // Backfill fts column for any rows inserted before migration 005
+  const backfilled = await backfillFts(getPool());
+  if (backfilled > 0) {
+    console.log(`[db] Backfilled fts for ${backfilled} thoughts.`);
+  }
 
   // ── REST API Server (Hono) ──────────────────────────────────────
 
