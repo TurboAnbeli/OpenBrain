@@ -24,6 +24,7 @@ import { backfillFts } from "./db/queries.js";
 import { createApi } from "./api/routes.js";
 import { createMcpServer } from "./mcp/server.js";
 import { checkAuth, oauthProtectedResourceMetadata } from "./auth.js";
+import { loadCrossEncoder } from "./api/cross_encoder.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
@@ -40,6 +41,17 @@ async function main(): Promise<void> {
   const backfilled = await backfillFts(getPool());
   if (backfilled > 0) {
     console.log(`[db] Backfilled fts for ${backfilled} thoughts.`);
+  }
+
+  // Load cross-encoder reranker if configured
+  const crossEncoderModel = process.env.OPENBRAIN_CROSS_ENCODER_MODEL;
+  if (crossEncoderModel) {
+    try {
+      await loadCrossEncoder({ model: crossEncoderModel });
+      console.log(`[cross-encoder] Loaded ${crossEncoderModel}`);
+    } catch (e) {
+      console.error(`[cross-encoder] Failed to load ${crossEncoderModel}:`, (e as Error).message);
+    }
   }
 
   // ── REST API Server (Hono) ──────────────────────────────────────

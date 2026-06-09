@@ -16,9 +16,22 @@
 
 import { initializeDatabase, closePool } from "./db/connection.js";
 import { startMcpStdio } from "./mcp/server.js";
+import { loadCrossEncoder } from "./api/cross_encoder.js";
 
 async function main(): Promise<void> {
   await initializeDatabase();
+
+  // Load cross-encoder reranker if configured
+  const crossEncoderModel = process.env.OPENBRAIN_CROSS_ENCODER_MODEL;
+  if (crossEncoderModel) {
+    try {
+      await loadCrossEncoder({ model: crossEncoderModel });
+      console.error(`[cross-encoder] Loaded ${crossEncoderModel}`);
+    } catch (e) {
+      console.error(`[cross-encoder] Failed to load ${crossEncoderModel}:`, (e as Error).message);
+    }
+  }
+
   await startMcpStdio();
 }
 

@@ -1,16 +1,18 @@
 /**
  * Query-time reranking for contradiction / negation-sensitive retrieval.
  *
- * Failure mode addressed: BM25 and bi-encoder similarity both tend to surface
- * "about X" passages even when the query is asking for "not X", "without Y",
- * or "which claim is false". A small local LLM can read query + candidate
- * together and demote opposite / near-miss passages.
+ * Two backends:
+ *   1. Cross-encoder (preferred): ONNX in-process, ~10–50 ms, deterministic.
+ *   2. LLM reranker (fallback): Ollama round-trip, ~3–13 s, handles novel
+ *      patterns the cross-encoder has never seen.
  *
- * This stage is intentionally narrow by default: it only fires for queries
- * with explicit negation / exclusion markers. That keeps the common path on
- * vector+BM25+HyDE+recency, and spends the extra model roundtrip only on the
- * class of queries the existing stack does not model well.
+ * The cross-encoder fires whenever it is loaded and the query has at least
+ * OPENBRAIN_CROSS_ENCODER_MIN_CANDIDATES results (default 3).  The LLM
+ * reranker only fires for negation queries (or always if
+ * OPENBRAIN_RERANK_ALWAYS is set).
  */
+
+import { isCrossEncoderLoaded, scorePairs } from "./cross_encoder.js";
 
 const NEGATION_PATTERNS: RegExp[] = [
   /\bno\s+\w+/i,
@@ -144,6 +146,13 @@ export async function rerankResults<T extends RerankCandidate>(
 ): Promise<{ results: T[] | null; fired: boolean }> {
   if (results.length < 2) return { results: null, fired: false };
 
+  // 1. Try cross-encoder first (fast, deterministic)
+  const ceOutput = await crossEncoderRerank(query, results);
+  if (ceOutput.fired && ceOutput.results !== null) {
+    return ceOutput;
+  }
+
+  // 2. Fall back to LLM reranker for negation / hard queries
   const topN = Math.min(opts.topN ?? 8, results.length);
   const candidates = results.slice(0, topN);
   const fallbackModel = process.env.OPENBRAIN_RERANK_FALLBACK_MODEL ?? opts.model;
@@ -217,4 +226,42 @@ export async function rerankResults<T extends RerankCandidate>(
   }
 
   return { results: null, fired: false };
+}
+
+/**
+ * Rerank top candidates using the in-process ONNX cross-encoder.
+ * Returns null if the cross-encoder is not loaded or results are too few.
+ */
+export async function crossEncoderRerank<T extends RerankCandidate>(
+  query: string,
+  results: T[]
+): Promise<{ results: T[] | null; fired: boolean }> {
+  if (!isCrossEncoderLoaded()) return { results: null, fired: false };
+
+  const minCandidates = parseInt(process.env.OPENBRAIN_CROSS_ENCODER_MIN_CANDIDATES ?? "3", 10);
+  if (results.length < minCandidates) return { results: null, fired: false };
+
+  const topN = Math.min(parseInt(process.env.OPENBRAIN_CROSS_ENCODER_TOPN ?? "12", 10), results.length);
+  const candidates = results.slice(0, topN);
+
+  try {
+    const scores = await scorePairs(
+      query,
+      candidates.map((c) => c.content)
+    );
+
+    const indexed = candidates.map((c, i) => ({ candidate: c, score: scores[i], originalIdx: i }));
+    indexed.sort((a, b) => {
+      if (b.score! !== a.score!) return b.score! - a.score!;
+      return a.originalIdx - b.originalIdx;
+    });
+
+    return {
+      results: [...indexed.map((item) => item.candidate), ...results.slice(topN)],
+      fired: true,
+    };
+  } catch (err) {
+    console.error("[cross-encoder] rerank failed:", (err as Error).message);
+    return { results: null, fired: false };
+  }
 }

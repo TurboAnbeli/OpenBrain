@@ -34,7 +34,7 @@ import {
   generateHydeAnswer,
   reciprocalRankFusion,
 } from "./query_expansion.js";
-import { rerankResults, shouldRerank } from "./rerank.js";
+import { rerankResults, shouldRerank, crossEncoderRerank } from "./rerank.js";
 import { applyProofCountBoost } from "./proof_count_boost.js";
 import { synthesizeObservation } from "./synthesize.js";
 import {
@@ -337,11 +337,18 @@ export function createApi(): Hono {
         );
       }
 
-      const rerankOutput = rerank ? await rerankResults(body.query, fusedResults, {
-        endpoint: RERANK_ENDPOINT,
-        model: RERANK_MODEL,
-        topN: RERANK_TOPN,
-      }) : { results: null, fired: false };
+      const rerankOutput = rerank ? await crossEncoderRerank(body.query, fusedResults) : { results: null, fired: false };
+      if (rerank && !rerankOutput.fired) {
+        const llmOutput = await rerankResults(body.query, fusedResults, {
+          endpoint: RERANK_ENDPOINT,
+          model: RERANK_MODEL,
+          topN: RERANK_TOPN,
+        });
+        if (llmOutput.fired) {
+          rerankOutput.results = llmOutput.results;
+          rerankOutput.fired = true;
+        }
+      }
       const rerankedResults = rerankOutput.results;
       const results = (rerankedResults ?? fusedResults).slice(0, requestedLimit);
 
@@ -353,6 +360,7 @@ export function createApi(): Hono {
         bm25_fused: true,
         entity_ranked: useEntity,
         reranked: rerankedResults !== null,
+        cross_encoder_reranked: rerankOutput.fired && rerankOutput.results !== null,
         reranker_fired: rerankOutput.fired,
         results: results.map((r) => ({
           id: r.id,

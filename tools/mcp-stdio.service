@@ -1,0 +1,55 @@
+# /home/ryan/workspace/openbrain/tools/mcp-stdio.service
+# OpenBrain MCP stdio launcher (used by supergateway and direct stdio consumers).
+# Hardened per 2026-06-08 security audit Issue 7.2:
+#   - IPAddressDeny=any, IPAddressAllow=localhost: kernel-level egress block
+#     except for loopback (PG, ChromaDB, Ollama all on 127.0.0.1)
+#   - NoNewPrivileges, ProtectSystem=strict, ProtectHome=read-only
+#   - ReadWritePaths scoped to openbrain working dir + secrets
+
+[Unit]
+Description=OpenBrain MCP stdio launcher (hardened egress)
+After=postgresql.service ollama.service network.target
+Wants=postgresql.service ollama.service
+
+[Service]
+Type=simple
+User=ryan
+Group=ryan
+WorkingDirectory=/home/ryan/workspace/openbrain
+EnvironmentFile=/home/ryan/workspace/openbrain/.env
+Environment=NODE_ENV=production
+Environment=OPENBRAIN_TRANSPORT=stdio
+ExecStart=/usr/bin/node /home/ryan/workspace/openbrain/dist/stdio.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Resource limits
+MemoryMax=1G
+CPUQuota=200%
+
+# --- Hardening (2026-06-08 security audit 7.2) ---
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectSystem=strict
+PrivateTmp=yes
+ProtectHome=read-only
+# Kernel-level egress: deny any IP, allow only loopback.
+# Closes vector 2 (MCP server process egress) at the network layer.
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+# Filesystem write scope
+ReadWritePaths=/home/ryan/workspace/openbrain /home/ryan/workspace/secrets
+
+[Install]
+WantedBy=default.target
