@@ -1,0 +1,17 @@
+[Unit]
+Description=OpenBrain REST + MCP API server (:8000 / :8080)
+Documentation=https://github.com/TurboAnbeli/OpenBrain
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/workspace/openbrain
+ExecStart=%h/workspace/openbrain/deploy/on-prem/systemd/start-api.sh
+Restart=on-failure
+RestartSec=5
+# Postgres / ollama may still be coming up at boot.
+TimeoutStartSec=90
+
+[Install]
+WantedBy=default.target
