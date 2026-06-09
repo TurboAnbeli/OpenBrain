@@ -337,11 +337,12 @@ export function createApi(): Hono {
         );
       }
 
-      const rerankedResults = rerank ? await rerankResults(body.query, fusedResults, {
+      const rerankOutput = rerank ? await rerankResults(body.query, fusedResults, {
         endpoint: RERANK_ENDPOINT,
         model: RERANK_MODEL,
         topN: RERANK_TOPN,
-      }) : null;
+      }) : { results: null, fired: false };
+      const rerankedResults = rerankOutput.results;
       const results = (rerankedResults ?? fusedResults).slice(0, requestedLimit);
 
       return c.json({
@@ -352,6 +353,7 @@ export function createApi(): Hono {
         bm25_fused: true,
         entity_ranked: useEntity,
         reranked: rerankedResults !== null,
+        reranker_fired: rerankOutput.fired,
         results: results.map((r) => ({
           id: r.id,
           content: r.content,

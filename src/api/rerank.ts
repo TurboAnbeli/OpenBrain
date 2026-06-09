@@ -31,6 +31,7 @@ const NEGATION_PATTERNS: RegExp[] = [
 ];
 
 export function shouldRerank(query: string): boolean {
+  if ((process.env.OPENBRAIN_RERANK_ALWAYS ?? "false").toLowerCase() === "true") return true;
   return NEGATION_PATTERNS.some((pattern) => pattern.test(query));
 }
 
@@ -140,52 +141,80 @@ export async function rerankResults<T extends RerankCandidate>(
   query: string,
   results: T[],
   opts: RerankOptions
-): Promise<T[] | null> {
-  if (results.length < 2) return null;
+): Promise<{ results: T[] | null; fired: boolean }> {
+  if (results.length < 2) return { results: null, fired: false };
 
   const topN = Math.min(opts.topN ?? 8, results.length);
   const candidates = results.slice(0, topN);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 12000);
+  const fallbackModel = process.env.OPENBRAIN_RERANK_FALLBACK_MODEL ?? opts.model;
 
-  try {
-    const response = await fetch(`${opts.endpoint}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: opts.model,
-        prompt: buildPrompt(query, candidates),
-        stream: false,
-        think: false,
-        format: "json",
-        options: { num_predict: 220, temperature: 0, seed: 42 },
-      }),
-      signal: controller.signal,
-    });
-    if (!response.ok) return heuristicRerank(query, results);
+  async function attempt(model: string): Promise<T[] | null> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 12000);
 
-    const data = (await response.json()) as { response?: string };
-    const parsed = parseRanking((data.response ?? "").trim());
-    if (!parsed || parsed.ranking.length === 0) return heuristicRerank(query, results);
-
-    const originalRank = new Map(candidates.map((candidate, idx) => [candidate.id, idx]));
-    const scoredIds = new Set<string>();
-    const rerankedTop = [...parsed.ranking]
-      .filter((item) => originalRank.has(item.id))
-      .sort((a, b) => {
-        if (b.score !== a.score) return b.score - a.score;
-        return (originalRank.get(a.id) ?? 0) - (originalRank.get(b.id) ?? 0);
-      })
-      .map((item) => {
-        scoredIds.add(item.id);
-        return candidates[originalRank.get(item.id)!]!;
+    try {
+      const response = await fetch(`${opts.endpoint}/api/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          prompt: buildPrompt(query, candidates),
+          stream: false,
+          think: false,
+          format: "json",
+          options: { num_predict: 220, temperature: 0, seed: 42 },
+        }),
+        signal: controller.signal,
       });
+      if (!response.ok) return null;
 
-    const untouchedTop = candidates.filter((candidate) => !scoredIds.has(candidate.id));
-    return [...rerankedTop, ...untouchedTop, ...results.slice(topN)];
-  } catch {
-    return heuristicRerank(query, results);
-  } finally {
-    clearTimeout(timer);
+      const data = (await response.json()) as { response?: string };
+      const parsed = parseRanking((data.response ?? "").trim());
+      if (!parsed || parsed.ranking.length === 0) return null;
+
+      const originalRank = new Map(candidates.map((candidate, idx) => [candidate.id, idx]));
+      const scoredIds = new Set<string>();
+      const rerankedTop = [...parsed.ranking]
+        .filter((item) => originalRank.has(item.id))
+        .sort((a, b) => {
+          if (b.score !== a.score) return b.score - a.score;
+          return (originalRank.get(a.id) ?? 0) - (originalRank.get(b.id) ?? 0);
+        })
+        .map((item) => {
+          scoredIds.add(item.id);
+          return candidates[originalRank.get(item.id)!]!;
+        });
+
+      const untouchedTop = candidates.filter((candidate) => !scoredIds.has(candidate.id));
+      return [...rerankedTop, ...untouchedTop, ...results.slice(topN)];
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
   }
+
+  // First attempt with primary model
+  let reranked = await attempt(opts.model);
+  if (reranked) {
+    return { results: reranked, fired: true };
+  }
+
+  // Retry with fallback model (often a smaller/faster model)
+  if (fallbackModel !== opts.model) {
+    console.error(`[rerank] Primary model ${opts.model} failed; retrying with ${fallbackModel}`);
+    reranked = await attempt(fallbackModel);
+    if (reranked) {
+      return { results: reranked, fired: true };
+    }
+  }
+
+  // Final fallback to heuristics
+  const heuristic = heuristicRerank(query, results);
+  if (heuristic) {
+    console.error("[rerank] LLM rerank failed; using heuristic fallback");
+    return { results: heuristic, fired: true };
+  }
+
+  return { results: null, fired: false };
 }

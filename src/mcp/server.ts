@@ -435,11 +435,12 @@ export function createMcpServer(): Server {
             );
           }
 
-          const rerankedResults = rerank ? await rerankResults(query, fusedResults, {
+          const rerankOutput = rerank ? await rerankResults(query, fusedResults, {
             endpoint: RERANK_ENDPOINT,
             model: RERANK_MODEL,
             topN: RERANK_TOPN,
-          }) : null;
+          }) : { results: null, fired: false };
+          const rerankedResults = rerankOutput.results;
           const results = (rerankedResults ?? fusedResults).slice(0, limit);
 
           const formatted = results.map((r) => ({
@@ -463,6 +464,7 @@ export function createMcpServer(): Server {
                   bm25_fused: true,
                   entity_ranked: useEntity,
                   reranked: rerankedResults !== null,
+                  reranker_fired: rerankOutput.fired,
                   results: formatted,
                 }, null, 2),
               },
