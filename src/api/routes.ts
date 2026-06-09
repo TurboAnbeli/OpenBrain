@@ -54,6 +54,11 @@ const RERANK_MODEL =
 const RERANK_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
 const RERANK_ENABLED = (process.env.OPENBRAIN_RERANK_ENABLED ?? "true").toLowerCase() !== "false";
 const RERANK_TOPN = parseInt(process.env.OPENBRAIN_RERANK_TOPN ?? "6", 10);
+// MS MARCO cross-encoder OFF by default — measured regression on this KB
+// (2026-06-09 eval: standard R@1 77.4% → 68.8%, negation pass 0/5). Opt in
+// with OPENBRAIN_CROSS_ENCODER_ENABLED=true for A/B testing.
+const CROSS_ENCODER_ENABLED =
+  (process.env.OPENBRAIN_CROSS_ENCODER_ENABLED ?? "false").toLowerCase() === "true";
 const DEDUP_ENABLED = (process.env.OPENBRAIN_DEDUP_ENABLED ?? "true").toLowerCase() !== "false";
 const DEDUP_THRESHOLD = parseFloat(process.env.OPENBRAIN_DEDUP_THRESHOLD ?? "0.95");
 const SYNTHESIS_MODEL =
@@ -337,14 +342,31 @@ export function createApi(): Hono {
         );
       }
 
-      const rerankOutput = rerank ? await crossEncoderRerank(body.query, fusedResults) : { results: null, fired: false };
-      if (rerank && !rerankOutput.fired) {
+      // Cross-encoder is opt-in (see CROSS_ENCODER_ENABLED note above). The
+      // LLM reranker is the default and is what should run on negation/complex
+      // queries. Cross-encoder only runs as a *companion* to the LLM when the
+      // operator explicitly enables it, so it never short-circuits the fallback.
+      // crossEncoderFired is tracked separately so the response flag is honest.
+      const rerankOutput: { results: typeof fusedResults | null; fired: boolean } = {
+        results: null,
+        fired: false,
+      };
+      let crossEncoderFired = false;
+      if (rerank) {
+        if (CROSS_ENCODER_ENABLED) {
+          const ceOutput = await crossEncoderRerank(body.query, fusedResults);
+          if (ceOutput.fired && ceOutput.results !== null) {
+            rerankOutput.results = ceOutput.results;
+            rerankOutput.fired = true;
+            crossEncoderFired = true;
+          }
+        }
         const llmOutput = await rerankResults(body.query, fusedResults, {
           endpoint: RERANK_ENDPOINT,
           model: RERANK_MODEL,
           topN: RERANK_TOPN,
         });
-        if (llmOutput.fired) {
+        if (llmOutput.fired && llmOutput.results !== null) {
           rerankOutput.results = llmOutput.results;
           rerankOutput.fired = true;
         }
@@ -360,7 +382,7 @@ export function createApi(): Hono {
         bm25_fused: true,
         entity_ranked: useEntity,
         reranked: rerankedResults !== null,
-        cross_encoder_reranked: rerankOutput.fired && rerankOutput.results !== null,
+        cross_encoder_reranked: crossEncoderFired,
         reranker_fired: rerankOutput.fired,
         results: results.map((r) => ({
           id: r.id,

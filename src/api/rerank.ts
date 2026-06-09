@@ -146,10 +146,14 @@ export async function rerankResults<T extends RerankCandidate>(
 ): Promise<{ results: T[] | null; fired: boolean }> {
   if (results.length < 2) return { results: null, fired: false };
 
-  // 1. Try cross-encoder first (fast, deterministic)
-  const ceOutput = await crossEncoderRerank(query, results);
-  if (ceOutput.fired && ceOutput.results !== null) {
-    return ceOutput;
+  // 1. Optionally try cross-encoder first (fast, deterministic). OFF by default
+  // because the MS MARCO model degrades quality on this personal KB. The
+  // OPENBRAIN_CROSS_ENCODER_ENABLED flag must be set for this branch to run.
+  if ((process.env.OPENBRAIN_CROSS_ENCODER_ENABLED ?? "false").toLowerCase() === "true") {
+    const ceOutput = await crossEncoderRerank(query, results);
+    if (ceOutput.fired && ceOutput.results !== null) {
+      return ceOutput;
+    }
   }
 
   // 2. Fall back to LLM reranker for negation / hard queries
@@ -171,7 +175,11 @@ export async function rerankResults<T extends RerankCandidate>(
           stream: false,
           think: false,
           format: "json",
-          options: { num_predict: 220, temperature: 0, seed: 42 },
+          // 220 was too tight: a 6-candidate response easily exceeds 400 tokens
+          // and was getting truncated mid-JSON (done_reason=length), so the
+          // reranker silently failed. 1024 is safely above worst case for 8
+          // candidates and still finishes in ~1.5s on smollm2:1.7b.
+          options: { num_predict: 1024, temperature: 0, seed: 42 },
         }),
         signal: controller.signal,
       });

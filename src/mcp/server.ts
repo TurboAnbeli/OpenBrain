@@ -63,6 +63,9 @@ const RERANK_MODEL =
 const RERANK_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
 const RERANK_ENABLED = (process.env.OPENBRAIN_RERANK_ENABLED ?? "true").toLowerCase() !== "false";
 const RERANK_TOPN = parseInt(process.env.OPENBRAIN_RERANK_TOPN ?? "6", 10);
+// MS MARCO cross-encoder OFF by default — see routes.ts note.
+const CROSS_ENCODER_ENABLED =
+  (process.env.OPENBRAIN_CROSS_ENCODER_ENABLED ?? "false").toLowerCase() === "true";
 const DEDUP_ENABLED = (process.env.OPENBRAIN_DEDUP_ENABLED ?? "true").toLowerCase() !== "false";
 const DEDUP_THRESHOLD = parseFloat(process.env.OPENBRAIN_DEDUP_THRESHOLD ?? "0.95");
 const SYNTHESIS_MODEL =
@@ -435,14 +438,30 @@ export function createMcpServer(): Server {
             );
           }
 
-          const rerankOutput = rerank ? await crossEncoderRerank(query, fusedResults) : { results: null, fired: false };
-          if (rerank && !rerankOutput.fired) {
+          // Cross-encoder is opt-in (see routes.ts CROSS_ENCODER_ENABLED note).
+          // The LLM reranker is the default for negation/complex queries; the
+          // cross-encoder only runs as a companion when explicitly enabled and
+          // never short-circuits the LLM fallback.
+          const rerankOutput: { results: typeof fusedResults | null; fired: boolean } = {
+            results: null,
+            fired: false,
+          };
+          let crossEncoderFired = false;
+          if (rerank) {
+            if (CROSS_ENCODER_ENABLED) {
+              const ceOutput = await crossEncoderRerank(query, fusedResults);
+              if (ceOutput.fired && ceOutput.results !== null) {
+                rerankOutput.results = ceOutput.results;
+                rerankOutput.fired = true;
+                crossEncoderFired = true;
+              }
+            }
             const llmOutput = await rerankResults(query, fusedResults, {
               endpoint: RERANK_ENDPOINT,
               model: RERANK_MODEL,
               topN: RERANK_TOPN,
             });
-            if (llmOutput.fired) {
+            if (llmOutput.fired && llmOutput.results !== null) {
               rerankOutput.results = llmOutput.results;
               rerankOutput.fired = true;
             }
@@ -471,7 +490,7 @@ export function createMcpServer(): Server {
                   bm25_fused: true,
                   entity_ranked: useEntity,
                   reranked: rerankedResults !== null,
-                  cross_encoder_reranked: rerankOutput.fired && rerankOutput.results !== null,
+                  cross_encoder_reranked: crossEncoderFired,
                   reranker_fired: rerankOutput.fired,
                   results: formatted,
                 }, null, 2),
