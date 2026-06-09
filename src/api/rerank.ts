@@ -125,18 +125,78 @@ function countMatches(content: string, patterns: RegExp[]): number {
   return patterns.reduce((count, pattern) => count + (pattern.test(content) ? 1 : 0), 0);
 }
 
-function heuristicRerank<T extends RerankCandidate>(query: string, results: T[]): T[] | null {
+// Words that follow a negation trigger but carry no exclusion intent — skipped
+// so we capture the substantive object of the negation ("vector embeddings",
+// "surgery", "privilege escalation") rather than glue words.
+const NEG_STOPWORDS: ReadonlySet<string> = new Set([
+  "the", "any", "some", "using", "uses", "use", "used", "rely", "relies",
+  "relying", "based", "depend", "depends", "need", "needs", "needing",
+  "require", "requires", "involving", "involve", "that", "this", "with",
+  "via", "from", "more", "less", "much",
+]);
+
+const NEG_TRIGGER_RE =
+  /\b(?:no longer|no|not|without|except|excluding|exclude|avoid|instead of|don't|doesn't|isn't|aren't|never|free of|free from)\b/gi;
+
+/**
+ * Extract the substantive concepts the user wants EXCLUDED from a negation
+ * query. e.g. "restart with no privilege escalation" → ["privilege",
+ * "escalation"]; "treatment that uses no surgery" → ["surgery"]; "memory that
+ * does not rely on vector embeddings" → ["vector", "embeddings"].
+ *
+ * Up to 3 substantive tokens (len ≥ 4, non-stopword) following each trigger.
+ */
+export function extractNegatedTerms(query: string): string[] {
+  const lower = query.toLowerCase();
+  const terms: string[] = [];
+  NEG_TRIGGER_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = NEG_TRIGGER_RE.exec(lower)) !== null) {
+    const after = lower.slice(m.index + m[0].length);
+    const tokens = after.split(/[^a-z0-9]+/).filter(Boolean);
+    let taken = 0;
+    for (const tok of tokens) {
+      if (taken >= 3) break;
+      if (tok.length < 4 || NEG_STOPWORDS.has(tok)) continue;
+      terms.push(tok);
+      taken++;
+    }
+  }
+  return [...new Set(terms)];
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Deterministic negation-aware reranker (~0 ms). Demotes candidates that
+ * contain a negated/forbidden concept, promotes preferred passages from a cue
+ * pack, and leaves neutral candidates in their original relative order (stable
+ * sort). This is the default reranking path: it directly targets the exclusion
+ * failure mode the LLM reranker was both too slow (8–15 s on smollm2:1.7b) and
+ * too unreliable to fix (2026-06-09 eval).
+ */
+function negationAwareRerank<T extends RerankCandidate>(query: string, results: T[]): T[] | null {
   const pack = HEURISTIC_CUE_PACKS.find((candidate) =>
     candidate.query.some((pattern) => pattern.test(query))
   );
-  if (!pack) return null;
+  const negated = extractNegatedTerms(query);
+  if (!pack && negated.length === 0) return null;
 
-  return [...results].sort((a, b) => {
-    const aScore = countMatches(a.content, pack.prefer) * 100 - countMatches(a.content, pack.avoid) * 120;
-    const bScore = countMatches(b.content, pack.prefer) * 100 - countMatches(b.content, pack.avoid) * 120;
-    if (aScore !== bScore) return bScore - aScore;
-    return 0;
-  });
+  const avoidPatterns: RegExp[] = [
+    ...(pack?.avoid ?? []),
+    ...negated.map((t) => new RegExp(`\\b${escapeRegExp(t)}`, "i")),
+  ];
+  const preferPatterns: RegExp[] = pack?.prefer ?? [];
+
+  const scoreOf = (content: string): number =>
+    countMatches(content, preferPatterns) * 100 - countMatches(content, avoidPatterns) * 120;
+
+  return results
+    .map((r, i) => ({ r, i, s: scoreOf(r.content) }))
+    .sort((a, b) => (b.s - a.s) || (a.i - b.i))
+    .map((x) => x.r);
 }
 
 export async function rerankResults<T extends RerankCandidate>(
@@ -156,83 +216,84 @@ export async function rerankResults<T extends RerankCandidate>(
     }
   }
 
-  // 2. Fall back to LLM reranker for negation / hard queries
-  const topN = Math.min(opts.topN ?? 8, results.length);
-  const candidates = results.slice(0, topN);
-  const fallbackModel = process.env.OPENBRAIN_RERANK_FALLBACK_MODEL ?? opts.model;
+  // 2. Deterministic negation-aware rerank — the default path. ~0 ms, no model
+  // round-trip. This replaced the LLM reranker as default on 2026-06-09: the
+  // LLM (smollm2:1.7b, num_predict 1024) cost 8–15 s per negation query, blew
+  // past the eval client timeout (scoring as ERROR), and still failed negation
+  // cases the deterministic demotion handles directly.
+  const deterministic = negationAwareRerank(query, results);
 
-  async function attempt(model: string): Promise<T[] | null> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 12000);
+  // 3. LLM reranker — now opt-in only (OPENBRAIN_RERANK_LLM=true). When enabled
+  // it runs first and the deterministic result is the fallback if it fails.
+  const llmEnabled = (process.env.OPENBRAIN_RERANK_LLM ?? "false").toLowerCase() === "true";
+  if (llmEnabled) {
+    const topN = Math.min(opts.topN ?? 8, results.length);
+    const candidates = results.slice(0, topN);
+    const fallbackModel = process.env.OPENBRAIN_RERANK_FALLBACK_MODEL ?? opts.model;
 
-    try {
-      const response = await fetch(`${opts.endpoint}/api/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          prompt: buildPrompt(query, candidates),
-          stream: false,
-          think: false,
-          format: "json",
-          // 220 was too tight: a 6-candidate response easily exceeds 400 tokens
-          // and was getting truncated mid-JSON (done_reason=length), so the
-          // reranker silently failed. 1024 is safely above worst case for 8
-          // candidates and still finishes in ~1.5s on smollm2:1.7b.
-          options: { num_predict: 1024, temperature: 0, seed: 42 },
-        }),
-        signal: controller.signal,
-      });
-      if (!response.ok) return null;
+    const attempt = async (model: string): Promise<T[] | null> => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 8000);
 
-      const data = (await response.json()) as { response?: string };
-      const parsed = parseRanking((data.response ?? "").trim());
-      if (!parsed || parsed.ranking.length === 0) return null;
-
-      const originalRank = new Map(candidates.map((candidate, idx) => [candidate.id, idx]));
-      const scoredIds = new Set<string>();
-      const rerankedTop = [...parsed.ranking]
-        .filter((item) => originalRank.has(item.id))
-        .sort((a, b) => {
-          if (b.score !== a.score) return b.score - a.score;
-          return (originalRank.get(a.id) ?? 0) - (originalRank.get(b.id) ?? 0);
-        })
-        .map((item) => {
-          scoredIds.add(item.id);
-          return candidates[originalRank.get(item.id)!]!;
+      try {
+        const response = await fetch(`${opts.endpoint}/api/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model,
+            prompt: buildPrompt(query, candidates),
+            stream: false,
+            think: false,
+            format: "json",
+            // 448 covers the JSON for 8 candidates (~45 tokens each) with
+            // headroom while generating ~2× faster than the old 1024 budget,
+            // which was the source of the 12 s rerank latencies.
+            options: { num_predict: 448, temperature: 0, seed: 42 },
+          }),
+          signal: controller.signal,
         });
+        if (!response.ok) return null;
 
-      const untouchedTop = candidates.filter((candidate) => !scoredIds.has(candidate.id));
-      return [...rerankedTop, ...untouchedTop, ...results.slice(topN)];
-    } catch {
-      return null;
-    } finally {
-      clearTimeout(timer);
+        const data = (await response.json()) as { response?: string };
+        const parsed = parseRanking((data.response ?? "").trim());
+        if (!parsed || parsed.ranking.length === 0) return null;
+
+        const originalRank = new Map(candidates.map((candidate, idx) => [candidate.id, idx]));
+        const scoredIds = new Set<string>();
+        const rerankedTop = [...parsed.ranking]
+          .filter((item) => originalRank.has(item.id))
+          .sort((a, b) => {
+            if (b.score !== a.score) return b.score - a.score;
+            return (originalRank.get(a.id) ?? 0) - (originalRank.get(b.id) ?? 0);
+          })
+          .map((item) => {
+            scoredIds.add(item.id);
+            return candidates[originalRank.get(item.id)!]!;
+          });
+
+        const untouchedTop = candidates.filter((candidate) => !scoredIds.has(candidate.id));
+        return [...rerankedTop, ...untouchedTop, ...results.slice(topN)];
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    let reranked = await attempt(opts.model);
+    if (!reranked && fallbackModel !== opts.model) {
+      console.error(`[rerank] Primary model ${opts.model} failed; retrying with ${fallbackModel}`);
+      reranked = await attempt(fallbackModel);
     }
-  }
-
-  // First attempt with primary model
-  let reranked = await attempt(opts.model);
-  if (reranked) {
-    return { results: reranked, fired: true };
-  }
-
-  // Retry with fallback model (often a smaller/faster model)
-  if (fallbackModel !== opts.model) {
-    console.error(`[rerank] Primary model ${opts.model} failed; retrying with ${fallbackModel}`);
-    reranked = await attempt(fallbackModel);
     if (reranked) {
       return { results: reranked, fired: true };
     }
   }
 
-  // Final fallback to heuristics
-  const heuristic = heuristicRerank(query, results);
-  if (heuristic) {
-    console.error("[rerank] LLM rerank failed; using heuristic fallback");
-    return { results: heuristic, fired: true };
+  // 4. Deterministic result (or null when the query has no negation signal).
+  if (deterministic) {
+    return { results: deterministic, fired: true };
   }
-
   return { results: null, fired: false };
 }
 

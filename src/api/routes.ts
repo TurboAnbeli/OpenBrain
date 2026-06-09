@@ -47,6 +47,11 @@ import { extractEntities } from "./entity_extraction.js";
 const HYDE_MODEL = process.env.OPENBRAIN_HYDE_MODEL ?? "smollm2:1.7b";
 const HYDE_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
 const HYDE_ENABLED = (process.env.OPENBRAIN_HYDE_ENABLED ?? "true").toLowerCase() !== "false";
+// HyDE confidence cascade: skip the ~1.5 s hypothetical-answer generation when
+// the dense top hit is already strong. A confident match doesn't benefit from
+// expansion, and HyDE can dilute it (measured regression on confident
+// paraphrase queries, e.g. paraphrase-002 rank 3 → 7). Tunable for A/B.
+const HYDE_CONF_THRESHOLD = parseFloat(process.env.OPENBRAIN_HYDE_CONF_THRESHOLD ?? "0.66");
 const RERANK_MODEL =
   process.env.OPENBRAIN_RERANK_MODEL ??
   process.env.OPENBRAIN_HYDE_MODEL ??
@@ -280,10 +285,15 @@ export function createApi(): Hono {
       const requestedLimit = body.limit ?? 10;
       const boost = hasSpecificityMarker(body.query);
       const rerank = !boost && RERANK_ENABLED && shouldRerank(body.query);
-      // HyDE fires only when recency boost does NOT (mutually exclusive — keeps
-      // recency-gated queries on the fast path and avoids stacking two re-rankers).
-      const hyde = !boost && HYDE_ENABLED && shouldExpand(body.query);
-      const fetchLimit = overfetchLimit(requestedLimit, boost || hyde || rerank);
+      // HyDE fires only when neither recency boost nor reranking applies.
+      // Recency: keep recency-gated queries on the fast path. Rerank: negation
+      // queries are handled by the deterministic negation reranker, which is
+      // both faster and more reliable than HyDE expansion (HyDE generation on
+      // this CPU-only host costs seconds and tends to hallucinate on negation).
+      // baseHyde is the eligibility gate; actual generation is additionally
+      // gated below on dense-result confidence (the cascade).
+      const baseHyde = !boost && !rerank && HYDE_ENABLED && shouldExpand(body.query);
+      const fetchLimit = overfetchLimit(requestedLimit, boost || baseHyde || rerank);
 
       const threshold = body.threshold ?? 0.5;
       const useEntity = shouldUseEntityRanking(body.query);
@@ -306,6 +316,10 @@ export function createApi(): Hono {
         pool, queryEmbedding, fetchLimit, threshold, filter,
         body.project, body.include_archived, body.created_by
       );
+
+      // Cascade: only actually run HyDE when the dense top hit is weak.
+      const denseConfident = (rawResults[0]?.similarity ?? 0) >= HYDE_CONF_THRESHOLD;
+      const hyde = baseHyde && !denseConfident;
 
       let denseFused = rawResults;
       let hydeAnswer: string | null = null;
