@@ -8,7 +8,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE IF NOT EXISTS thoughts (
     id         UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
     content    TEXT        NOT NULL,
-    embedding  VECTOR(768),
+    embedding  VECTOR(1024),
     metadata   JSONB       DEFAULT '{}'::jsonb,
     project    TEXT,
     created_by TEXT,
@@ -65,7 +65,7 @@ CREATE INDEX IF NOT EXISTS idx_thoughts_supersedes
 
 -- Semantic search function
 CREATE OR REPLACE FUNCTION match_thoughts(
-    query_embedding  VECTOR(768),
+    query_embedding  VECTOR(1024),
     match_threshold  FLOAT   DEFAULT 0.5,
     match_count      INT     DEFAULT 10,
     filter           JSONB   DEFAULT '{}'::jsonb,
