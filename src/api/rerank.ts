@@ -165,10 +165,6 @@ export function extractNegatedTerms(query: string): string[] {
   return [...new Set(terms)];
 }
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 /**
  * Deterministic negation-aware reranker (~0 ms). Demotes candidates that
  * contain a negated/forbidden concept, promotes preferred passages from a cue
@@ -178,20 +174,21 @@ function escapeRegExp(s: string): string {
  * too unreliable to fix (2026-06-09 eval).
  */
 function negationAwareRerank<T extends RerankCandidate>(query: string, results: T[]): T[] | null {
+  // Cue-pack ONLY. The generalized "demote any candidate containing a word that
+  // follows a negation trigger" approach was REMOVED 2026-06-09: in descriptive
+  // queries the topic terms often follow a trigger (e.g. "Iran war ... trap no
+  // exit without loss of face"), so the best-matching thought — which naturally
+  // contains "exit/loss/face" — got demoted out of top-k. That dropped standard
+  // R@5 from 96.9% to 90.6% on synthesis queries while buying only ~1 adversarial
+  // negation case. Cue packs are specific multi-word phrases (e.g. "privilege
+  // escalation") that don't fire on ordinary prose, so they are safe.
   const pack = HEURISTIC_CUE_PACKS.find((candidate) =>
     candidate.query.some((pattern) => pattern.test(query))
   );
-  const negated = extractNegatedTerms(query);
-  if (!pack && negated.length === 0) return null;
-
-  const avoidPatterns: RegExp[] = [
-    ...(pack?.avoid ?? []),
-    ...negated.map((t) => new RegExp(`\\b${escapeRegExp(t)}`, "i")),
-  ];
-  const preferPatterns: RegExp[] = pack?.prefer ?? [];
+  if (!pack) return null;
 
   const scoreOf = (content: string): number =>
-    countMatches(content, preferPatterns) * 100 - countMatches(content, avoidPatterns) * 120;
+    countMatches(content, pack.prefer) * 100 - countMatches(content, pack.avoid) * 120;
 
   return results
     .map((r, i) => ({ r, i, s: scoreOf(r.content) }))
