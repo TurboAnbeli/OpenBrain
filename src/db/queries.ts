@@ -553,3 +553,108 @@ export async function batchInsertThoughts(
 
   return results;
 }
+
+// ─── Entity Graph Queries ──────────────────────────────────────────────
+
+export interface EntityRow {
+  id: string;
+  name: string;
+  type: string;
+  aliases?: string[];
+}
+
+export async function upsertEntity(
+  pool: pg.Pool,
+  name: string,
+  type: string,
+  aliases?: string[]
+): Promise<EntityRow> {
+  const { rows } = await pool.query<EntityRow>(
+    `INSERT INTO entities (name, type, aliases)
+     VALUES ($1, $2, $3::jsonb)
+     ON CONFLICT (name, type) DO UPDATE SET
+       aliases = EXCLUDED.aliases
+     RETURNING id, name, type, aliases`,
+    [name, type, JSON.stringify(aliases ?? [])]
+  );
+  return rows[0]!;
+}
+
+export async function linkThoughtEntity(
+  pool: pg.Pool,
+  thoughtId: string,
+  entityId: string,
+  relationship: string = "mentions",
+  weight: number = 1.0
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO thought_entities (thought_id, entity_id, relationship, weight)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (thought_id, entity_id) DO NOTHING`,
+    [thoughtId, entityId, relationship, weight]
+  );
+}
+
+/** Upsert entities and link them to a thought in one transaction. */
+export async function extractAndLinkEntities(
+  pool: pg.Pool,
+  thoughtId: string,
+  entities: Array<{ name: string; type: string; aliases?: string[] }>
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const e of entities) {
+      const row = await client.query<EntityRow>(
+        `INSERT INTO entities (name, type, aliases)
+         VALUES ($1, $2, $3::jsonb)
+         ON CONFLICT (name, type) DO UPDATE SET
+           aliases = EXCLUDED.aliases
+         RETURNING id, name, type, aliases`,
+        [e.name, e.type, JSON.stringify(e.aliases ?? [])]
+      );
+      const entityId = row.rows[0]!.id;
+      await client.query(
+        `INSERT INTO thought_entities (thought_id, entity_id, relationship, weight)
+         VALUES ($1, $2, 'mentions', 1.0)
+         ON CONFLICT (thought_id, entity_id) DO NOTHING`,
+        [thoughtId, entityId]
+      );
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export interface EntitySearchResult extends ThoughtRow {
+  overlap_count: number;
+}
+
+export async function searchThoughtsByEntity(
+  pool: pg.Pool,
+  entityNames: string[],
+  limit: number = 10,
+  project?: string,
+  include_archived?: boolean,
+  created_by?: string
+): Promise<EntitySearchResult[]> {
+  const key = getCipherKey();
+  const { rows } = await pool.query<EntitySearchResult>(
+    `SELECT id, content, metadata, overlap_count, proof_count, created_at
+     FROM search_thoughts_by_entity($1, $2, $3, $4, $5, $6, $7)`,
+    [
+      entityNames,
+      key,
+      limit,
+      project ?? null,
+      include_archived ?? false,
+      created_by ?? null,
+      true, // exclude_superseded
+    ]
+  );
+  return rows;
+}

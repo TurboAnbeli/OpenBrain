@@ -27,8 +27,10 @@ import {
   bumpProofCount,
   getThoughtsByIds,
   archiveThoughts,
+  searchThoughtsByEntity,
   type ListFilters,
   type BatchThoughtInput,
+  type SearchResult,
 } from "../db/queries.js";
 import { getEmbedder } from "../embedder/index.js";
 import {
@@ -44,6 +46,12 @@ import {
 import { rerankResults, shouldRerank } from "../api/rerank.js";
 import { applyProofCountBoost } from "../api/proof_count_boost.js";
 import { synthesizeObservation } from "../api/synthesize.js";
+import {
+  shouldUseEntityRanking,
+  extractQueryEntityNames,
+  entityWeightedRRF,
+} from "../api/entity_ranking.js";
+import { extractEntities } from "../api/entity_extraction.js";
 
 const HYDE_MODEL = process.env.OPENBRAIN_HYDE_MODEL ?? "smollm2:1.7b";
 const HYDE_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
@@ -381,9 +389,15 @@ export function createMcpServer(): Server {
           const rerank = !boost && RERANK_ENABLED && shouldRerank(query);
           const hyde = !boost && HYDE_ENABLED && shouldExpand(query);
           const fetchLimit = overfetchLimit(limit, boost || hyde || rerank);
-          const [queryEmbedding, bm25Results] = await Promise.all([
+          const useEntity = shouldUseEntityRanking(query);
+          const entityNames = useEntity ? extractQueryEntityNames(query) : [];
+
+          const [queryEmbedding, bm25Results, entityResultsRaw] = await Promise.all([
             embedder.generateEmbedding(query),
             bm25SearchThoughts(pool, query, fetchLimit, filter, project, include_archived, created_by),
+            useEntity
+              ? searchThoughtsByEntity(pool, entityNames, fetchLimit, project, include_archived, created_by)
+              : Promise.resolve([]),
           ]);
           const rawResults = await searchThoughts(
             pool, queryEmbedding, fetchLimit, threshold, filter, project, include_archived, created_by
@@ -405,9 +419,22 @@ export function createMcpServer(): Server {
             denseFused = applyRecencyBoost(rawResults);
           }
           const fusedLimit = rerank ? Math.max(limit * 2, RERANK_TOPN) : limit;
-          const fusedResults = applyProofCountBoost(
-            reciprocalRankFusion([denseFused, bm25Results], 60, fusedLimit)
-          );
+
+          let fusedResults: SearchResult[];
+          if (useEntity && entityResultsRaw.length > 0) {
+            fusedResults = applyProofCountBoost(
+              entityWeightedRRF(
+                entityResultsRaw as any,
+                [denseFused as any, bm25Results as any],
+                fusedLimit
+              ) as any
+            );
+          } else {
+            fusedResults = applyProofCountBoost(
+              reciprocalRankFusion([denseFused, bm25Results], 60, fusedLimit)
+            );
+          }
+
           const rerankedResults = rerank ? await rerankResults(query, fusedResults, {
             endpoint: RERANK_ENDPOINT,
             model: RERANK_MODEL,
@@ -434,6 +461,7 @@ export function createMcpServer(): Server {
                   recency_boosted: boost,
                   hyde_expanded: hyde && hydeAnswer !== null,
                   bm25_fused: true,
+                  entity_ranked: useEntity,
                   reranked: rerankedResults !== null,
                   results: formatted,
                 }, null, 2),
@@ -524,6 +552,17 @@ export function createMcpServer(): Server {
           const metadata = await embedder.extractMetadata(content);
           const fullMetadata = { ...metadata, source, embedder_version: embedder.getVersion() };
           const result = await insertThought(pool, content, embedding, fullMetadata, project, supersedes, created_by);
+
+          // Link extracted entities (fire-and-forget)
+          try {
+            const entities = extractEntities(content, metadata);
+            if (entities.length > 0) {
+              const { extractAndLinkEntities } = await import("../db/queries.js");
+              await extractAndLinkEntities(pool, result.id, entities);
+            }
+          } catch (e) {
+            console.error("[mcp] Entity linking failed (non-fatal):", e);
+          }
 
           const durCap = Date.now() - t0;
           await auditLog(pool, consumerId, transport, name, sanitizeArgs(name, (args ?? {}) as Record<string, unknown>), true, null, durCap);

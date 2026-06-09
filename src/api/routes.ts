@@ -22,8 +22,10 @@ import {
   bumpProofCount,
   getThoughtsByIds,
   archiveThoughts,
+  searchThoughtsByEntity,
   type ListFilters,
   type BatchThoughtInput,
+  type SearchResult,
 } from "../db/queries.js";
 import { getEmbedder } from "../embedder/index.js";
 import { hasSpecificityMarker, applyRecencyBoost, overfetchLimit } from "./recency_boost.js";
@@ -35,6 +37,12 @@ import {
 import { rerankResults, shouldRerank } from "./rerank.js";
 import { applyProofCountBoost } from "./proof_count_boost.js";
 import { synthesizeObservation } from "./synthesize.js";
+import {
+  shouldUseEntityRanking,
+  extractQueryEntityNames,
+  entityWeightedRRF,
+} from "./entity_ranking.js";
+import { extractEntities } from "./entity_extraction.js";
 
 const HYDE_MODEL = process.env.OPENBRAIN_HYDE_MODEL ?? "smollm2:1.7b";
 const HYDE_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
@@ -137,6 +145,18 @@ export function createApi(): Hono {
       const result = await insertThought(
         pool, body.content, embedding, fullMetadata, body.project, body.supersedes, body.created_by
       );
+
+      // Link extracted entities to the new thought (fire-and-forget; failure
+      // does not invalidate the capture since the thought itself succeeded).
+      try {
+        const entities = extractEntities(body.content, metadata);
+        if (entities.length > 0) {
+          const { extractAndLinkEntities } = await import("../db/queries.js");
+          await extractAndLinkEntities(pool, result.id, entities);
+        }
+      } catch (e) {
+        console.error("[api] Entity linking failed (non-fatal):", e);
+      }
 
       return c.json({
         id: result.id,
@@ -261,12 +281,21 @@ export function createApi(): Hono {
       const fetchLimit = overfetchLimit(requestedLimit, boost || hyde || rerank);
 
       const threshold = body.threshold ?? 0.5;
-      const [queryEmbedding, bm25Results] = await Promise.all([
+      const useEntity = shouldUseEntityRanking(body.query);
+      const entityNames = useEntity ? extractQueryEntityNames(body.query) : [];
+
+      const [queryEmbedding, bm25Results, entityResultsRaw] = await Promise.all([
         embedder.generateEmbedding(body.query),
         bm25SearchThoughts(
           pool, body.query, fetchLimit, filter,
           body.project, body.include_archived, body.created_by
         ),
+        useEntity
+          ? searchThoughtsByEntity(
+              pool, entityNames, fetchLimit,
+              body.project, body.include_archived, body.created_by
+            )
+          : Promise.resolve([]),
       ]);
       const rawResults = await searchThoughts(
         pool, queryEmbedding, fetchLimit, threshold, filter,
@@ -290,10 +319,24 @@ export function createApi(): Hono {
       } else if (boost) {
         denseFused = applyRecencyBoost(rawResults);
       }
+
       const fusedLimit = rerank ? Math.max(requestedLimit * 2, RERANK_TOPN) : requestedLimit;
-      const fusedResults = applyProofCountBoost(
-        reciprocalRankFusion([denseFused, bm25Results], 60, fusedLimit)
-      );
+
+      let fusedResults: SearchResult[];
+      if (useEntity && entityResultsRaw.length > 0) {
+        fusedResults = applyProofCountBoost(
+          entityWeightedRRF(
+            entityResultsRaw as any,
+            [denseFused as any, bm25Results as any],
+            fusedLimit
+          ) as any
+        );
+      } else {
+        fusedResults = applyProofCountBoost(
+          reciprocalRankFusion([denseFused, bm25Results], 60, fusedLimit)
+        );
+      }
+
       const rerankedResults = rerank ? await rerankResults(body.query, fusedResults, {
         endpoint: RERANK_ENDPOINT,
         model: RERANK_MODEL,
@@ -307,6 +350,7 @@ export function createApi(): Hono {
         recency_boosted: boost,
         hyde_expanded: hyde && hydeAnswer !== null,
         bm25_fused: true,
+        entity_ranked: useEntity,
         reranked: rerankedResults !== null,
         results: results.map((r) => ({
           id: r.id,
