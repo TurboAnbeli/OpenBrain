@@ -131,12 +131,12 @@ function countMatches(content: string, patterns: RegExp[]): number {
 const NEG_STOPWORDS: ReadonlySet<string> = new Set([
   "the", "any", "some", "using", "uses", "use", "used", "rely", "relies",
   "relying", "based", "depend", "depends", "need", "needs", "needing",
-  "require", "requires", "involving", "involve", "that", "this", "with",
-  "via", "from", "more", "less", "much",
+  "require", "requires", "involving", "involve", "involves", "about", "that",
+  "this", "with", "via", "from", "more", "less", "much", "either", "also",
 ]);
 
 const NEG_TRIGGER_RE =
-  /\b(?:no longer|no|not|without|except|excluding|exclude|avoid|instead of|don't|doesn't|isn't|aren't|never|free of|free from)\b/gi;
+  /\b(?:no longer|no|not|without|except|excluding|exclude|avoid|instead of|rather than|don't|doesn't|isn't|aren't|free of|free from)\b/gi;
 
 /**
  * Extract the substantive concepts the user wants EXCLUDED from a negation
@@ -148,6 +148,14 @@ const NEG_TRIGGER_RE =
  */
 export function extractNegatedTerms(query: string): string[] {
   const lower = query.toLowerCase();
+
+  // Non-exclusion idioms / paraphrase-intent queries. These use negative words
+  // to describe the target concept; the terms after the cue are the target, not
+  // things to exclude from results.
+  if (/^concept behind\b/.test(lower)) return [];
+  if (/\bnot visible from (?:any |a )?single view\b/.test(lower)) return [];
+  if (/\bno exit without loss of face\b/.test(lower)) return [];
+
   const terms: string[] = [];
   NEG_TRIGGER_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
@@ -173,25 +181,54 @@ export function extractNegatedTerms(query: string): string[] {
  * failure mode the LLM reranker was both too slow (8–15 s on smollm2:1.7b) and
  * too unreliable to fix (2026-06-09 eval).
  */
+function escapedRegex(term: string): RegExp {
+  return new RegExp(`\\b${term.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i");
+}
+
+function termAppears(content: string, term: string): boolean {
+  return escapedRegex(term).test(content);
+}
+
+function termSatisfiesNotAbout(query: string, content: string, term: string): boolean {
+  if (!new RegExp(`\\bnot\\s+about\\s+${term.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i").test(query)) {
+    return false;
+  }
+  return new RegExp(`\\bnot\\s+about\\s+${term.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i").test(content);
+}
+
 function negationAwareRerank<T extends RerankCandidate>(query: string, results: T[]): T[] | null {
-  // Cue-pack ONLY. The generalized "demote any candidate containing a word that
-  // follows a negation trigger" approach was REMOVED 2026-06-09: in descriptive
-  // queries the topic terms often follow a trigger (e.g. "Iran war ... trap no
-  // exit without loss of face"), so the best-matching thought — which naturally
-  // contains "exit/loss/face" — got demoted out of top-k. That dropped standard
-  // R@5 from 96.9% to 90.6% on synthesis queries while buying only ~1 adversarial
-  // negation case. Cue packs are specific multi-word phrases (e.g. "privilege
-  // escalation") that don't fire on ordinary prose, so they are safe.
+  const cueEnabled = (process.env.OPENBRAIN_CUE_RERANK_ENABLED ?? "true").toLowerCase() !== "false";
+  if (!cueEnabled) return null;
+
   const pack = HEURISTIC_CUE_PACKS.find((candidate) =>
     candidate.query.some((pattern) => pattern.test(query))
   );
-  if (!pack) return null;
+  const negatedTerms = extractNegatedTerms(query);
 
-  const scoreOf = (content: string): number =>
-    countMatches(content, pack.prefer) * 100 - countMatches(content, pack.avoid) * 120;
+  if (!pack && negatedTerms.length === 0) return null;
 
-  return results
-    .map((r, i) => ({ r, i, s: scoreOf(r.content) }))
+  const scoreOf = (content: string): number => {
+    let score = 0;
+    if (pack) {
+      score += countMatches(content, pack.prefer) * 100 - countMatches(content, pack.avoid) * 120;
+    }
+
+    // Conservative generic cue: demote candidates that mention an explicitly
+    // excluded term, unless the candidate itself places that term in a local
+    // negated context (e.g. query "not about Ukraine" and passage "not about
+    // Ukraine; about NATO credibility"). No positive-term extraction, no oracle
+    // labels, and no case-specific regexes.
+    for (const term of negatedTerms) {
+      if (!termAppears(content, term)) continue;
+      score += termSatisfiesNotAbout(query, content, term) ? 25 : -90;
+    }
+    return score;
+  };
+
+  const scored = results.map((r, i) => ({ r, i, s: scoreOf(r.content) }));
+  if (scored.every((item) => item.s === 0)) return null;
+
+  return scored
     .sort((a, b) => (b.s - a.s) || (a.i - b.i))
     .map((x) => x.r);
 }

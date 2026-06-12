@@ -34,7 +34,7 @@ import {
   generateHydeAnswer,
   reciprocalRankFusion,
 } from "./query_expansion.js";
-import { rerankResults, shouldRerank, crossEncoderRerank } from "./rerank.js";
+import { rerankResults, shouldRerank, crossEncoderRerank, extractNegatedTerms } from "./rerank.js";
 import { applyProofCountBoost } from "./proof_count_boost.js";
 import { synthesizeObservation } from "./synthesize.js";
 import {
@@ -295,7 +295,8 @@ export function createApi(): Hono {
       const baseHyde = !boost && !rerank && HYDE_ENABLED && shouldExpand(body.query);
       const fetchLimit = overfetchLimit(requestedLimit, boost || baseHyde || rerank);
 
-      const threshold = body.threshold ?? 0.5;
+      const SEARCH_THRESHOLD = parseFloat(process.env.OPENBRAIN_SEARCH_THRESHOLD ?? "0.3");
+      const threshold = body.threshold ?? SEARCH_THRESHOLD;
       const useEntity = shouldUseEntityRanking(body.query);
       const entityNames = useEntity ? extractQueryEntityNames(body.query) : [];
 
@@ -339,7 +340,7 @@ export function createApi(): Hono {
         denseFused = applyRecencyBoost(rawResults);
       }
 
-      const fusedLimit = rerank ? Math.max(requestedLimit * 2, RERANK_TOPN) : requestedLimit;
+      const fusedLimit = rerank ? Math.max(fetchLimit, requestedLimit * 2, RERANK_TOPN) : requestedLimit;
 
       let fusedResults: SearchResult[];
       if (useEntity && entityResultsRaw.length > 0) {
@@ -396,6 +397,8 @@ export function createApi(): Hono {
         bm25_fused: true,
         entity_ranked: useEntity,
         reranked: rerankedResults !== null,
+        negation_reranked: rerankOutput.fired,
+        negation_terms: rerankOutput.fired ? extractNegatedTerms(body.query) : [],
         cross_encoder_reranked: crossEncoderFired,
         reranker_fired: rerankOutput.fired,
         results: results.map((r) => ({
