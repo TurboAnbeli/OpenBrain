@@ -1,11 +1,8 @@
-/**
- * Embedder factory — returns the configured provider.
- */
-
 import type { Embedder } from "./types.js";
 import { OllamaEmbedder } from "./ollama.js";
 import { OpenRouterEmbedder } from "./openrouter.js";
 import { AzureOpenAIEmbedder } from "./azure-openai.js";
+import { LlamaServerEmbedder } from "./llama-server.js";
 
 export type { Embedder, ThoughtMetadataExtracted } from "./types.js";
 
@@ -25,9 +22,12 @@ export function getEmbedder(): Embedder {
       case "azure-openai":
         _embedder = new AzureOpenAIEmbedder();
         break;
+      case "llama-server":
+        _embedder = new LlamaServerEmbedder();
+        break;
       default:
         throw new Error(
-          `Unknown embedder provider: "${provider}". Use "ollama", "openrouter", or "azure-openai".`
+          'Unknown embedder provider: "' + provider + '". Use "ollama", "openrouter", "azure-openai", or "llama-server".'
         );
     }
   }

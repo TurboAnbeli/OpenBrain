@@ -43,6 +43,8 @@ const mockGetThoughtStats = vi.fn();
 const mockUpdateThought = vi.fn();
 const mockDeleteThought = vi.fn();
 const mockBatchInsertThoughts = vi.fn();
+const mockSearchThoughtsByEntity = vi.fn().mockResolvedValue([]);
+const mockExtractAndLinkEntities = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("../../db/queries.js", () => ({
   insertThought: (...args: any[]) => mockInsertThought(...args),
@@ -53,6 +55,8 @@ vi.mock("../../db/queries.js", () => ({
   updateThought: (...args: any[]) => mockUpdateThought(...args),
   deleteThought: (...args: any[]) => mockDeleteThought(...args),
   batchInsertThoughts: (...args: any[]) => mockBatchInsertThoughts(...args),
+  searchThoughtsByEntity: (...args: any[]) => mockSearchThoughtsByEntity(...args),
+  extractAndLinkEntities: (...args: any[]) => mockExtractAndLinkEntities(...args),
 }));
 
 import { createApi } from "../routes.js";
@@ -144,6 +148,40 @@ describe("REST API Routes", () => {
     const callArgs = mockSearchThoughts.mock.calls[0]!;
     expect(callArgs[5]).toBe("plan-forge"); // project param
     expect(callArgs[6]).toBe(false);        // include_archived param
+  });
+
+
+  it("passes the full overfetch window into negation reranking before slicing", async () => {
+    const manyResults = Array.from({ length: 11 }, (_, i) => ({
+      id: `hormuz-${i}`,
+      content: `Hormuz candidate ${i} through the Strait of Hormuz`,
+      metadata: {},
+      similarity: 0.5 - i * 0.001,
+      proof_count: 0,
+      created_at: new Date(),
+    }));
+    manyResults.push({
+      id: "non-hormuz",
+      content: "Rule on oil price discovery: shortage is anticipatory, not reflecting actual shortage.",
+      metadata: {},
+      similarity: 0.4,
+      proof_count: 0,
+      created_at: new Date(),
+    });
+    mockSearchThoughts.mockResolvedValueOnce(manyResults);
+    mockBm25SearchThoughts.mockResolvedValueOnce([]);
+
+    const res = await app.request("/memories/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "oil transit route that does NOT involve Hormuz", limit: 5 }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { results: Array<{ id: string }>; negation_reranked?: boolean; negation_terms?: string[] };
+    expect(body.results[0]?.id).toBe("non-hormuz");
+    expect(body.negation_reranked).toBe(true);
+    expect(body.negation_terms).toContain("hormuz");
   });
 
   // ─── PUT /memories/:id ─────────────────────────────────────────────

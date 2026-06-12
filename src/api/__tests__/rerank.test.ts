@@ -30,6 +30,7 @@ describe("rerankResults", () => {
   });
 
   it("reorders top candidates from model scores and preserves the tail", async () => {
+    vi.stubEnv("OPENBRAIN_RERANK_LLM", "true");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -94,7 +95,82 @@ describe("rerankResults", () => {
     expect(output.fired).toBe(true);
   });
 
+
+  it("deterministically demotes candidates that violate a general exclusion cue", async () => {
+    const output = await rerankResults(
+      "oil transit route that does NOT involve Hormuz",
+      [
+        { id: "hormuz", content: "Oil transit risk through the Strait of Hormuz and Iran-Oman strait." },
+        { id: "rule", content: "Over 50% of the world's EXPORT crude flows through Hormuz." },
+        { id: "non-hormuz", content: "Rule on oil price discovery: shortage is anticipatory, not reflecting actual shortage." },
+      ],
+      { endpoint: "http://127.0.0.1:11434", model: "smollm2:1.7b" }
+    );
+
+    expect(output.fired).toBe(true);
+    expect(output.results?.map((r) => r.id)).toEqual(["non-hormuz", "hormuz", "rule"]);
+  });
+
+  it("does not demote a candidate that explicitly satisfies a not-about cue", async () => {
+    const output = await rerankResults(
+      "NATO argument not about Ukraine",
+      [
+        { id: "satisfies", content: "This NATO argument is not about Ukraine; it is about alliance credibility." },
+        { id: "violates", content: "The argument centered on Ukraine and NATO escalation." },
+      ],
+      { endpoint: "http://127.0.0.1:11434", model: "smollm2:1.7b" }
+    );
+
+    expect(output.fired).toBe(true);
+    expect(output.results?.map((r) => r.id)).toEqual(["satisfies", "violates"]);
+  });
+
+
+  it("does not fire on epistemic visibility idioms", async () => {
+    const output = await rerankResults(
+      "why does combining Gave Pape and Ryan geopolitics reveal something not visible from any single view",
+      [
+        { id: "expected", content: "The combined view requires all three to see clearly." },
+        { id: "other", content: "A single view misses the synthesis." },
+      ],
+      { endpoint: "http://127.0.0.1:11434", model: "smollm2:1.7b" }
+    );
+
+    expect(output.fired).toBe(false);
+    expect(output.results).toBeNull();
+  });
+
+  it("does not fire on no-exit/loss-of-face trap idioms", async () => {
+    const output = await rerankResults(
+      "Iran war structurally unwinnable escalation trap no exit without loss of face",
+      [
+        { id: "expected", content: "Structurally unwinnable through escalation yet impossible to exit without loss of face." },
+        { id: "other", content: "A separate Iran war note." },
+      ],
+      { endpoint: "http://127.0.0.1:11434", model: "smollm2:1.7b" }
+    );
+
+    expect(output.fired).toBe(false);
+    expect(output.results).toBeNull();
+  });
+
+
+  it("does not fire on concept-behind paraphrase queries that contain not", async () => {
+    const output = await rerankResults(
+      "concept behind beta reflect business risk not leverage unlevered relever target",
+      [
+        { id: "expected", content: "Beta should reflect the business risk, not the leverage risk — use unlevered beta and relever for the target capital structure." },
+        { id: "other", content: "Generic risk-premium content." },
+      ],
+      { endpoint: "http://127.0.0.1:11434", model: "smollm2:1.7b" }
+    );
+
+    expect(output.fired).toBe(false);
+    expect(output.results).toBeNull();
+  });
+
   it("retries with fallback model on primary failure", async () => {
+    vi.stubEnv("OPENBRAIN_RERANK_LLM", "true");
     const fetchMock = vi.fn()
       .mockRejectedValueOnce(new Error("timeout"))
       .mockResolvedValueOnce({

@@ -31,3 +31,7 @@ Thumbs.db
 *.sqlite3
 .env
 models/
+
+# Local migration / secret backups
+.env.backup-*
+*.backup-*
