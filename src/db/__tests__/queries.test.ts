@@ -17,8 +17,11 @@ import {
   insertDocument,
   getDocument,
   updateDocument,
+  replaceDocumentChunks,
+  listDocumentChunks,
   type ThoughtMetadata,
   type DocumentInput,
+  type DocumentChunkInput,
 } from "../queries.js";
 
 // ─── Mock Pool Factory ──────────────────────────────────────────────
@@ -539,5 +542,67 @@ describe("documents", () => {
     expect(updateSql).toContain("pgp_sym_encrypt($4, $7)");
     expect(updateSql).toContain("pgp_sym_decrypt(content_enc, $7)");
     expect(updateParams).toHaveLength(7);
+  });
+
+
+  it("replaces document chunks transactionally with encrypted content and embeddings", async () => {
+    const { pool, mockConnect } = createMockPool();
+    const client = await mockConnect();
+    const chunkInputs: DocumentChunkInput[] = [
+      {
+        chunk_index: 0,
+        content: "First chunk body",
+        embedding: [0.1, 0.2, 0.3],
+        metadata: { heading: "intro" },
+        token_count: 3,
+        char_start: 0,
+        char_end: 16,
+      },
+      {
+        chunk_index: 1,
+        content: "Second chunk body",
+        embedding: [0.4, 0.5, 0.6],
+        metadata: { heading: "body" },
+        token_count: 3,
+        char_start: 17,
+        char_end: 34,
+      },
+    ];
+    client.query
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ rows: [], rowCount: 2 })
+      .mockResolvedValueOnce({ rows: [{ id: "chunk-0", document_id: "doc-123", ...chunkInputs[0], created_at: new Date(), updated_at: new Date() }] })
+      .mockResolvedValueOnce({ rows: [{ id: "chunk-1", document_id: "doc-123", ...chunkInputs[1], created_at: new Date(), updated_at: new Date() }] })
+      .mockResolvedValueOnce({});
+
+    const results = await replaceDocumentChunks(pool, "doc-123", chunkInputs);
+
+    expect(results).toHaveLength(2);
+    expect(client.query.mock.calls[0]![0]).toBe("BEGIN");
+    expect(client.query.mock.calls[1]![0] as string).toContain("DELETE FROM document_chunks");
+    expect(client.query.mock.calls[2]![0] as string).toContain("INSERT INTO document_chunks");
+    expect(client.query.mock.calls[2]![0] as string).toContain("pgp_sym_encrypt($3, $9)");
+    expect(client.query.mock.calls[2]![0] as string).toContain("pgp_sym_decrypt(content_enc, $9)");
+    expect(client.query.mock.calls[2]![1]).toHaveLength(9);
+    expect(client.query.mock.calls[4]![0]).toBe("COMMIT");
+  });
+
+  it("lists document chunks in chunk_index order with decrypted content", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        { id: "chunk-0", document_id: "doc-123", chunk_index: 0, content: "First", metadata: {}, token_count: 1, char_start: 0, char_end: 5, created_at: new Date(), updated_at: new Date() },
+      ],
+    });
+
+    const results = await listDocumentChunks(pool, "doc-123");
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.content).toBe("First");
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("FROM document_chunks");
+    expect(sql).toContain("pgp_sym_decrypt(content_enc, $2)");
+    expect(sql).toContain("ORDER BY chunk_index ASC");
+    expect(mockQuery.mock.calls[0]![1]).toHaveLength(2);
   });
 });

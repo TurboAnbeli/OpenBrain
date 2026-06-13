@@ -48,6 +48,8 @@ const mockExtractAndLinkEntities = vi.fn().mockResolvedValue(undefined);
 const mockInsertDocument = vi.fn();
 const mockGetDocument = vi.fn();
 const mockUpdateDocument = vi.fn();
+const mockReplaceDocumentChunks = vi.fn();
+const mockListDocumentChunks = vi.fn();
 
 vi.mock("../../db/queries.js", () => ({
   insertThought: (...args: any[]) => mockInsertThought(...args),
@@ -63,6 +65,8 @@ vi.mock("../../db/queries.js", () => ({
   insertDocument: (...args: any[]) => mockInsertDocument(...args),
   getDocument: (...args: any[]) => mockGetDocument(...args),
   updateDocument: (...args: any[]) => mockUpdateDocument(...args),
+  replaceDocumentChunks: (...args: any[]) => mockReplaceDocumentChunks(...args),
+  listDocumentChunks: (...args: any[]) => mockListDocumentChunks(...args),
 }));
 
 import { createApi } from "../routes.js";
@@ -447,6 +451,106 @@ describe("REST API Routes", () => {
       body: JSON.stringify({ title: "x" }),
     });
     expect(missing.status).toBe(404);
+  });
+
+
+
+  it("PUT /documents/:id/chunks embeds and replaces chunks for an existing document", async () => {
+    const createdAt = new Date();
+    mockGetDocument.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      title: "Chunked source",
+      source_type: "markdown",
+      content: "Full source body",
+      metadata: {},
+      status: "active",
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+    mockReplaceDocumentChunks.mockResolvedValueOnce([
+      {
+        id: "chunk-0",
+        document_id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        chunk_index: 0,
+        content: "First chunk",
+        metadata: { heading: "intro" },
+        token_count: 2,
+        char_start: 0,
+        char_end: 11,
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+    ]);
+
+    const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678/chunks", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chunks: [{ content: "First chunk", metadata: { heading: "intro" }, token_count: 2, char_start: 0, char_end: 11 }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { count: number; chunks: Array<{ content: string }> };
+    expect(body.count).toBe(1);
+    expect(body.chunks[0]!.content).toBe("First chunk");
+    expect(mockGenerateEmbedding).toHaveBeenCalledWith("First chunk");
+    expect(mockReplaceDocumentChunks).toHaveBeenCalled();
+    const chunkArg = mockReplaceDocumentChunks.mock.calls[0]![2][0];
+    expect(chunkArg.chunk_index).toBe(0);
+    expect(chunkArg.embedding).toEqual([0.1, 0.2, 0.3]);
+  });
+
+  it("PUT /documents/:id/chunks validates document id, document existence, and chunk content", async () => {
+    const invalid = await app.request("/documents/not-a-uuid/chunks", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chunks: [{ content: "x" }] }),
+    });
+    expect(invalid.status).toBe(400);
+
+    mockGetDocument.mockResolvedValueOnce(null);
+    const missing = await app.request("/documents/00000000-0000-0000-0000-000000000000/chunks", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chunks: [{ content: "x" }] }),
+    });
+    expect(missing.status).toBe(404);
+
+    mockGetDocument.mockResolvedValueOnce({ id: "a1b2c3d4-1234-5678-9abc-def012345678" });
+    const empty = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678/chunks", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chunks: [{ content: "" }] }),
+    });
+    expect(empty.status).toBe(400);
+  });
+
+  it("GET /documents/:id/chunks returns chunks in storage order", async () => {
+    const createdAt = new Date();
+    mockGetDocument.mockResolvedValueOnce({ id: "a1b2c3d4-1234-5678-9abc-def012345678" });
+    mockListDocumentChunks.mockResolvedValueOnce([
+      {
+        id: "chunk-0",
+        document_id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        chunk_index: 0,
+        content: "First chunk",
+        metadata: {},
+        token_count: 2,
+        char_start: 0,
+        char_end: 11,
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+    ]);
+
+    const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678/chunks");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { count: number; chunks: Array<{ chunk_index: number }> };
+    expect(body.count).toBe(1);
+    expect(body.chunks[0]!.chunk_index).toBe(0);
+    expect(mockListDocumentChunks).toHaveBeenCalled();
   });
 
   // ─── GET /stats ────────────────────────────────────────────────────
