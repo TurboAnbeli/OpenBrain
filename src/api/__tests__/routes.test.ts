@@ -45,6 +45,9 @@ const mockDeleteThought = vi.fn();
 const mockBatchInsertThoughts = vi.fn();
 const mockSearchThoughtsByEntity = vi.fn().mockResolvedValue([]);
 const mockExtractAndLinkEntities = vi.fn().mockResolvedValue(undefined);
+const mockInsertDocument = vi.fn();
+const mockGetDocument = vi.fn();
+const mockUpdateDocument = vi.fn();
 
 vi.mock("../../db/queries.js", () => ({
   insertThought: (...args: any[]) => mockInsertThought(...args),
@@ -57,6 +60,9 @@ vi.mock("../../db/queries.js", () => ({
   batchInsertThoughts: (...args: any[]) => mockBatchInsertThoughts(...args),
   searchThoughtsByEntity: (...args: any[]) => mockSearchThoughtsByEntity(...args),
   extractAndLinkEntities: (...args: any[]) => mockExtractAndLinkEntities(...args),
+  insertDocument: (...args: any[]) => mockInsertDocument(...args),
+  getDocument: (...args: any[]) => mockGetDocument(...args),
+  updateDocument: (...args: any[]) => mockUpdateDocument(...args),
 }));
 
 import { createApi } from "../routes.js";
@@ -298,6 +304,149 @@ describe("REST API Routes", () => {
       body: JSON.stringify({ thoughts: [] }),
     });
     expect(res.status).toBe(400);
+  });
+
+
+  // ─── Documents ─────────────────────────────────────────────────────
+
+  it("POST /documents creates an editable source document", async () => {
+    const createdAt = new Date();
+    mockInsertDocument.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      title: "One brain design note",
+      source_type: "manual_note",
+      source_uri: "onebrain://notes/design",
+      content: "A database-first design note",
+      metadata: { tags: ["one-brain"] },
+      project: "one-brain",
+      created_by: "ryan",
+      status: "active",
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+
+    const res = await app.request("/documents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: "One brain design note",
+        source_type: "manual_note",
+        source_uri: "onebrain://notes/design",
+        content: "A database-first design note",
+        metadata: { tags: ["one-brain"] },
+        project: "one-brain",
+        created_by: "ryan",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; title: string; status: string };
+    expect(body.id).toBe("a1b2c3d4-1234-5678-9abc-def012345678");
+    expect(body.title).toBe("One brain design note");
+    expect(body.status).toBe("active");
+    expect(mockInsertDocument).toHaveBeenCalled();
+    const docArg = mockInsertDocument.mock.calls[0]![1];
+    expect(docArg.title).toBe("One brain design note");
+    expect(docArg.source_type).toBe("manual_note");
+    expect(docArg.content).toBe("A database-first design note");
+  });
+
+  it("POST /documents returns 400 for missing title/source_type/content", async () => {
+    const res = await app.request("/documents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "", source_type: "manual_note", content: "" }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockInsertDocument).not.toHaveBeenCalled();
+  });
+
+  it("GET /documents/:id returns an editable source document", async () => {
+    const createdAt = new Date();
+    mockGetDocument.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      title: "Stored source",
+      source_type: "markdown",
+      source_uri: "file:///tmp/source.md",
+      content: "Stored source body",
+      metadata: {},
+      project: "one-brain",
+      created_by: "ryan",
+      status: "active",
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+
+    const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; content: string };
+    expect(body.content).toBe("Stored source body");
+    expect(mockGetDocument).toHaveBeenCalled();
+    expect(mockGetDocument.mock.calls[0]![1]).toBe("a1b2c3d4-1234-5678-9abc-def012345678");
+  });
+
+  it("GET /documents/:id validates UUID and returns 404 when missing", async () => {
+    const invalid = await app.request("/documents/not-a-uuid");
+    expect(invalid.status).toBe(400);
+
+    mockGetDocument.mockResolvedValueOnce(null);
+    const missing = await app.request("/documents/00000000-0000-0000-0000-000000000000");
+    expect(missing.status).toBe(404);
+  });
+
+  it("PATCH /documents/:id updates source content and records revisions through the query layer", async () => {
+    const updatedAt = new Date();
+    mockUpdateDocument.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      title: "Updated source",
+      source_type: "markdown",
+      source_uri: "file:///tmp/source.md",
+      content: "Updated source body",
+      metadata: { tags: ["updated"] },
+      project: "one-brain",
+      created_by: "ryan",
+      status: "active",
+      created_at: updatedAt,
+      updated_at: updatedAt,
+    });
+
+    const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: "Updated source",
+        content: "Updated source body",
+        metadata: { tags: ["updated"] },
+        edit_reason: "manual correction",
+        updated_by: "ryan",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { title: string; content: string };
+    expect(body.title).toBe("Updated source");
+    expect(body.content).toBe("Updated source body");
+    const patchArg = mockUpdateDocument.mock.calls[0]![2];
+    expect(patchArg.edit_reason).toBe("manual correction");
+    expect(patchArg.updated_by).toBe("ryan");
+  });
+
+  it("PATCH /documents/:id validates UUID and returns 404 when the document is missing", async () => {
+    const invalid = await app.request("/documents/not-a-uuid", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "x" }),
+    });
+    expect(invalid.status).toBe(400);
+
+    mockUpdateDocument.mockRejectedValueOnce(new Error("Document not found: 00000000-0000-0000-0000-000000000000"));
+    const missing = await app.request("/documents/00000000-0000-0000-0000-000000000000", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "x" }),
+    });
+    expect(missing.status).toBe(404);
   });
 
   // ─── GET /stats ────────────────────────────────────────────────────
