@@ -30,7 +30,8 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc --noEmit",
     "import:markdown": "node dist/import/markdown-cli.js",
-    "import:parity": "node dist/import/parity-cli.js"
+    "import:parity": "node dist/import/parity-cli.js",
+    "ryel:semantic-json": "python3 scripts/ryel_semantic_json.py"
   },
   "engines": {
     "node": ">=22.0.0"

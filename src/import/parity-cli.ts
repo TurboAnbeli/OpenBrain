@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { loadParityQueries, createLocalRyelMarkdownSearch, runParityReport, writeParityReport } from "./parity.js";
+import { loadParityQueries, createLocalRyelMarkdownSearch, runParityReport, writeParityReport, shellQuote } from "./parity.js";
 import type { ParitySearchResult } from "./markdown.js";
 
 interface CliOptions {
@@ -42,7 +42,7 @@ function parseArgs(argv: string[]): CliOptions {
 
 function createCommandSearch(command: string): (query: string) => Promise<ParitySearchResult[]> {
   return async (query: string) => new Promise((resolve, reject) => {
-    const child = spawn(command, [query], { stdio: ["ignore", "pipe", "pipe"], shell: true });
+    const child = spawn(`${command} ${shellQuote(query)}`, { stdio: ["ignore", "pipe", "pipe"], shell: true });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => { stdout += String(chunk); });

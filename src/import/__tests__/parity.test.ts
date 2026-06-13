@@ -1,4 +1,6 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
@@ -7,7 +9,10 @@ import {
   createLocalRyelMarkdownSearch,
   runParityReport,
   writeParityReport,
+  shellQuote,
 } from "../parity.js";
+
+const execFileAsync = promisify(execFile);
 
 describe("import parity reporting", () => {
   it("loads parity queries from either an array or an object", async () => {
@@ -88,6 +93,16 @@ describe("import parity reporting", () => {
     });
 
     expect(report.summary.overlap_at_5).toBe(1);
+  });
+
+  it("shell-quotes ryel command queries with punctuation", async () => {
+    const quoted = shellQuote("Hermes OpenCode Model Slugs (go + zen)");
+    const { stdout } = await execFileAsync("sh", ["-c", `printf %s ${quoted}`]);
+    expect(stdout).toBe("Hermes OpenCode Model Slugs (go + zen)");
+
+    const apostropheQuoted = shellQuote("GBrain: Garry Tan's AI Knowledge Brain");
+    const { stdout: apostropheOut } = await execFileAsync("sh", ["-c", `printf %s ${apostropheQuoted}`]);
+    expect(apostropheOut).toBe("GBrain: Garry Tan's AI Knowledge Brain");
   });
 
   it("writes a parity report JSON artifact", async () => {
