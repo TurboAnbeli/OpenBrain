@@ -486,4 +486,37 @@ describe("documents", () => {
     expect(client.query.mock.calls[4]![0] as string).toContain("UPDATE documents");
     expect(client.query.mock.calls[5]![0]).toBe("COMMIT");
   });
+
+  it("binds contiguous parameters for document updates", async () => {
+    const { pool, mockConnect } = createMockPool();
+    const client = await mockConnect();
+    const existing = {
+      id: "doc-123",
+      title: "Old title",
+      source_uri: null,
+      content: "Old body",
+      metadata: {},
+      project: "proj",
+      created_by: "ryan",
+      status: "active",
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+    client.query
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ rows: [existing], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ next_revision: 1 }] })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [existing], rowCount: 1 })
+      .mockResolvedValueOnce({});
+
+    await updateDocument(pool, "doc-123", { content: "New body", updated_by: "ryan" });
+
+    const updateSql = client.query.mock.calls[4]![0] as string;
+    const updateParams = client.query.mock.calls[4]![1] as unknown[];
+    expect(updateSql).not.toContain("$8");
+    expect(updateSql).toContain("pgp_sym_encrypt($4, $7)");
+    expect(updateSql).toContain("pgp_sym_decrypt(content_enc, $7)");
+    expect(updateParams).toHaveLength(7);
+  });
 });
