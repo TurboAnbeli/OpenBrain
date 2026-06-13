@@ -16,6 +16,7 @@ import {
   batchInsertThoughts,
   insertDocument,
   getDocument,
+  getDocumentBySourceUri,
   updateDocument,
   replaceDocumentChunks,
   listDocumentChunks,

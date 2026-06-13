@@ -25,6 +25,7 @@ import {
   searchThoughtsByEntity,
   insertDocument,
   getDocument,
+  getDocumentBySourceUri,
   updateDocument,
   replaceDocumentChunks,
   listDocumentChunks,
@@ -649,6 +650,26 @@ export function createApi(): Hono {
         502
       );
     }
+  });
+
+
+
+  app.get("/documents/by-source-uri", async (c) => {
+    const sourceUri = c.req.query("source_uri");
+    if (!sourceUri || sourceUri.trim().length === 0) {
+      return c.json({ error: "source_uri is required" }, 400);
+    }
+
+    const document = await getDocumentBySourceUri(pool, sourceUri);
+    if (!document) {
+      return c.json({ error: "Document not found" }, 404);
+    }
+
+    return c.json({
+      ...document,
+      created_at: document.created_at.toISOString(),
+      updated_at: document.updated_at.toISOString(),
+    });
   });
 
   app.get("/documents/:id", async (c) => {

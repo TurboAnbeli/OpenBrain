@@ -1,7 +1,13 @@
+import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
 import {
   applyMarkdownImport,
   buildMarkdownImportPlan,
+  buildMarkdownImportManifest,
+  evaluateImportParity,
+  expandMarkdownInputs,
   chunkMarkdown,
   parseMarkdownDocument,
   type MarkdownImportChunk,
@@ -70,6 +76,116 @@ Ry-El markdown remains transitional while documents and chunks move into Postgre
     expect(plan.documents[0]!.title).toBe("One Brain Architecture");
     expect(plan.documents[0]!.chunks.length).toBeGreaterThan(0);
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+
+
+  it("expands directories and globs into sorted markdown files", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "openbrain-import-"));
+    try {
+      await mkdir(join(dir, "nested"));
+      await writeFile(join(dir, "b.md"), "# B\n\nBody B");
+      await writeFile(join(dir, "a.md"), "# A\n\nBody A");
+      await writeFile(join(dir, "nested", "c.md"), "# C\n\nBody C");
+      await writeFile(join(dir, "ignore.txt"), "ignore");
+
+      const files = await expandMarkdownInputs([dir]);
+      expect(files.map((file) => file.path)).toEqual([
+        join(dir, "a.md"),
+        join(dir, "b.md"),
+        join(dir, "nested", "c.md"),
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("builds a batch manifest and skips already imported source_uri entries", async () => {
+    const fetcher = vi.fn(async (url: string | URL | Request) => {
+      const text = String(url);
+      if (text.includes("already.md")) {
+        return new Response(JSON.stringify({ id: "existing-doc", source_uri: "file:///vault/wiki/already.md" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+    });
+
+    const manifest = await buildMarkdownImportManifest({
+      files: [
+        { path: "/vault/wiki/already.md", content: "# Already\n\nImported" },
+        { path: "/vault/wiki/new.md", content: "# New\n\nFresh" },
+      ],
+      apiBaseUrl: "http://127.0.0.1:8000",
+      project: "one-brain",
+      sourceType: "ryel_markdown",
+      fetcher,
+      skipExisting: true,
+    });
+
+    expect(manifest.summary.total).toBe(2);
+    expect(manifest.summary.skipped_existing).toBe(1);
+    expect(manifest.summary.planned).toBe(1);
+    expect(manifest.documents.map((doc) => doc.status)).toEqual(["skipped_existing", "planned"]);
+    expect(manifest.documents[0]!.existing_document_id).toBe("existing-doc");
+  });
+
+  it("apply mode imports only non-skipped manifest entries", async () => {
+    const calls: string[] = [];
+    const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const text = String(url);
+      calls.push(`${init?.method ?? "GET"} ${text}`);
+      if (text.includes("already.md")) {
+        return new Response(JSON.stringify({ id: "existing-doc", source_uri: "file:///vault/wiki/already.md" }), { status: 200 });
+      }
+      if (init?.method === "GET") {
+        return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+      }
+      if (text.endsWith("/documents")) {
+        return new Response(JSON.stringify({ id: "new-doc" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ count: 1 }), { status: 200 });
+    });
+
+    const result = await applyMarkdownImport({
+      files: [
+        { path: "/vault/wiki/already.md", content: "# Already\n\nImported" },
+        { path: "/vault/wiki/new.md", content: "# New\n\nFresh" },
+      ],
+      apiBaseUrl: "http://127.0.0.1:8000",
+      project: "one-brain",
+      sourceType: "ryel_markdown",
+      apply: true,
+      skipExisting: true,
+      fetcher,
+    });
+
+    expect(result.summary.skipped_existing).toBe(1);
+    expect(result.summary.applied).toBe(1);
+    expect(calls.filter((call) => call === "POST http://127.0.0.1:8000/documents")).toHaveLength(1);
+    expect(result.documents.find((doc) => doc.status === "applied")!.document_id).toBe("new-doc");
+  });
+
+  it("evaluates parity between OpenBrain document search and Ry-El search results", async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({
+      results: [
+        { document_title: "One Brain Architecture", source_uri: "file:///vault/wiki/one_brain.md", score: 0.9 },
+      ],
+    }), { status: 200 }));
+    const ryelSearch = vi.fn(async () => [
+      { title: "One Brain Architecture", path: "/vault/wiki/one_brain.md", score: 0.8 },
+    ]);
+
+    const report = await evaluateImportParity({
+      queries: ["one brain architecture"],
+      apiBaseUrl: "http://127.0.0.1:8000",
+      project: "one-brain",
+      sourceType: "ryel_markdown",
+      fetcher,
+      ryelSearch,
+    });
+
+    expect(report.queries).toHaveLength(1);
+    expect(report.summary.overlap_at_5).toBe(1);
+    expect(report.queries[0]!.overlap).toBe(1);
   });
 
   it("applies a plan by posting documents then replacing chunks", async () => {
