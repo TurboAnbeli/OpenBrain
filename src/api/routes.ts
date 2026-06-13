@@ -23,6 +23,9 @@ import {
   getThoughtsByIds,
   archiveThoughts,
   searchThoughtsByEntity,
+  insertDocument,
+  getDocument,
+  updateDocument,
   type ListFilters,
   type BatchThoughtInput,
   type SearchResult,
@@ -582,6 +585,162 @@ export function createApi(): Hono {
       console.error("[api] Consolidate failed:", message);
       return c.json(
         { error: "Failed to consolidate observations", detail: message },
+        502
+      );
+    }
+  });
+
+
+  // ─── Source Documents ─────────────────────────────────────────────
+
+  app.post("/documents", async (c) => {
+    const body = await c.req.json<{
+      title: string;
+      source_type: string;
+      source_uri?: string;
+      content: string;
+      metadata?: Record<string, unknown>;
+      project?: string;
+      created_by?: string;
+    }>();
+
+    if (!body.title || body.title.trim().length === 0) {
+      return c.json({ error: "title is required" }, 400);
+    }
+    if (!body.source_type || body.source_type.trim().length === 0) {
+      return c.json({ error: "source_type is required" }, 400);
+    }
+    if (!body.content || body.content.trim().length === 0) {
+      return c.json({ error: "content is required" }, 400);
+    }
+
+    try {
+      const result = await insertDocument(pool, {
+        title: body.title,
+        source_type: body.source_type,
+        source_uri: body.source_uri,
+        content: body.content,
+        metadata: body.metadata ?? {},
+        project: body.project,
+        created_by: body.created_by,
+      });
+
+      return c.json({
+        id: result.id,
+        title: result.title,
+        source_type: result.source_type,
+        source_uri: result.source_uri,
+        content: result.content,
+        metadata: result.metadata,
+        project: result.project,
+        created_by: result.created_by,
+        status: result.status,
+        created_at: result.created_at.toISOString(),
+        updated_at: result.updated_at.toISOString(),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Document create failed:", message);
+      return c.json(
+        { error: "Failed to create document", detail: message },
+        502
+      );
+    }
+  });
+
+  app.get("/documents/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
+
+    try {
+      const result = await getDocument(pool, id);
+      if (!result) {
+        return c.json({ error: `Document not found: ${id}` }, 404);
+      }
+
+      return c.json({
+        id: result.id,
+        title: result.title,
+        source_type: result.source_type,
+        source_uri: result.source_uri,
+        content: result.content,
+        metadata: result.metadata,
+        project: result.project,
+        created_by: result.created_by,
+        status: result.status,
+        created_at: result.created_at.toISOString(),
+        updated_at: result.updated_at.toISOString(),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Document fetch failed:", message);
+      return c.json(
+        { error: "Failed to fetch document", detail: message },
+        502
+      );
+    }
+  });
+
+  app.patch("/documents/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
+
+    const body = await c.req.json<{
+      title?: string;
+      source_uri?: string | null;
+      content?: string;
+      metadata?: Record<string, unknown>;
+      status?: "active" | "archived" | "deleted";
+      edit_reason?: string;
+      updated_by?: string;
+    }>();
+
+    if (body.title !== undefined && body.title.trim().length === 0) {
+      return c.json({ error: "title must not be empty" }, 400);
+    }
+    if (body.content !== undefined && body.content.trim().length === 0) {
+      return c.json({ error: "content must not be empty" }, 400);
+    }
+    if (body.status !== undefined && !["active", "archived", "deleted"].includes(body.status)) {
+      return c.json({ error: "status must be active, archived, or deleted" }, 400);
+    }
+
+    try {
+      const result = await updateDocument(pool, id, {
+        title: body.title,
+        source_uri: body.source_uri,
+        content: body.content,
+        metadata: body.metadata,
+        status: body.status,
+        edit_reason: body.edit_reason,
+        updated_by: body.updated_by,
+      });
+
+      return c.json({
+        id: result.id,
+        title: result.title,
+        source_type: result.source_type,
+        source_uri: result.source_uri,
+        content: result.content,
+        metadata: result.metadata,
+        project: result.project,
+        created_by: result.created_by,
+        status: result.status,
+        created_at: result.created_at.toISOString(),
+        updated_at: result.updated_at.toISOString(),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("not found")) {
+        return c.json({ error: message }, 404);
+      }
+      console.error("[api] Document update failed:", message);
+      return c.json(
+        { error: "Failed to update document", detail: message },
         502
       );
     }
