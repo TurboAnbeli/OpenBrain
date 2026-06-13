@@ -70,6 +70,7 @@ export interface ParitySearchResult {
   document_title?: string;
   path?: string;
   source_uri?: string;
+  document_source_uri?: string;
   score?: number;
 }
 
@@ -365,7 +366,7 @@ export async function applyMarkdownImport(options: MarkdownImportOptions): Promi
 }
 
 function resultKey(result: ParitySearchResult): string {
-  const uri = result.source_uri;
+  const uri = result.source_uri ?? result.document_source_uri;
   if (uri) return uri.replace(/^file:\/\//, "");
   if (result.path) return result.path;
   return result.document_title ?? result.title ?? "";

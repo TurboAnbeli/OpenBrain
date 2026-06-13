@@ -29,7 +29,8 @@
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc --noEmit",
-    "import:markdown": "node dist/import/markdown-cli.js"
+    "import:markdown": "node dist/import/markdown-cli.js",
+    "import:parity": "node dist/import/parity-cli.js"
   },
   "engines": {
     "node": ">=22.0.0"
