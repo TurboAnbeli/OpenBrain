@@ -713,7 +713,7 @@ export async function insertDocument(
     `INSERT INTO documents (title, source_type, source_uri, content_enc, metadata, project, created_by, fts)
      VALUES ($1, $2, $3, pgp_sym_encrypt($4, $8), $5::jsonb, $6, $7, to_tsvector('english', $4))
      RETURNING id, title, source_type, source_uri,
-               pgp_sym_decrypt(content_enc, $7)::text AS content,
+               pgp_sym_decrypt(content_enc, $8)::text AS content,
                metadata, project, created_by, status, created_at, updated_at`,
     [
       document.title,
