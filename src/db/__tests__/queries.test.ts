@@ -19,6 +19,7 @@ import {
   updateDocument,
   replaceDocumentChunks,
   listDocumentChunks,
+  searchDocumentChunks,
   type ThoughtMetadata,
   type DocumentInput,
   type DocumentChunkInput,
@@ -585,6 +586,55 @@ describe("documents", () => {
     expect(client.query.mock.calls[2]![0] as string).toContain("pgp_sym_decrypt(content_enc, $9)");
     expect(client.query.mock.calls[2]![1]).toHaveLength(9);
     expect(client.query.mock.calls[4]![0]).toBe("COMMIT");
+  });
+
+
+
+  it("searches active document chunks by vector similarity with parent document metadata", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          id: "chunk-0",
+          document_id: "doc-123",
+          document_title: "One brain design",
+          document_source_type: "markdown",
+          document_source_uri: "file:///design.md",
+          project: "one-brain",
+          chunk_index: 0,
+          content: "Database-first knowledge browser",
+          metadata: { heading: "design" },
+          token_count: 4,
+          char_start: 0,
+          char_end: 32,
+          similarity: 0.91,
+          created_at: new Date(),
+          updated_at: new Date(),
+        },
+      ],
+    });
+
+    const results = await searchDocumentChunks(pool, [0.1, 0.2, 0.3], {
+      limit: 5,
+      threshold: 0.3,
+      project: "one-brain",
+      source_type: "markdown",
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.document_title).toBe("One brain design");
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("FROM document_chunks c");
+    expect(sql).toContain("JOIN documents d ON d.id = c.document_id");
+    expect(sql).toContain("d.status = 'active'");
+    expect(sql).toContain("1 - (c.embedding <=> $1::vector) AS similarity");
+    expect(sql).toContain("ORDER BY c.embedding <=> $1::vector ASC");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[0]).toBe("[0.1,0.2,0.3]");
+    expect(params[2]).toBe(5);
+    expect(params[3]).toBe(0.3);
+    expect(params[4]).toBe("one-brain");
+    expect(params[5]).toBe("markdown");
   });
 
   it("lists document chunks in chunk_index order with decrypted content", async () => {

@@ -50,6 +50,7 @@ const mockGetDocument = vi.fn();
 const mockUpdateDocument = vi.fn();
 const mockReplaceDocumentChunks = vi.fn();
 const mockListDocumentChunks = vi.fn();
+const mockSearchDocumentChunks = vi.fn();
 
 vi.mock("../../db/queries.js", () => ({
   insertThought: (...args: any[]) => mockInsertThought(...args),
@@ -67,6 +68,7 @@ vi.mock("../../db/queries.js", () => ({
   updateDocument: (...args: any[]) => mockUpdateDocument(...args),
   replaceDocumentChunks: (...args: any[]) => mockReplaceDocumentChunks(...args),
   listDocumentChunks: (...args: any[]) => mockListDocumentChunks(...args),
+  searchDocumentChunks: (...args: any[]) => mockSearchDocumentChunks(...args),
 }));
 
 import { createApi } from "../routes.js";
@@ -551,6 +553,73 @@ describe("REST API Routes", () => {
     expect(body.count).toBe(1);
     expect(body.chunks[0]!.chunk_index).toBe(0);
     expect(mockListDocumentChunks).toHaveBeenCalled();
+  });
+
+
+
+  it("POST /documents/search embeds the query and returns matching document chunks", async () => {
+    const createdAt = new Date();
+    mockSearchDocumentChunks.mockResolvedValueOnce([
+      {
+        id: "chunk-0",
+        document_id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        document_title: "One brain design",
+        document_source_type: "markdown",
+        document_source_uri: "file:///design.md",
+        project: "one-brain",
+        chunk_index: 0,
+        content: "Database-first knowledge browser",
+        metadata: { heading: "design" },
+        token_count: 4,
+        char_start: 0,
+        char_end: 32,
+        similarity: 0.91,
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+    ]);
+
+    const res = await app.request("/documents/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "database-first browser",
+        limit: 5,
+        threshold: 0.3,
+        project: "one-brain",
+        source_type: "markdown",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { count: number; results: Array<{ document_title: string; similarity: number }> };
+    expect(body.count).toBe(1);
+    expect(body.results[0]!.document_title).toBe("One brain design");
+    expect(mockGenerateEmbedding).toHaveBeenCalledWith("database-first browser");
+    expect(mockSearchDocumentChunks).toHaveBeenCalled();
+    const options = mockSearchDocumentChunks.mock.calls[0]![2];
+    expect(options.limit).toBe(5);
+    expect(options.threshold).toBe(0.3);
+    expect(options.project).toBe("one-brain");
+    expect(options.source_type).toBe("markdown");
+  });
+
+  it("POST /documents/search validates query and bounds limit", async () => {
+    const empty = await app.request("/documents/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "" }),
+    });
+    expect(empty.status).toBe(400);
+
+    mockSearchDocumentChunks.mockResolvedValueOnce([]);
+    const res = await app.request("/documents/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "valid", limit: 500 }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockSearchDocumentChunks.mock.calls[0]![2].limit).toBe(100);
   });
 
   // ─── GET /stats ────────────────────────────────────────────────────

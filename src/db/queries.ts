@@ -106,6 +106,21 @@ export interface DocumentChunkRow {
   updated_at: Date;
 }
 
+export interface DocumentChunkSearchOptions {
+  limit?: number;
+  threshold?: number;
+  project?: string;
+  source_type?: string;
+}
+
+export interface DocumentChunkSearchResult extends DocumentChunkRow {
+  document_title: string;
+  document_source_type: string;
+  document_source_uri?: string | null;
+  project?: string | null;
+  similarity: number;
+}
+
 export interface ThoughtStats {
   total_thoughts: number;
   types: Record<string, number>;
@@ -924,6 +939,42 @@ export async function listDocumentChunks(
      WHERE document_id = $1
      ORDER BY chunk_index ASC`,
     [documentId, key]
+  );
+  return rows;
+}
+
+export async function searchDocumentChunks(
+  pool: pg.Pool,
+  queryEmbedding: number[],
+  options: DocumentChunkSearchOptions = {}
+): Promise<DocumentChunkSearchResult[]> {
+  const embeddingStr = `[${queryEmbedding.join(",")}]`;
+  const key = getCipherKey();
+  const limit = options.limit ?? 10;
+  const threshold = options.threshold ?? 0.3;
+  const project = options.project ?? null;
+  const sourceType = options.source_type ?? null;
+
+  const { rows } = await pool.query<DocumentChunkSearchResult>(
+    `SELECT c.id, c.document_id, d.title AS document_title,
+            d.source_type AS document_source_type,
+            d.source_uri AS document_source_uri,
+            d.project,
+            c.chunk_index,
+            pgp_sym_decrypt(c.content_enc, $2)::text AS content,
+            c.metadata, c.token_count, c.char_start, c.char_end,
+            1 - (c.embedding <=> $1::vector) AS similarity,
+            c.created_at, c.updated_at
+     FROM document_chunks c
+     JOIN documents d ON d.id = c.document_id
+     WHERE d.status = 'active'
+       AND c.embedding IS NOT NULL
+       AND 1 - (c.embedding <=> $1::vector) >= $4
+       AND ($5::text IS NULL OR d.project = $5)
+       AND ($6::text IS NULL OR d.source_type = $6)
+     ORDER BY c.embedding <=> $1::vector ASC
+     LIMIT $3`,
+    [embeddingStr, key, limit, threshold, project, sourceType]
   );
   return rows;
 }

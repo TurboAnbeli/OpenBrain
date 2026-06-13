@@ -28,6 +28,7 @@ import {
   updateDocument,
   replaceDocumentChunks,
   listDocumentChunks,
+  searchDocumentChunks,
   type ListFilters,
   type BatchThoughtInput,
   type SearchResult,
@@ -749,6 +750,64 @@ export function createApi(): Hono {
   });
 
 
+
+
+
+  app.post("/documents/search", async (c) => {
+    const body = await c.req.json<{
+      query: string;
+      limit?: number;
+      threshold?: number;
+      project?: string;
+      source_type?: string;
+    }>();
+
+    if (!body.query || body.query.trim().length === 0) {
+      return c.json({ error: "query is required" }, 400);
+    }
+
+    const limit = Math.min(Math.max(body.limit ?? 10, 1), 100);
+    const threshold = body.threshold ?? 0.3;
+
+    try {
+      const embedding = await embedder.generateEmbedding(body.query);
+      const results = await searchDocumentChunks(pool, embedding, {
+        limit,
+        threshold,
+        project: body.project,
+        source_type: body.source_type,
+      });
+
+      return c.json({
+        query: body.query,
+        count: results.length,
+        results: results.map((chunk) => ({
+          id: chunk.id,
+          document_id: chunk.document_id,
+          document_title: chunk.document_title,
+          document_source_type: chunk.document_source_type,
+          document_source_uri: chunk.document_source_uri,
+          project: chunk.project,
+          chunk_index: chunk.chunk_index,
+          content: chunk.content,
+          metadata: chunk.metadata,
+          token_count: chunk.token_count,
+          char_start: chunk.char_start,
+          char_end: chunk.char_end,
+          similarity: chunk.similarity,
+          created_at: chunk.created_at.toISOString(),
+          updated_at: chunk.updated_at.toISOString(),
+        })),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Document search failed:", message);
+      return c.json(
+        { error: "Failed to search documents", detail: message },
+        502
+      );
+    }
+  });
 
   app.put("/documents/:id/chunks", async (c) => {
     const id = c.req.param("id");
