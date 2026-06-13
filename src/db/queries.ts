@@ -775,6 +775,23 @@ export async function insertDocument(
   return rows[0]!;
 }
 
+export async function getDocumentBySourceUri(
+  pool: pg.Pool,
+  sourceUri: string
+): Promise<DocumentRow | null> {
+  const key = getCipherKey();
+  const { rows } = await pool.query<DocumentRow>(
+    `SELECT id, title, source_type, source_uri,
+            pgp_sym_decrypt(content_enc, $2)::text AS content,
+            metadata, project, status, created_by, created_at, updated_at
+     FROM documents
+     WHERE source_uri = $1 AND status = 'active'
+     LIMIT 1`,
+    [sourceUri, key]
+  );
+  return rows[0] ?? null;
+}
+
 export async function getDocument(
   pool: pg.Pool,
   id: string

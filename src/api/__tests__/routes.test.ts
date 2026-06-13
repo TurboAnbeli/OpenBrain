@@ -47,6 +47,7 @@ const mockSearchThoughtsByEntity = vi.fn().mockResolvedValue([]);
 const mockExtractAndLinkEntities = vi.fn().mockResolvedValue(undefined);
 const mockInsertDocument = vi.fn();
 const mockGetDocument = vi.fn();
+const mockGetDocumentBySourceUri = vi.fn();
 const mockUpdateDocument = vi.fn();
 const mockReplaceDocumentChunks = vi.fn();
 const mockListDocumentChunks = vi.fn();
@@ -65,6 +66,7 @@ vi.mock("../../db/queries.js", () => ({
   extractAndLinkEntities: (...args: any[]) => mockExtractAndLinkEntities(...args),
   insertDocument: (...args: any[]) => mockInsertDocument(...args),
   getDocument: (...args: any[]) => mockGetDocument(...args),
+  getDocumentBySourceUri: (...args: any[]) => mockGetDocumentBySourceUri(...args),
   updateDocument: (...args: any[]) => mockUpdateDocument(...args),
   replaceDocumentChunks: (...args: any[]) => mockReplaceDocumentChunks(...args),
   listDocumentChunks: (...args: any[]) => mockListDocumentChunks(...args),
@@ -365,6 +367,42 @@ describe("REST API Routes", () => {
     });
     expect(res.status).toBe(400);
     expect(mockInsertDocument).not.toHaveBeenCalled();
+  });
+
+
+
+  it("GET /documents/by-source-uri returns an active document for importer de-duplication", async () => {
+    const createdAt = new Date();
+    mockGetDocumentBySourceUri.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      title: "Already imported",
+      source_type: "ryel_markdown",
+      source_uri: "file:///vault/wiki/already.md",
+      content: "Existing content",
+      metadata: {},
+      project: "one-brain",
+      status: "active",
+      created_by: "hermes",
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+
+    const res = await app.request("/documents/by-source-uri?source_uri=" + encodeURIComponent("file:///vault/wiki/already.md"));
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; source_uri: string };
+    expect(body.id).toBe("a1b2c3d4-1234-5678-9abc-def012345678");
+    expect(body.source_uri).toBe("file:///vault/wiki/already.md");
+    expect(mockGetDocumentBySourceUri).toHaveBeenCalledWith(expect.anything(), "file:///vault/wiki/already.md");
+  });
+
+  it("GET /documents/by-source-uri validates source_uri and returns 404 when missing", async () => {
+    const missingParam = await app.request("/documents/by-source-uri");
+    expect(missingParam.status).toBe(400);
+
+    mockGetDocumentBySourceUri.mockResolvedValueOnce(null);
+    const missing = await app.request("/documents/by-source-uri?source_uri=" + encodeURIComponent("file:///missing.md"));
+    expect(missing.status).toBe(404);
   });
 
   it("GET /documents/:id returns an editable source document", async () => {
