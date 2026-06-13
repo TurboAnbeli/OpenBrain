@@ -16,6 +16,11 @@ export interface ParityRunOptions {
   ryelSearch: (query: string) => Promise<ParitySearchResult[]>;
 }
 
+export function shellQuote(value: string): string {
+  return `"${value.replace(/["\\$`]/g, "\\$&").replace(/\n/g, "\\n")}"`;
+}
+
+
 export async function loadParityQueries(filePath: string): Promise<string[]> {
   const parsed = JSON.parse(await readFile(filePath, "utf8")) as unknown;
   const queries = Array.isArray(parsed)
