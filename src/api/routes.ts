@@ -26,6 +26,8 @@ import {
   insertDocument,
   getDocument,
   updateDocument,
+  replaceDocumentChunks,
+  listDocumentChunks,
   type ListFilters,
   type BatchThoughtInput,
   type SearchResult,
@@ -741,6 +743,118 @@ export function createApi(): Hono {
       console.error("[api] Document update failed:", message);
       return c.json(
         { error: "Failed to update document", detail: message },
+        502
+      );
+    }
+  });
+
+
+
+  app.put("/documents/:id/chunks", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
+
+    const body = await c.req.json<{
+      chunks: Array<{
+        content: string;
+        metadata?: Record<string, unknown>;
+        token_count?: number;
+        char_start?: number;
+        char_end?: number;
+      }>;
+    }>();
+
+    if (!Array.isArray(body.chunks)) {
+      return c.json({ error: "chunks array is required" }, 400);
+    }
+
+    try {
+      const document = await getDocument(pool, id);
+      if (!document) {
+        return c.json({ error: `Document not found: ${id}` }, 404);
+      }
+
+      for (const chunk of body.chunks) {
+        if (!chunk.content || chunk.content.trim().length === 0) {
+          return c.json({ error: "each chunk must have non-empty content" }, 400);
+        }
+      }
+
+      const chunkInputs = await Promise.all(
+        body.chunks.map(async (chunk, index) => ({
+          chunk_index: index,
+          content: chunk.content,
+          embedding: await embedder.generateEmbedding(chunk.content),
+          metadata: chunk.metadata ?? {},
+          token_count: chunk.token_count,
+          char_start: chunk.char_start,
+          char_end: chunk.char_end,
+        }))
+      );
+      const results = await replaceDocumentChunks(pool, id, chunkInputs);
+
+      return c.json({
+        document_id: id,
+        count: results.length,
+        chunks: results.map((chunk) => ({
+          id: chunk.id,
+          document_id: chunk.document_id,
+          chunk_index: chunk.chunk_index,
+          content: chunk.content,
+          metadata: chunk.metadata,
+          token_count: chunk.token_count,
+          char_start: chunk.char_start,
+          char_end: chunk.char_end,
+          created_at: chunk.created_at.toISOString(),
+          updated_at: chunk.updated_at.toISOString(),
+        })),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Document chunk replace failed:", message);
+      return c.json(
+        { error: "Failed to replace document chunks", detail: message },
+        502
+      );
+    }
+  });
+
+  app.get("/documents/:id/chunks", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
+
+    try {
+      const document = await getDocument(pool, id);
+      if (!document) {
+        return c.json({ error: `Document not found: ${id}` }, 404);
+      }
+      const results = await listDocumentChunks(pool, id);
+
+      return c.json({
+        document_id: id,
+        count: results.length,
+        chunks: results.map((chunk) => ({
+          id: chunk.id,
+          document_id: chunk.document_id,
+          chunk_index: chunk.chunk_index,
+          content: chunk.content,
+          metadata: chunk.metadata,
+          token_count: chunk.token_count,
+          char_start: chunk.char_start,
+          char_end: chunk.char_end,
+          created_at: chunk.created_at.toISOString(),
+          updated_at: chunk.updated_at.toISOString(),
+        })),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Document chunk list failed:", message);
+      return c.json(
+        { error: "Failed to list document chunks", detail: message },
         502
       );
     }

@@ -83,6 +83,29 @@ export interface DocumentUpdateInput {
   updated_by?: string;
 }
 
+export interface DocumentChunkInput {
+  chunk_index: number;
+  content: string;
+  embedding: number[];
+  metadata?: DocumentMetadata;
+  token_count?: number;
+  char_start?: number;
+  char_end?: number;
+}
+
+export interface DocumentChunkRow {
+  id: string;
+  document_id: string;
+  chunk_index: number;
+  content: string;
+  metadata: DocumentMetadata;
+  token_count?: number | null;
+  char_start?: number | null;
+  char_end?: number | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
 export interface ThoughtStats {
   total_thoughts: number;
   types: Record<string, number>;
@@ -839,4 +862,68 @@ export async function updateDocument(
   } finally {
     client.release();
   }
+}
+
+export async function replaceDocumentChunks(
+  pool: pg.Pool,
+  documentId: string,
+  chunks: DocumentChunkInput[]
+): Promise<DocumentChunkRow[]> {
+  const client = await pool.connect();
+  const key = getCipherKey();
+  const results: DocumentChunkRow[] = [];
+
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM document_chunks WHERE document_id = $1", [documentId]);
+
+    for (const chunk of chunks) {
+      const embeddingStr = `[${chunk.embedding.join(",")}]`;
+      const { rows } = await client.query<DocumentChunkRow>(
+        `INSERT INTO document_chunks
+           (document_id, chunk_index, content_enc, embedding, metadata, token_count, char_start, char_end, fts)
+         VALUES ($1, $2, pgp_sym_encrypt($3, $9), $4::vector, $5::jsonb, $6, $7, $8, to_tsvector('english', $3))
+         RETURNING id, document_id, chunk_index,
+                   pgp_sym_decrypt(content_enc, $9)::text AS content,
+                   metadata, token_count, char_start, char_end, created_at, updated_at`,
+        [
+          documentId,
+          chunk.chunk_index,
+          chunk.content,
+          embeddingStr,
+          JSON.stringify(chunk.metadata ?? {}),
+          chunk.token_count ?? null,
+          chunk.char_start ?? null,
+          chunk.char_end ?? null,
+          key,
+        ]
+      );
+      results.push(rows[0]!);
+    }
+
+    await client.query("COMMIT");
+    return results;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function listDocumentChunks(
+  pool: pg.Pool,
+  documentId: string
+): Promise<DocumentChunkRow[]> {
+  const key = getCipherKey();
+  const { rows } = await pool.query<DocumentChunkRow>(
+    `SELECT id, document_id, chunk_index,
+            pgp_sym_decrypt(content_enc, $2)::text AS content,
+            metadata, token_count, char_start, char_end, created_at, updated_at
+     FROM document_chunks
+     WHERE document_id = $1
+     ORDER BY chunk_index ASC`,
+    [documentId, key]
+  );
+  return rows;
 }
