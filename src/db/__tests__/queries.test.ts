@@ -430,6 +430,27 @@ describe("documents", () => {
     expect(params[6]).toBe(documentInput.created_by);
   });
 
+  it("uses the cipher key parameter consistently when inserting documents", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: "doc-123",
+        ...documentInput,
+        status: "active",
+        created_at: new Date(),
+        updated_at: new Date(),
+      }],
+    });
+
+    await insertDocument(pool, documentInput);
+
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(sql).toContain("pgp_sym_encrypt($4, $8)");
+    expect(sql).toContain("pgp_sym_decrypt(content_enc, $8)");
+    expect(params).toHaveLength(8);
+  });
+
   it("fetches active documents with decrypted content by id", async () => {
     const { pool, mockQuery } = createMockPool();
     mockQuery.mockResolvedValueOnce({
