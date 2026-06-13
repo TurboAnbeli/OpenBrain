@@ -760,10 +760,17 @@ export function createApi(): Hono {
       threshold?: number;
       project?: string;
       source_type?: string;
+      mode?: "vector" | "hybrid";
+      vector_weight?: number;
+      fts_weight?: number;
     }>();
 
     if (!body.query || body.query.trim().length === 0) {
       return c.json({ error: "query is required" }, 400);
+    }
+    const mode = body.mode ?? "vector";
+    if (!["vector", "hybrid"].includes(mode)) {
+      return c.json({ error: "mode must be vector or hybrid" }, 400);
     }
 
     const limit = Math.min(Math.max(body.limit ?? 10, 1), 100);
@@ -772,14 +779,19 @@ export function createApi(): Hono {
     try {
       const embedding = await embedder.generateEmbedding(body.query);
       const results = await searchDocumentChunks(pool, embedding, {
+        query: body.query,
+        mode,
         limit,
         threshold,
         project: body.project,
         source_type: body.source_type,
+        vector_weight: body.vector_weight,
+        fts_weight: body.fts_weight,
       });
 
       return c.json({
         query: body.query,
+        mode,
         count: results.length,
         results: results.map((chunk) => ({
           id: chunk.id,
@@ -795,6 +807,8 @@ export function createApi(): Hono {
           char_start: chunk.char_start,
           char_end: chunk.char_end,
           similarity: chunk.similarity,
+          fts_rank: chunk.fts_rank,
+          score: chunk.score,
           created_at: chunk.created_at.toISOString(),
           updated_at: chunk.updated_at.toISOString(),
         })),

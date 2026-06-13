@@ -574,6 +574,8 @@ describe("REST API Routes", () => {
         char_start: 0,
         char_end: 32,
         similarity: 0.91,
+        fts_rank: 0,
+        score: 0.91,
         created_at: createdAt,
         updated_at: createdAt,
       },
@@ -602,6 +604,64 @@ describe("REST API Routes", () => {
     expect(options.threshold).toBe(0.3);
     expect(options.project).toBe("one-brain");
     expect(options.source_type).toBe("markdown");
+  });
+
+
+
+  it("POST /documents/search supports hybrid mode and returns score components", async () => {
+    const createdAt = new Date();
+    mockSearchDocumentChunks.mockResolvedValueOnce([
+      {
+        id: "chunk-0",
+        document_id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        document_title: "Exact config token note",
+        document_source_type: "markdown",
+        document_source_uri: "file:///config.md",
+        project: "one-brain",
+        chunk_index: 0,
+        content: "OPENBRAIN_SEARCH_THRESHOLD controls retrieval cutoff",
+        metadata: {},
+        token_count: 4,
+        char_start: 0,
+        char_end: 52,
+        similarity: 0.72,
+        fts_rank: 0.41,
+        score: 0.6425,
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+    ]);
+
+    const res = await app.request("/documents/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "OPENBRAIN_SEARCH_THRESHOLD",
+        mode: "hybrid",
+        vector_weight: 0.75,
+        fts_weight: 0.25,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { mode: string; results: Array<{ fts_rank: number; score: number }> };
+    expect(body.mode).toBe("hybrid");
+    expect(body.results[0]!.fts_rank).toBe(0.41);
+    expect(body.results[0]!.score).toBe(0.6425);
+    const options = mockSearchDocumentChunks.mock.calls[0]![2];
+    expect(options.query).toBe("OPENBRAIN_SEARCH_THRESHOLD");
+    expect(options.mode).toBe("hybrid");
+    expect(options.vector_weight).toBe(0.75);
+    expect(options.fts_weight).toBe(0.25);
+  });
+
+  it("POST /documents/search rejects invalid search mode", async () => {
+    const res = await app.request("/documents/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "valid", mode: "bogus" }),
+    });
+    expect(res.status).toBe(400);
   });
 
   it("POST /documents/search validates query and bounds limit", async () => {

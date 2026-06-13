@@ -637,6 +637,57 @@ describe("documents", () => {
     expect(params[5]).toBe("markdown");
   });
 
+
+
+  it("supports hybrid document chunk search with FTS rank and combined score", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          id: "chunk-0",
+          document_id: "doc-123",
+          document_title: "Exact config token note",
+          document_source_type: "markdown",
+          document_source_uri: "file:///config.md",
+          project: "one-brain",
+          chunk_index: 0,
+          content: "OPENBRAIN_SEARCH_THRESHOLD controls retrieval cutoff",
+          metadata: {},
+          token_count: 4,
+          char_start: 0,
+          char_end: 52,
+          similarity: 0.72,
+          fts_rank: 0.41,
+          score: 0.6425,
+          created_at: new Date(),
+          updated_at: new Date(),
+        },
+      ],
+    });
+
+    const results = await searchDocumentChunks(pool, [0.1, 0.2, 0.3], {
+      query: "OPENBRAIN_SEARCH_THRESHOLD",
+      mode: "hybrid",
+      limit: 5,
+      threshold: 0.25,
+      vector_weight: 0.75,
+      fts_weight: 0.25,
+    });
+
+    expect(results[0]!.fts_rank).toBe(0.41);
+    expect(results[0]!.score).toBe(0.6425);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("plainto_tsquery('english', $7)");
+    expect(sql).toContain("ts_rank_cd(c.fts");
+    expect(sql).toContain("AS fts_rank");
+    expect(sql).toContain("AS score");
+    expect(sql).toContain("ORDER BY score DESC");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[6]).toBe("OPENBRAIN_SEARCH_THRESHOLD");
+    expect(params[7]).toBe(0.75);
+    expect(params[8]).toBe(0.25);
+  });
+
   it("lists document chunks in chunk_index order with decrypted content", async () => {
     const { pool, mockQuery } = createMockPool();
     mockQuery.mockResolvedValueOnce({

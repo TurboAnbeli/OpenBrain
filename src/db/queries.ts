@@ -106,11 +106,17 @@ export interface DocumentChunkRow {
   updated_at: Date;
 }
 
+export type DocumentChunkSearchMode = "vector" | "hybrid";
+
 export interface DocumentChunkSearchOptions {
+  query?: string;
+  mode?: DocumentChunkSearchMode;
   limit?: number;
   threshold?: number;
   project?: string;
   source_type?: string;
+  vector_weight?: number;
+  fts_weight?: number;
 }
 
 export interface DocumentChunkSearchResult extends DocumentChunkRow {
@@ -119,6 +125,8 @@ export interface DocumentChunkSearchResult extends DocumentChunkRow {
   document_source_uri?: string | null;
   project?: string | null;
   similarity: number;
+  fts_rank: number;
+  score: number;
 }
 
 export interface ThoughtStats {
@@ -954,6 +962,40 @@ export async function searchDocumentChunks(
   const threshold = options.threshold ?? 0.3;
   const project = options.project ?? null;
   const sourceType = options.source_type ?? null;
+  const mode = options.mode ?? "vector";
+  const query = options.query ?? "";
+  const vectorWeight = options.vector_weight ?? 0.75;
+  const ftsWeight = options.fts_weight ?? 0.25;
+
+  if (mode === "hybrid") {
+    const { rows } = await pool.query<DocumentChunkSearchResult>(
+      `WITH scored AS (
+         SELECT c.id, c.document_id, d.title AS document_title,
+                d.source_type AS document_source_type,
+                d.source_uri AS document_source_uri,
+                d.project,
+                c.chunk_index,
+                pgp_sym_decrypt(c.content_enc, $2)::text AS content,
+                c.metadata, c.token_count, c.char_start, c.char_end,
+                1 - (c.embedding <=> $1::vector) AS similarity,
+                ts_rank_cd(c.fts, plainto_tsquery('english', $7)) AS fts_rank,
+                c.created_at, c.updated_at
+         FROM document_chunks c
+         JOIN documents d ON d.id = c.document_id
+         WHERE d.status = 'active'
+           AND c.embedding IS NOT NULL
+           AND 1 - (c.embedding <=> $1::vector) >= $4
+           AND ($5::text IS NULL OR d.project = $5)
+           AND ($6::text IS NULL OR d.source_type = $6)
+       )
+       SELECT *, (($8::float8 * similarity) + ($9::float8 * LEAST(fts_rank, 1.0))) AS score
+       FROM scored
+       ORDER BY score DESC, similarity DESC
+       LIMIT $3`,
+      [embeddingStr, key, limit, threshold, project, sourceType, query, vectorWeight, ftsWeight]
+    );
+    return rows;
+  }
 
   const { rows } = await pool.query<DocumentChunkSearchResult>(
     `SELECT c.id, c.document_id, d.title AS document_title,
@@ -964,6 +1006,8 @@ export async function searchDocumentChunks(
             pgp_sym_decrypt(c.content_enc, $2)::text AS content,
             c.metadata, c.token_count, c.char_start, c.char_end,
             1 - (c.embedding <=> $1::vector) AS similarity,
+            0::float8 AS fts_rank,
+            1 - (c.embedding <=> $1::vector) AS score,
             c.created_at, c.updated_at
      FROM document_chunks c
      JOIN documents d ON d.id = c.document_id
