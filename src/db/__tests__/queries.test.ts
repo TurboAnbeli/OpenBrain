@@ -14,7 +14,11 @@ import {
   updateThought,
   deleteThought,
   batchInsertThoughts,
+  insertDocument,
+  getDocument,
+  updateDocument,
   type ThoughtMetadata,
+  type DocumentInput,
 } from "../queries.js";
 
 // ─── Mock Pool Factory ──────────────────────────────────────────────
@@ -374,5 +378,112 @@ describe("batchInsertThoughts", () => {
 
     // Should have called ROLLBACK
     expect(client.query).toHaveBeenCalledWith("ROLLBACK");
+  });
+});
+
+
+// ─── Documents ──────────────────────────────────────────────────────
+
+describe("documents", () => {
+  const documentInput: DocumentInput = {
+    title: "PEITHO trial article",
+    source_type: "pdf",
+    source_uri: "file:///literature/peitho.pdf",
+    content: "Full extracted article text",
+    metadata: { doi: "10.1056/example", tags: ["pulmonary-embolism"] },
+    project: "medical-literature",
+    created_by: "ryan",
+  };
+
+  it("inserts source documents with encrypted content and provenance metadata", async () => {
+    const { pool, mockQuery } = createMockPool();
+    const row = {
+      id: "doc-123",
+      title: documentInput.title,
+      source_type: documentInput.source_type,
+      source_uri: documentInput.source_uri,
+      content: documentInput.content,
+      metadata: documentInput.metadata,
+      project: documentInput.project,
+      created_by: documentInput.created_by,
+      status: "active",
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+    mockQuery.mockResolvedValueOnce({ rows: [row] });
+
+    const result = await insertDocument(pool, documentInput);
+
+    expect(result.id).toBe("doc-123");
+    expect(result.content).toBe(documentInput.content);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("INSERT INTO documents");
+    expect(sql).toContain("pgp_sym_encrypt($4");
+    expect(sql).toContain("to_tsvector('english', $4)");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[0]).toBe(documentInput.title);
+    expect(params[1]).toBe(documentInput.source_type);
+    expect(params[2]).toBe(documentInput.source_uri);
+    expect(params[3]).toBe(documentInput.content);
+    expect(JSON.parse(params[4] as string)).toEqual(documentInput.metadata);
+    expect(params[5]).toBe(documentInput.project);
+    expect(params[6]).toBe(documentInput.created_by);
+  });
+
+  it("fetches active documents with decrypted content by id", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: "doc-123", title: "Title", content: "body", metadata: {}, status: "active" }],
+    });
+
+    const result = await getDocument(pool, "doc-123");
+
+    expect(result?.id).toBe("doc-123");
+    expect(result?.content).toBe("body");
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("pgp_sym_decrypt(content_enc");
+    expect(sql).toContain("FROM documents");
+    expect(sql).toContain("status != 'deleted'");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[0]).toBe("doc-123");
+  });
+
+  it("updates documents and records the prior version as a revision transactionally", async () => {
+    const { pool, mockConnect } = createMockPool();
+    const client = await mockConnect();
+    const existing = {
+      id: "doc-123",
+      title: "Old title",
+      content: "Old body",
+      metadata: { tags: ["old"] },
+      project: "proj",
+      created_by: "ryan",
+      status: "active",
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+    const updated = { ...existing, title: "New title", content: "New body" };
+    client.query
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ rows: [existing], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ next_revision: 2 }] })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [updated], rowCount: 1 })
+      .mockResolvedValueOnce({});
+
+    const result = await updateDocument(pool, "doc-123", {
+      title: "New title",
+      content: "New body",
+      metadata: { tags: ["new"] },
+      edit_reason: "correct extracted text",
+      updated_by: "ryan",
+    });
+
+    expect(result.title).toBe("New title");
+    expect(client.query.mock.calls[0]![0]).toBe("BEGIN");
+    expect(client.query.mock.calls[1]![0] as string).toContain("FOR UPDATE");
+    expect(client.query.mock.calls[3]![0] as string).toContain("INSERT INTO document_revisions");
+    expect(client.query.mock.calls[4]![0] as string).toContain("UPDATE documents");
+    expect(client.query.mock.calls[5]![0]).toBe("COMMIT");
   });
 });

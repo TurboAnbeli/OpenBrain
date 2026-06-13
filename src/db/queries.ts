@@ -41,6 +41,48 @@ export interface SearchResult extends ThoughtRow {
   similarity: number;
 }
 
+// ─── Source Documents ───────────────────────────────────────────────
+
+export type DocumentStatus = "active" | "archived" | "deleted";
+
+export interface DocumentMetadata {
+  [key: string]: unknown;
+}
+
+export interface DocumentInput {
+  title: string;
+  source_type: string;
+  source_uri?: string;
+  content: string;
+  metadata?: DocumentMetadata;
+  project?: string;
+  created_by?: string;
+}
+
+export interface DocumentRow {
+  id: string;
+  title: string;
+  source_type: string;
+  source_uri?: string | null;
+  content: string;
+  metadata: DocumentMetadata;
+  project?: string | null;
+  created_by?: string | null;
+  status: DocumentStatus;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface DocumentUpdateInput {
+  title?: string;
+  source_uri?: string | null;
+  content?: string;
+  metadata?: DocumentMetadata;
+  status?: DocumentStatus;
+  edit_reason?: string;
+  updated_by?: string;
+}
+
 export interface ThoughtStats {
   total_thoughts: number;
   types: Record<string, number>;
@@ -657,4 +699,145 @@ export async function searchThoughtsByEntity(
     ]
   );
   return rows;
+}
+
+
+// ─── Document Queries ────────────────────────────────────────────────
+
+export async function insertDocument(
+  pool: pg.Pool,
+  document: DocumentInput
+): Promise<DocumentRow> {
+  const key = getCipherKey();
+  const { rows } = await pool.query<DocumentRow>(
+    `INSERT INTO documents (title, source_type, source_uri, content_enc, metadata, project, created_by, fts)
+     VALUES ($1, $2, $3, pgp_sym_encrypt($4, $8), $5::jsonb, $6, $7, to_tsvector('english', $4))
+     RETURNING id, title, source_type, source_uri,
+               pgp_sym_decrypt(content_enc, $8)::text AS content,
+               metadata, project, created_by, status, created_at, updated_at`,
+    [
+      document.title,
+      document.source_type,
+      document.source_uri ?? null,
+      document.content,
+      JSON.stringify(document.metadata ?? {}),
+      document.project ?? null,
+      document.created_by ?? null,
+      key,
+    ]
+  );
+  return rows[0]!;
+}
+
+export async function getDocument(
+  pool: pg.Pool,
+  id: string
+): Promise<DocumentRow | null> {
+  const key = getCipherKey();
+  const { rows } = await pool.query<DocumentRow>(
+    `SELECT id, title, source_type, source_uri,
+            pgp_sym_decrypt(content_enc, $2)::text AS content,
+            metadata, project, created_by, status, created_at, updated_at
+     FROM documents
+     WHERE id = $1 AND status != 'deleted'`,
+    [id, key]
+  );
+  return rows[0] ?? null;
+}
+
+export async function updateDocument(
+  pool: pg.Pool,
+  id: string,
+  patch: DocumentUpdateInput
+): Promise<DocumentRow> {
+  const client = await pool.connect();
+  const key = getCipherKey();
+
+  try {
+    await client.query("BEGIN");
+
+    const existingResult = await client.query<DocumentRow>(
+      `SELECT id, title, source_type, source_uri,
+              pgp_sym_decrypt(content_enc, $2)::text AS content,
+              metadata, project, created_by, status, created_at, updated_at
+       FROM documents
+       WHERE id = $1 AND status != 'deleted'
+       FOR UPDATE`,
+      [id, key]
+    );
+
+    if (!existingResult.rowCount || existingResult.rowCount === 0) {
+      throw new Error(`Document not found: ${id}`);
+    }
+
+    const existing = existingResult.rows[0]!;
+    const nextRevisionResult = await client.query<{ next_revision: number }>(
+      `SELECT COALESCE(MAX(revision_number), 0) + 1 AS next_revision
+       FROM document_revisions
+       WHERE document_id = $1`,
+      [id]
+    );
+    const nextRevision = nextRevisionResult.rows[0]?.next_revision ?? 1;
+
+    await client.query(
+      `INSERT INTO document_revisions
+         (document_id, revision_number, title, source_uri, content_enc, metadata, status, edit_reason, created_by)
+       VALUES ($1, $2, $3, $4, pgp_sym_encrypt($5, $10), $6::jsonb, $7, $8, $9)`,
+      [
+        id,
+        nextRevision,
+        existing.title,
+        existing.source_uri ?? null,
+        existing.content,
+        JSON.stringify(existing.metadata ?? {}),
+        existing.status,
+        patch.edit_reason ?? null,
+        patch.updated_by ?? null,
+        key,
+      ]
+    );
+
+    const newTitle = patch.title ?? existing.title;
+    const newSourceUri = patch.source_uri !== undefined ? patch.source_uri : existing.source_uri ?? null;
+    const newContent = patch.content ?? existing.content;
+    const newMetadata = patch.metadata ?? existing.metadata ?? {};
+    const newStatus = patch.status ?? existing.status;
+
+    const { rows, rowCount } = await client.query<DocumentRow>(
+      `UPDATE documents
+       SET title = $2,
+           source_uri = $3,
+           content_enc = pgp_sym_encrypt($4, $8),
+           metadata = $5::jsonb,
+           status = $6,
+           fts = to_tsvector('english', $4),
+           updated_at = now()
+       WHERE id = $1
+       RETURNING id, title, source_type, source_uri,
+                 pgp_sym_decrypt(content_enc, $8)::text AS content,
+                 metadata, project, created_by, status, created_at, updated_at`,
+      [
+        id,
+        newTitle,
+        newSourceUri,
+        newContent,
+        JSON.stringify(newMetadata),
+        newStatus,
+        patch.updated_by ?? null,
+        key,
+      ]
+    );
+
+    if (!rowCount || rowCount === 0) {
+      throw new Error(`Document not found: ${id}`);
+    }
+
+    await client.query("COMMIT");
+    return rows[0]!;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
