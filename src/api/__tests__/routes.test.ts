@@ -71,6 +71,7 @@ const mockInsertMemoryLink = vi.fn();
 const mockGetMemoryLink = vi.fn();
 const mockListMemoryLinks = vi.fn();
 const mockExpandMemoryLinks = vi.fn();
+const mockRecallTemporalMemories = vi.fn();
 const mockInferExperienceTemporalLinks = vi.fn();
 const mockInferSupersedesMemoryLinks = vi.fn();
 const mockInferExperienceReferenceLinks = vi.fn();
@@ -113,6 +114,7 @@ vi.mock("../../db/queries.js", () => ({
   getMemoryLink: (...args: any[]) => mockGetMemoryLink(...args),
   listMemoryLinks: (...args: any[]) => mockListMemoryLinks(...args),
   expandMemoryLinks: (...args: any[]) => mockExpandMemoryLinks(...args),
+  recallTemporalMemories: (...args: any[]) => mockRecallTemporalMemories(...args),
   inferExperienceTemporalLinks: (...args: any[]) => mockInferExperienceTemporalLinks(...args),
   inferSupersedesMemoryLinks: (...args: any[]) => mockInferSupersedesMemoryLinks(...args),
   inferExperienceReferenceLinks: (...args: any[]) => mockInferExperienceReferenceLinks(...args),
@@ -420,6 +422,90 @@ describe("REST API Routes", () => {
     expect(linked?.source_type).toBe("experience");
     expect(linked?.link_score).toBe(1);
     expect(linked?.content).toBe("Linked earlier experience");
+  });
+
+  it("POST /recall activates temporal lane for explicit time windows", async () => {
+    const createdAt = new Date("2026-06-15T16:00:00Z");
+    mockSearchThoughts.mockResolvedValueOnce([]);
+    mockBm25SearchThoughts.mockResolvedValueOnce([]);
+    mockRecallTemporalMemories.mockResolvedValueOnce([
+      {
+        source_type: "experience",
+        id: "66666666-6666-4666-8666-666666666666",
+        content: "Temporal experience content",
+        title: null,
+        metadata: { event_type: "assistant_message", occurred_at: createdAt.toISOString() },
+        project: "one-brain",
+        event_at: createdAt,
+        event_started_at: createdAt,
+        event_ended_at: createdAt,
+        created_at: createdAt,
+        temporal_score: 1,
+      },
+    ]);
+
+    const res = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "what happened during slice i",
+        bank_id: "openbrain",
+        project: "one-brain",
+        include_documents: false,
+        include_observations: false,
+        include_experiences: false,
+        time_start: "2026-06-15T15:00:00Z",
+        time_end: "2026-06-15T17:00:00Z",
+        limit: 5,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockRecallTemporalMemories).toHaveBeenCalledWith(expect.anything(), {
+      bank_id: "openbrain",
+      project: "one-brain",
+      created_by: undefined,
+      time_start: "2026-06-15T15:00:00Z",
+      time_end: "2026-06-15T17:00:00Z",
+      include_archived: false,
+      limit: 5,
+    });
+    const body = (await res.json()) as {
+      lanes: { temporal: string };
+      results: Array<{ source_type: string; id: string; score: number; semantic_score: number; bm25_score: number; temporal_score: number; link_score: number; content: string }>;
+    };
+    expect(body.lanes.temporal).toBe("active");
+    expect(body.results[0]).toMatchObject({
+      source_type: "experience",
+      id: "66666666-6666-4666-8666-666666666666",
+      content: "Temporal experience content",
+      score: 1,
+      semantic_score: 0,
+      bm25_score: 0,
+      temporal_score: 1,
+      link_score: 0,
+    });
+  });
+
+  it("POST /recall validates temporal windows", async () => {
+    const invalidTimestamp = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "bad time", time_start: "not-a-time" }),
+    });
+    expect(invalidTimestamp.status).toBe(400);
+
+    const invertedWindow = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "bad range",
+        time_start: "2026-06-15T17:00:00Z",
+        time_end: "2026-06-15T15:00:00Z",
+      }),
+    });
+    expect(invertedWindow.status).toBe(400);
+    expect(mockRecallTemporalMemories).not.toHaveBeenCalled();
   });
 
   it("POST /recall validates query, seed ids, and link direction", async () => {

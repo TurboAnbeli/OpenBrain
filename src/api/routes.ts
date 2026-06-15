@@ -44,6 +44,7 @@ import {
   getMemoryLink,
   listMemoryLinks,
   expandMemoryLinks,
+  recallTemporalMemories,
   inferExperienceTemporalLinks,
   inferSupersedesMemoryLinks,
   inferExperienceReferenceLinks,
@@ -66,6 +67,7 @@ import {
   type MemoryLinkRow,
   type MemoryLinkExpansionDirectionFilter,
   type MemoryLinkExpansionRow,
+  type TemporalRecallRow,
 } from "../db/queries.js";
 import { getEmbedder } from "../embedder/index.js";
 import { hasSpecificityMarker, applyRecencyBoost, overfetchLimit } from "./recency_boost.js";
@@ -272,7 +274,7 @@ function serializeMemoryLinkExpansion(row: MemoryLinkExpansionRow) {
 
 type RecallSourceType = "thought" | "document_chunk" | "consolidated_observation" | "experience" | MemoryLinkSourceType;
 
-type RecallTemporalLaneStatus = "stub";
+type RecallTemporalLaneStatus = "stub" | "active";
 
 interface RecallApiResult {
   source_type: RecallSourceType;
@@ -447,6 +449,29 @@ function recallFromMemoryLink(row: MemoryLinkExpansionRow): RecallApiResult {
     link: serializeMemoryLink(row),
     seed: { source_type: row.seed_type, source_id: row.seed_id },
     direction: row.direction,
+  };
+}
+
+function recallFromTemporal(row: TemporalRecallRow): RecallApiResult {
+  const score = scoreValue(row.temporal_score);
+  return {
+    source_type: row.source_type,
+    id: row.id,
+    content: row.content,
+    title: row.title ?? null,
+    metadata: {
+      ...asRecord(row.metadata),
+      event_at: serializeOptionalTimestamp(row.event_at ?? null),
+      event_started_at: serializeOptionalTimestamp(row.event_started_at ?? null),
+      event_ended_at: serializeOptionalTimestamp(row.event_ended_at ?? null),
+    },
+    project: row.project ?? null,
+    created_at: serializeOptionalTimestamp(row.created_at),
+    score,
+    semantic_score: 0,
+    bm25_score: 0,
+    temporal_score: score,
+    link_score: 0,
   };
 }
 
@@ -859,6 +884,8 @@ export function createApi(): Hono {
       expand_from_seeds?: Array<{ source_type?: string; source_id?: string }>;
       link_direction?: string;
       link_relationship?: string;
+      time_start?: string;
+      time_end?: string;
       limit?: number;
       threshold?: number;
     }>();
@@ -886,6 +913,19 @@ export function createApi(): Hono {
     }
     if (body.threshold !== undefined && (typeof body.threshold !== "number" || !Number.isFinite(body.threshold))) {
       return c.json({ error: "threshold must be a finite number" }, 400);
+    }
+    if (body.time_start !== undefined && !isValidTimestamp(body.time_start)) {
+      return c.json({ error: "time_start must be a valid timestamp" }, 400);
+    }
+    if (body.time_end !== undefined && !isValidTimestamp(body.time_end)) {
+      return c.json({ error: "time_end must be a valid timestamp" }, 400);
+    }
+    if (
+      body.time_start !== undefined &&
+      body.time_end !== undefined &&
+      Date.parse(body.time_start) > Date.parse(body.time_end)
+    ) {
+      return c.json({ error: "time_start must be before or equal to time_end" }, 400);
     }
 
     const seeds: Array<{ source_type: MemoryLinkSourceType; source_id: string }> = [];
@@ -924,13 +964,14 @@ export function createApi(): Hono {
     const includeDocuments = body.include_documents ?? true;
     const includeObservations = body.include_observations ?? true;
     const includeExperiences = body.include_experiences ?? true;
+    const temporalEnabled = body.time_start !== undefined || body.time_end !== undefined;
     const filter: Record<string, unknown> = {};
     if (body.type) filter.type = body.type;
     if (body.topic) filter.topics = [body.topic];
 
     try {
       const queryEmbedding = await embedder.generateEmbedding(body.query);
-      const [semanticResults, bm25Results, documentResults, observationResults, experienceResults, linkResults] = await Promise.all([
+      const [semanticResults, bm25Results, documentResults, observationResults, experienceResults, linkResults, temporalResults] = await Promise.all([
         searchThoughts(
           pool, queryEmbedding, limit, threshold, filter,
           body.project, body.include_archived, body.created_by
@@ -977,6 +1018,17 @@ export function createApi(): Hono {
               limit,
             })
           : Promise.resolve([]),
+        temporalEnabled
+          ? recallTemporalMemories(pool, {
+              bank_id: bankId,
+              project: body.project,
+              created_by: body.created_by,
+              time_start: body.time_start,
+              time_end: body.time_end,
+              include_archived: body.include_archived ?? false,
+              limit,
+            })
+          : Promise.resolve([]),
       ]);
 
       const recallResults = new Map<string, RecallApiResult>();
@@ -986,6 +1038,7 @@ export function createApi(): Hono {
       observationResults.forEach((row) => upsertRecallResult(recallResults, recallFromObservation(row)));
       experienceResults.forEach((row) => upsertRecallResult(recallResults, recallFromExperience(row)));
       linkResults.forEach((row) => upsertRecallResult(recallResults, recallFromMemoryLink(row)));
+      temporalResults.forEach((row) => upsertRecallResult(recallResults, recallFromTemporal(row)));
 
       const results = sortRecallResults([...recallResults.values()]).slice(0, limit);
       return c.json({
@@ -999,7 +1052,7 @@ export function createApi(): Hono {
           observations: includeObservations,
           experiences: includeExperiences,
           link_expansion: seeds.length > 0,
-          temporal: "stub" as RecallTemporalLaneStatus,
+          temporal: (temporalEnabled ? "active" : "stub") as RecallTemporalLaneStatus,
         },
         results,
       });

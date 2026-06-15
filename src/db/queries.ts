@@ -369,6 +369,32 @@ export interface MemoryLinkExpansionRow extends MemoryLinkRow {
   linked_created_at?: Date | null;
 }
 
+export type TemporalRecallSourceType = "thought" | "document" | "experience";
+
+export interface TemporalRecallOptions {
+  bank_id?: string;
+  project?: string;
+  created_by?: string;
+  time_start?: string | Date;
+  time_end?: string | Date;
+  include_archived?: boolean;
+  limit?: number;
+}
+
+export interface TemporalRecallRow {
+  source_type: TemporalRecallSourceType;
+  id: string;
+  content: string;
+  title?: string | null;
+  metadata: Record<string, unknown>;
+  project?: string | null;
+  event_at?: Date | null;
+  event_started_at?: Date | null;
+  event_ended_at?: Date | null;
+  created_at: Date;
+  temporal_score: number;
+}
+
 // ─── Consolidation Jobs ─────────────────────────────────────────────
 
 export type ConsolidationJobType =
@@ -1908,6 +1934,112 @@ function buildMemoryLinkFilters(options: MemoryLinkListOptions, params: unknown[
   if (options.inferred !== undefined) clauses.push(`inferred = ${add(options.inferred)}`);
 
   return `WHERE ${clauses.join(" AND ")}`;
+}
+
+
+// ─── Temporal Recall ─────────────────────────────────────────────────
+
+export async function recallTemporalMemories(
+  pool: pg.Pool,
+  options: TemporalRecallOptions = {}
+): Promise<TemporalRecallRow[]> {
+  if (options.time_start === undefined && options.time_end === undefined) {
+    return [];
+  }
+
+  const key = getCipherKey();
+  const bankId = options.bank_id ?? "openbrain";
+  const limit = Math.max(1, Math.min(100, options.limit ?? 20));
+
+  const { rows } = await pool.query<TemporalRecallRow>(
+    `WITH temporal_candidates AS (
+       SELECT 'experience'::text AS source_type,
+              e.id,
+              pgp_sym_decrypt(e.content_enc, $2)::text AS content,
+              NULL::text AS title,
+              (
+                jsonb_build_object(
+                  'event_type', e.event_type,
+                  'session_id', e.session_id,
+                  'agent_id', e.agent_id,
+                  'occurred_at', e.occurred_at
+                ) || COALESCE(e.refs, '{}'::jsonb)
+              ) AS metadata,
+              e.project,
+              e.created_by,
+              e.occurred_at AS event_at,
+              e.occurred_at AS event_started_at,
+              e.occurred_at AS event_ended_at,
+              e.created_at,
+              1.0::float8 AS temporal_score
+       FROM experiences e
+       WHERE e.bank_id = $1
+         AND ($3::timestamptz IS NULL OR e.occurred_at >= $3::timestamptz)
+         AND ($4::timestamptz IS NULL OR e.occurred_at <= $4::timestamptz)
+
+       UNION ALL
+
+       SELECT 'thought'::text AS source_type,
+              t.id,
+              pgp_sym_decrypt(t.content_enc, $2)::text AS content,
+              NULL::text AS title,
+              COALESCE(t.metadata, '{}'::jsonb) AS metadata,
+              t.project,
+              t.created_by,
+              t.temporal_event_at AS event_at,
+              COALESCE(t.event_started_at, t.temporal_event_at) AS event_started_at,
+              COALESCE(t.event_ended_at, t.temporal_event_at) AS event_ended_at,
+              t.created_at,
+              1.0::float8 AS temporal_score
+       FROM thoughts t
+       WHERE t.bank_id = $1
+         AND ($7::boolean OR NOT t.archived)
+         AND (t.temporal_event_at IS NOT NULL OR t.event_started_at IS NOT NULL OR t.event_ended_at IS NOT NULL)
+         AND ($3::timestamptz IS NULL OR COALESCE(t.event_ended_at, t.temporal_event_at, t.event_started_at) >= $3::timestamptz)
+         AND ($4::timestamptz IS NULL OR COALESCE(t.event_started_at, t.temporal_event_at, t.event_ended_at) <= $4::timestamptz)
+
+       UNION ALL
+
+       SELECT 'document'::text AS source_type,
+              d.id,
+              pgp_sym_decrypt(d.content_enc, $2)::text AS content,
+              d.title,
+              COALESCE(d.metadata, '{}'::jsonb) AS metadata,
+              d.project,
+              d.created_by,
+              NULL::timestamptz AS event_at,
+              d.event_started_at,
+              d.event_ended_at,
+              d.created_at,
+              1.0::float8 AS temporal_score
+       FROM documents d
+       WHERE d.bank_id = $1
+         AND ($7::boolean OR d.status = 'active')
+         AND (d.event_started_at IS NOT NULL OR d.event_ended_at IS NOT NULL)
+         AND ($3::timestamptz IS NULL OR COALESCE(d.event_ended_at, d.event_started_at) >= $3::timestamptz)
+         AND ($4::timestamptz IS NULL OR COALESCE(d.event_started_at, d.event_ended_at) <= $4::timestamptz)
+     )
+     SELECT source_type, id, content, title, metadata, project,
+            event_at, event_started_at, event_ended_at, created_at, temporal_score
+     FROM temporal_candidates
+     WHERE ($5::text IS NULL OR project = $5)
+       AND ($6::text IS NULL OR created_by = $6)
+     ORDER BY temporal_score DESC,
+              COALESCE(event_at, event_started_at, event_ended_at, created_at) DESC
+     LIMIT $8`,
+    [
+      bankId,
+      key,
+      options.time_start ?? null,
+      options.time_end ?? null,
+      options.project ?? null,
+      options.created_by ?? null,
+      options.include_archived ?? false,
+      limit,
+    ]
+  );
+
+  return rows;
 }
 
 export async function insertMemoryLink(

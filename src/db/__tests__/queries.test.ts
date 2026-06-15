@@ -39,6 +39,7 @@ import {
   getMemoryLink,
   listMemoryLinks,
   expandMemoryLinks,
+  recallTemporalMemories,
   inferExperienceTemporalLinks,
   inferSupersedesMemoryLinks,
   inferExperienceReferenceLinks,
@@ -1226,6 +1227,64 @@ describe("memory links", () => {
     expect(sql).toContain("refs->'consolidated_observations'");
     expect(sql).toContain("consolidated_observation");
     expect(sql).toContain("evidence_for");
+  });
+});
+
+
+// ─── Temporal Recall ─────────────────────────────────────────────────
+
+describe("recallTemporalMemories", () => {
+  it("queries explicit temporal windows across experiences, thoughts, and documents", async () => {
+    const { pool, mockQuery } = createMockPool();
+    const createdAt = new Date("2026-06-15T16:00:00Z");
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          source_type: "experience",
+          id: "66666666-6666-4666-8666-666666666666",
+          content: "Temporal experience content",
+          title: null,
+          metadata: { event_type: "assistant_message" },
+          project: "one-brain",
+          event_at: createdAt,
+          event_started_at: createdAt,
+          event_ended_at: createdAt,
+          created_at: createdAt,
+          temporal_score: 1,
+        },
+      ],
+    });
+
+    const results = await recallTemporalMemories(pool, {
+      bank_id: "openbrain",
+      project: "one-brain",
+      created_by: "hermes-smoke",
+      time_start: "2026-06-15T15:00:00Z",
+      time_end: "2026-06-15T17:00:00Z",
+      include_archived: false,
+      limit: 5,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.source_type).toBe("experience");
+    expect(results[0]!.temporal_score).toBe(1);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("temporal_candidates");
+    expect(sql).toContain("FROM experiences e");
+    expect(sql).toContain("FROM thoughts t");
+    expect(sql).toContain("FROM documents d");
+    expect(sql).toContain("pgp_sym_decrypt(e.content_enc");
+    expect(sql).toContain("pgp_sym_decrypt(t.content_enc");
+    expect(sql).toContain("pgp_sym_decrypt(d.content_enc");
+    expect(sql).toContain("ORDER BY temporal_score DESC");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[0]).toBe("openbrain");
+    expect(params[2]).toBe("2026-06-15T15:00:00Z");
+    expect(params[3]).toBe("2026-06-15T17:00:00Z");
+    expect(params[4]).toBe("one-brain");
+    expect(params[5]).toBe("hermes-smoke");
+    expect(params[6]).toBe(false);
+    expect(params[7]).toBe(5);
   });
 });
 
