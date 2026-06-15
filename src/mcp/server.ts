@@ -70,7 +70,7 @@ const CROSS_ENCODER_ENABLED =
 const DEDUP_ENABLED = (process.env.OPENBRAIN_DEDUP_ENABLED ?? "true").toLowerCase() !== "false";
 const DEDUP_THRESHOLD = parseFloat(process.env.OPENBRAIN_DEDUP_THRESHOLD ?? "0.95");
 const SYNTHESIS_MODEL =
-  process.env.OPENBRAIN_SYNTHESIS_MODEL ?? "hf.co/unsloth/gemma-4-E4B-it-GGUF:Q4_0";
+  process.env.OPENBRAIN_SYNTHESIS_MODEL ?? "qwen3:1.7b";
 const SYNTHESIS_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

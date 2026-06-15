@@ -44,6 +44,10 @@ const mockUpdateThought = vi.fn();
 const mockDeleteThought = vi.fn();
 const mockBatchInsertThoughts = vi.fn();
 const mockSearchThoughtsByEntity = vi.fn().mockResolvedValue([]);
+const mockFindNearDuplicate = vi.fn();
+const mockBumpProofCount = vi.fn();
+const mockGetThoughtsByIds = vi.fn();
+const mockArchiveThoughts = vi.fn();
 const mockExtractAndLinkEntities = vi.fn().mockResolvedValue(undefined);
 const mockInsertDocument = vi.fn();
 const mockGetDocument = vi.fn();
@@ -56,6 +60,9 @@ const mockInsertConsolidatedObservation = vi.fn();
 const mockGetConsolidatedObservation = vi.fn();
 const mockSearchConsolidatedObservations = vi.fn();
 const mockUpdateConsolidatedObservation = vi.fn();
+const mockEnqueueConsolidationJob = vi.fn();
+const mockGetConsolidationJob = vi.fn();
+const mockRunConsolidationJob = vi.fn();
 
 vi.mock("../../db/queries.js", () => ({
   insertThought: (...args: any[]) => mockInsertThought(...args),
@@ -66,6 +73,10 @@ vi.mock("../../db/queries.js", () => ({
   updateThought: (...args: any[]) => mockUpdateThought(...args),
   deleteThought: (...args: any[]) => mockDeleteThought(...args),
   batchInsertThoughts: (...args: any[]) => mockBatchInsertThoughts(...args),
+  findNearDuplicate: (...args: any[]) => mockFindNearDuplicate(...args),
+  bumpProofCount: (...args: any[]) => mockBumpProofCount(...args),
+  getThoughtsByIds: (...args: any[]) => mockGetThoughtsByIds(...args),
+  archiveThoughts: (...args: any[]) => mockArchiveThoughts(...args),
   searchThoughtsByEntity: (...args: any[]) => mockSearchThoughtsByEntity(...args),
   extractAndLinkEntities: (...args: any[]) => mockExtractAndLinkEntities(...args),
   insertDocument: (...args: any[]) => mockInsertDocument(...args),
@@ -79,6 +90,12 @@ vi.mock("../../db/queries.js", () => ({
   getConsolidatedObservation: (...args: any[]) => mockGetConsolidatedObservation(...args),
   searchConsolidatedObservations: (...args: any[]) => mockSearchConsolidatedObservations(...args),
   updateConsolidatedObservation: (...args: any[]) => mockUpdateConsolidatedObservation(...args),
+  enqueueConsolidationJob: (...args: any[]) => mockEnqueueConsolidationJob(...args),
+  getConsolidationJob: (...args: any[]) => mockGetConsolidationJob(...args),
+}));
+
+vi.mock("../../jobs/consolidation.js", () => ({
+  runConsolidationJob: (...args: any[]) => mockRunConsolidationJob(...args),
 }));
 
 import { createApi } from "../routes.js";
@@ -901,6 +918,144 @@ describe("REST API Routes", () => {
     const updateArg = mockUpdateConsolidatedObservation.mock.calls[0]![2];
     expect(updateArg.proof_count).toBe(3);
     expect(updateArg.edit_reason).toBe("refresh with more evidence");
+  });
+
+
+  // ─── Consolidation Jobs ─────────────────────────────────────────────
+
+  it("POST /consolidation-jobs enqueues explicit observe_thoughts jobs", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockEnqueueConsolidationJob.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      bank_id: "openbrain",
+      job_type: "observe_thoughts",
+      status: "queued",
+      input: {
+        thought_ids: [
+          "11111111-2222-3333-4444-555555555555",
+          "66666666-7777-8888-9999-aaaaaaaaaaaa",
+        ],
+        project: "one-brain",
+        created_by: "hermes",
+      },
+      output: null,
+      error: null,
+      started_at: null,
+      finished_at: null,
+      attempts: 0,
+      created_at: createdAt,
+    });
+
+    const res = await app.request("/consolidation-jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        job_type: "observe_thoughts",
+        thought_ids: [
+          "11111111-2222-3333-4444-555555555555",
+          "66666666-7777-8888-9999-aaaaaaaaaaaa",
+        ],
+        project: "one-brain",
+        created_by: "hermes",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; job_type: string };
+    expect(body.status).toBe("queued");
+    expect(body.job_type).toBe("observe_thoughts");
+    expect(mockEnqueueConsolidationJob.mock.calls[0]![1]).toMatchObject({
+      job_type: "observe_thoughts",
+      bank_id: "openbrain",
+      input: {
+        thought_ids: [
+          "11111111-2222-3333-4444-555555555555",
+          "66666666-7777-8888-9999-aaaaaaaaaaaa",
+        ],
+        project: "one-brain",
+        created_by: "hermes",
+      },
+    });
+  });
+
+  it("POST /consolidation-jobs validates explicit source ids", async () => {
+    const res = await app.request("/consolidation-jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_type: "observe_thoughts", thought_ids: ["not-a-uuid"] }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockEnqueueConsolidationJob).not.toHaveBeenCalled();
+  });
+
+  it("GET /consolidation-jobs/:id returns a job", async () => {
+    mockGetConsolidationJob.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      bank_id: "openbrain",
+      job_type: "observe_documents",
+      status: "success",
+      input: { source_uris: ["file:///vault/example.md"] },
+      output: { observation_id: "11111111-2222-3333-4444-555555555555" },
+      error: null,
+      started_at: new Date("2026-06-15T00:00:00Z"),
+      finished_at: new Date("2026-06-15T00:01:00Z"),
+      attempts: 1,
+      created_at: new Date("2026-06-15T00:00:00Z"),
+    });
+
+    const res = await app.request("/consolidation-jobs/a1b2c3d4-1234-5678-9abc-def012345678");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; output: { observation_id: string } };
+    expect(body.status).toBe("success");
+    expect(body.output.observation_id).toBe("11111111-2222-3333-4444-555555555555");
+  });
+
+  it("POST /consolidation-jobs/:id/run runs a queued job", async () => {
+    mockRunConsolidationJob.mockResolvedValueOnce({
+      job: {
+        id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        bank_id: "openbrain",
+        job_type: "observe_documents",
+        status: "success",
+        input: { source_uris: ["file:///vault/example.md"] },
+        output: { observation_id: "11111111-2222-3333-4444-555555555555", source_count: 1 },
+        error: null,
+        started_at: new Date("2026-06-15T00:00:00Z"),
+        finished_at: new Date("2026-06-15T00:01:00Z"),
+        attempts: 1,
+        created_at: new Date("2026-06-15T00:00:00Z"),
+      },
+      observation: {
+        id: "11111111-2222-3333-4444-555555555555",
+        bank_id: "openbrain",
+        content: "Synthesized document observation",
+        proof_count: 1,
+        source_memory_ids: ["a1b2c3d4-1234-5678-9abc-def012345678"],
+        source_quotes: {},
+        tags: ["one-brain"],
+        history: [],
+        trend: null,
+        trend_computed_at: null,
+        project: "one-brain",
+        created_by: "hermes",
+        archived: false,
+        created_at: new Date("2026-06-15T00:01:00Z"),
+        updated_at: new Date("2026-06-15T00:01:00Z"),
+      },
+    });
+
+    const res = await app.request("/consolidation-jobs/a1b2c3d4-1234-5678-9abc-def012345678/run", {
+      method: "POST",
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { job: { status: string }; observation: { id: string } };
+    expect(body.job.status).toBe("success");
+    expect(body.observation.id).toBe("11111111-2222-3333-4444-555555555555");
+    expect(mockRunConsolidationJob).toHaveBeenCalled();
+    expect(mockRunConsolidationJob.mock.calls[0]![2].synthesis.model).toBe("qwen3:1.7b");
   });
 
   // ─── GET /stats ────────────────────────────────────────────────────

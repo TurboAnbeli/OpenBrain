@@ -223,6 +223,48 @@ export interface ConsolidatedObservationUpdateInput {
   edit_reason?: string;
 }
 
+// ─── Consolidation Jobs ─────────────────────────────────────────────
+
+export type ConsolidationJobType =
+  | "observe_thoughts"
+  | "observe_documents"
+  | "observe"
+  | "supersede"
+  | "refresh_model"
+  | "reindex"
+  | "retain_extract";
+
+export type ConsolidationJobStatus = "queued" | "running" | "success" | "error";
+
+export interface ConsolidationJobInputPayload {
+  thought_ids?: string[];
+  document_ids?: string[];
+  source_uris?: string[];
+  project?: string;
+  created_by?: string;
+  [key: string]: unknown;
+}
+
+export interface ConsolidationJobEnqueueInput {
+  job_type: ConsolidationJobType;
+  bank_id?: string;
+  input: ConsolidationJobInputPayload;
+}
+
+export interface ConsolidationJobRow {
+  id: string;
+  bank_id: string;
+  job_type: ConsolidationJobType;
+  status: ConsolidationJobStatus;
+  input: ConsolidationJobInputPayload | null;
+  output: Record<string, unknown> | null;
+  error?: string | null;
+  started_at?: Date | null;
+  finished_at?: Date | null;
+  attempts: number;
+  created_at: Date;
+}
+
 export interface ThoughtStats {
   total_thoughts: number;
   types: Record<string, number>;
@@ -1475,4 +1517,99 @@ export async function updateConsolidatedObservation(
   } finally {
     client.release();
   }
+}
+
+
+// ─── Consolidation Jobs ─────────────────────────────────────────────
+
+export async function enqueueConsolidationJob(
+  pool: pg.Pool,
+  job: ConsolidationJobEnqueueInput
+): Promise<ConsolidationJobRow> {
+  const { rows } = await pool.query<ConsolidationJobRow>(
+    `INSERT INTO consolidation_jobs (bank_id, job_type, input, status)
+     VALUES (COALESCE($1, 'openbrain'), $2, $3::jsonb, 'queued')
+     RETURNING id, bank_id, job_type, status, input, output, error,
+               started_at, finished_at, attempts, created_at`,
+    [job.bank_id ?? null, job.job_type, JSON.stringify(job.input ?? {})]
+  );
+  return rows[0]!;
+}
+
+export async function getConsolidationJob(
+  pool: pg.Pool,
+  id: string
+): Promise<ConsolidationJobRow | null> {
+  const { rows } = await pool.query<ConsolidationJobRow>(
+    `SELECT id, bank_id, job_type, status, input, output, error,
+            started_at, finished_at, attempts, created_at
+     FROM consolidation_jobs
+     WHERE id = $1`,
+    [id]
+  );
+  return rows[0] ?? null;
+}
+
+export async function startConsolidationJob(
+  pool: pg.Pool,
+  id: string
+): Promise<ConsolidationJobRow | null> {
+  const { rows } = await pool.query<ConsolidationJobRow>(
+    `UPDATE consolidation_jobs
+     SET status = 'running',
+         attempts = attempts + 1,
+         started_at = now(),
+         finished_at = NULL,
+         error = NULL
+     WHERE id = $1 AND status IN ('queued', 'error')
+     RETURNING id, bank_id, job_type, status, input, output, error,
+               started_at, finished_at, attempts, created_at`,
+    [id]
+  );
+  return rows[0] ?? null;
+}
+
+export async function completeConsolidationJob(
+  pool: pg.Pool,
+  id: string,
+  output: Record<string, unknown>
+): Promise<ConsolidationJobRow> {
+  const { rows } = await pool.query<ConsolidationJobRow>(
+    `UPDATE consolidation_jobs
+     SET status = 'success',
+         output = $2::jsonb,
+         error = NULL,
+         finished_at = now()
+     WHERE id = $1
+     RETURNING id, bank_id, job_type, status, input, output, error,
+               started_at, finished_at, attempts, created_at`,
+    [id, JSON.stringify(output)]
+  );
+  if (rows.length === 0) {
+    throw new Error(`Consolidation job not found: ${id}`);
+  }
+  return rows[0]!;
+}
+
+export async function failConsolidationJob(
+  pool: pg.Pool,
+  id: string,
+  error: string,
+  output: Record<string, unknown> = {}
+): Promise<ConsolidationJobRow> {
+  const { rows } = await pool.query<ConsolidationJobRow>(
+    `UPDATE consolidation_jobs
+     SET status = 'error',
+         error = $2,
+         output = $3::jsonb,
+         finished_at = now()
+     WHERE id = $1
+     RETURNING id, bank_id, job_type, status, input, output, error,
+               started_at, finished_at, attempts, created_at`,
+    [id, error, JSON.stringify(output)]
+  );
+  if (rows.length === 0) {
+    throw new Error(`Consolidation job not found: ${id}`);
+  }
+  return rows[0]!;
 }

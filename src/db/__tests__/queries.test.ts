@@ -25,6 +25,11 @@ import {
   getConsolidatedObservation,
   searchConsolidatedObservations,
   updateConsolidatedObservation,
+  enqueueConsolidationJob,
+  getConsolidationJob,
+  startConsolidationJob,
+  completeConsolidationJob,
+  failConsolidationJob,
   type ThoughtMetadata,
   type DocumentInput,
   type DocumentChunkInput,
@@ -942,5 +947,106 @@ describe("consolidated observations", () => {
     expect(updateParams[4]).toEqual(updated.source_memory_ids);
     expect(updateParams[5]).toEqual(JSON.stringify(updated.source_quotes));
     expect(result.source_quotes).toEqual(updated.source_quotes);
+  });
+});
+
+
+// ─── Consolidation Jobs ─────────────────────────────────────────────
+
+describe("consolidation jobs", () => {
+  const createdAt = new Date("2026-06-15T00:00:00Z");
+  const jobRow = {
+    id: "job-123",
+    bank_id: "openbrain",
+    job_type: "observe_thoughts",
+    status: "queued",
+    input: {
+      thought_ids: [
+        "a1b2c3d4-1234-5678-9abc-def012345678",
+        "11111111-2222-3333-4444-555555555555",
+      ],
+      project: "one-brain",
+      created_by: "hermes",
+    },
+    output: null,
+    error: null,
+    started_at: null,
+    finished_at: null,
+    attempts: 0,
+    created_at: createdAt,
+  };
+
+  it("enqueues explicit observe_thoughts jobs", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [jobRow] });
+
+    const result = await enqueueConsolidationJob(pool, {
+      job_type: "observe_thoughts",
+      bank_id: "openbrain",
+      input: jobRow.input,
+    });
+
+    expect(result.id).toBe("job-123");
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("INSERT INTO consolidation_jobs");
+    expect(sql).toContain("job_type");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[0]).toBe("openbrain");
+    expect(params[1]).toBe("observe_thoughts");
+    expect(JSON.parse(params[2] as string).thought_ids).toHaveLength(2);
+  });
+
+  it("fetches consolidation jobs by id", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [jobRow] });
+
+    const result = await getConsolidationJob(pool, "job-123");
+
+    expect(result?.status).toBe("queued");
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("FROM consolidation_jobs");
+    expect(mockQuery.mock.calls[0]![1]).toEqual(["job-123"]);
+  });
+
+  it("marks queued jobs running and increments attempts", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [{ ...jobRow, status: "running", attempts: 1 }] });
+
+    const result = await startConsolidationJob(pool, "job-123");
+
+    expect(result?.status).toBe("running");
+    expect(result?.attempts).toBe(1);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("status = 'running'");
+    expect(sql).toContain("attempts = attempts + 1");
+    expect(sql).toContain("WHERE id = $1 AND status IN ('queued', 'error')");
+  });
+
+  it("marks jobs success with deterministic output", async () => {
+    const { pool, mockQuery } = createMockPool();
+    const output = { observation_id: "obs-123", source_count: 2 };
+    mockQuery.mockResolvedValueOnce({ rows: [{ ...jobRow, status: "success", output }] });
+
+    const result = await completeConsolidationJob(pool, "job-123", output);
+
+    expect(result.status).toBe("success");
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("status = 'success'");
+    expect(sql).toContain("finished_at = now()");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[1]).toBe(JSON.stringify(output));
+  });
+
+  it("marks jobs error with message and output envelope", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [{ ...jobRow, status: "error", error: "missing sources", output: { source_count: 0 } }] });
+
+    const result = await failConsolidationJob(pool, "job-123", "missing sources", { source_count: 0 });
+
+    expect(result.status).toBe("error");
+    expect(result.error).toBe("missing sources");
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("status = 'error'");
+    expect(sql).toContain("error = $2");
   });
 });

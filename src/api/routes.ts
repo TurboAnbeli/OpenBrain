@@ -34,6 +34,8 @@ import {
   getConsolidatedObservation,
   searchConsolidatedObservations,
   updateConsolidatedObservation,
+  enqueueConsolidationJob,
+  getConsolidationJob,
   type ListFilters,
   type BatchThoughtInput,
   type SearchResult,
@@ -41,6 +43,7 @@ import {
   type DocumentIntent,
   type DocumentRow,
   type ConsolidatedObservationRow,
+  type ConsolidationJobRow,
 } from "../db/queries.js";
 import { getEmbedder } from "../embedder/index.js";
 import { hasSpecificityMarker, applyRecencyBoost, overfetchLimit } from "./recency_boost.js";
@@ -51,6 +54,7 @@ import {
 } from "./query_expansion.js";
 import { rerankResults, shouldRerank, crossEncoderRerank, extractNegatedTerms } from "./rerank.js";
 import { applyProofCountBoost } from "./proof_count_boost.js";
+import { runConsolidationJob } from "../jobs/consolidation.js";
 import { synthesizeObservation } from "./synthesize.js";
 import {
   shouldUseEntityRanking,
@@ -82,7 +86,7 @@ const CROSS_ENCODER_ENABLED =
 const DEDUP_ENABLED = (process.env.OPENBRAIN_DEDUP_ENABLED ?? "true").toLowerCase() !== "false";
 const DEDUP_THRESHOLD = parseFloat(process.env.OPENBRAIN_DEDUP_THRESHOLD ?? "0.95");
 const SYNTHESIS_MODEL =
-  process.env.OPENBRAIN_SYNTHESIS_MODEL ?? "hf.co/unsloth/gemma-4-E4B-it-GGUF:Q4_0";
+  process.env.OPENBRAIN_SYNTHESIS_MODEL ?? "qwen3:1.7b";
 const SYNTHESIS_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -107,6 +111,8 @@ const CONSOLIDATED_OBSERVATION_TRENDS = ["strengthening", "stable", "weakening",
 const DOCUMENT_KIND_SET = new Set<string>(DOCUMENT_KINDS);
 const DOCUMENT_INTENT_SET = new Set<string>(DOCUMENT_INTENTS);
 const CONSOLIDATED_OBSERVATION_TREND_SET = new Set<string>(CONSOLIDATED_OBSERVATION_TRENDS);
+const CONSOLIDATION_JOB_TYPES = ["observe_thoughts", "observe_documents"] as const;
+const CONSOLIDATION_JOB_TYPE_SET = new Set<string>(CONSOLIDATION_JOB_TYPES);
 
 function isValidTimestamp(value: string): boolean {
   return !Number.isNaN(Date.parse(value));
@@ -139,6 +145,22 @@ function serializeDocument(document: DocumentRow) {
     status: document.status,
     created_at: document.created_at.toISOString(),
     updated_at: document.updated_at.toISOString(),
+  };
+}
+
+function serializeConsolidationJob(job: ConsolidationJobRow) {
+  return {
+    id: job.id,
+    bank_id: job.bank_id,
+    job_type: job.job_type,
+    status: job.status,
+    input: job.input ?? {},
+    output: job.output ?? null,
+    error: job.error ?? null,
+    started_at: serializeOptionalTimestamp(job.started_at ?? null),
+    finished_at: serializeOptionalTimestamp(job.finished_at ?? null),
+    attempts: job.attempts,
+    created_at: job.created_at.toISOString(),
   };
 }
 
@@ -605,6 +627,115 @@ export function createApi(): Hono {
         { error: "Failed to delete thought", detail: message },
         502
       );
+    }
+  });
+
+
+  // ─── Consolidation Jobs ─────────────────────────────────────────────
+
+  app.post("/consolidation-jobs", async (c) => {
+    const body = await c.req.json<{
+      job_type?: string;
+      bank_id?: string;
+      thought_ids?: string[];
+      document_ids?: string[];
+      source_uris?: string[];
+      project?: string;
+      created_by?: string;
+    }>();
+
+    if (!body.job_type || !CONSOLIDATION_JOB_TYPE_SET.has(body.job_type)) {
+      return c.json({ error: `job_type must be one of: ${CONSOLIDATION_JOB_TYPES.join(", ")}` }, 400);
+    }
+    if (body.bank_id !== undefined && body.bank_id.trim().length === 0) {
+      return c.json({ error: "bank_id must not be empty" }, 400);
+    }
+
+    const jobType = body.job_type as (typeof CONSOLIDATION_JOB_TYPES)[number];
+    const input: Record<string, unknown> = {};
+    if (body.project !== undefined) input.project = body.project;
+    if (body.created_by !== undefined) input.created_by = body.created_by;
+
+    if (jobType === "observe_thoughts") {
+      if (!Array.isArray(body.thought_ids) || body.thought_ids.length < 2) {
+        return c.json({ error: "thought_ids must be an array of at least 2 UUIDs" }, 400);
+      }
+      for (const id of body.thought_ids) {
+        if (!UUID_RE.test(id)) {
+          return c.json({ error: `invalid UUID: ${id}` }, 400);
+        }
+      }
+      input.thought_ids = body.thought_ids;
+    }
+
+    if (jobType === "observe_documents") {
+      const documentIds = body.document_ids ?? [];
+      const sourceUris = body.source_uris ?? [];
+      if (!Array.isArray(documentIds) || !Array.isArray(sourceUris) || documentIds.length + sourceUris.length === 0) {
+        return c.json({ error: "document_ids or source_uris must include at least one explicit source" }, 400);
+      }
+      for (const id of documentIds) {
+        if (!UUID_RE.test(id)) {
+          return c.json({ error: `invalid UUID: ${id}` }, 400);
+        }
+      }
+      input.document_ids = documentIds;
+      input.source_uris = sourceUris;
+    }
+
+    try {
+      const job = await enqueueConsolidationJob(pool, {
+        job_type: jobType,
+        bank_id: body.bank_id ?? "openbrain",
+        input,
+      });
+      return c.json(serializeConsolidationJob(job));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Consolidation job enqueue failed:", message);
+      return c.json({ error: "Failed to enqueue consolidation job", detail: message }, 502);
+    }
+  });
+
+  app.get("/consolidation-jobs/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
+    try {
+      const job = await getConsolidationJob(pool, id);
+      if (!job) {
+        return c.json({ error: `Consolidation job not found: ${id}` }, 404);
+      }
+      return c.json(serializeConsolidationJob(job));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Consolidation job fetch failed:", message);
+      return c.json({ error: "Failed to fetch consolidation job", detail: message }, 502);
+    }
+  });
+
+  app.post("/consolidation-jobs/:id/run", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
+    try {
+      const result = await runConsolidationJob(pool, id, {
+        embedder,
+        synthesis: { endpoint: SYNTHESIS_ENDPOINT, model: SYNTHESIS_MODEL },
+      });
+      return c.json({
+        job: serializeConsolidationJob(result.job),
+        observation: result.observation ? serializeConsolidatedObservation(result.observation) : null,
+      }, result.job.status === "error" ? 422 : 200);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("not queued") || message.includes("does not exist")) {
+        return c.json({ error: message }, 409);
+      }
+      console.error("[api] Consolidation job run failed:", message);
+      return c.json({ error: "Failed to run consolidation job", detail: message }, 502);
     }
   });
 
