@@ -223,6 +223,62 @@ export interface ConsolidatedObservationUpdateInput {
   edit_reason?: string;
 }
 
+// ─── Experiences ─────────────────────────────────────────────────────
+
+export type ExperienceEventType =
+  | "tool_call"
+  | "user_message"
+  | "assistant_message"
+  | "decide"
+  | "external_inbox";
+
+export type ExperienceTimestampInput = string | Date;
+
+export interface ExperienceInput {
+  content: string;
+  embedding: number[];
+  event_type: ExperienceEventType;
+  bank_id?: string;
+  session_id?: string;
+  agent_id?: string;
+  occurred_at?: ExperienceTimestampInput;
+  refs?: Record<string, unknown>;
+  project?: string;
+  created_by?: string;
+}
+
+export interface ExperienceRow {
+  id: string;
+  bank_id: string;
+  session_id?: string | null;
+  agent_id?: string | null;
+  occurred_at: Date;
+  event_type: ExperienceEventType;
+  content: string;
+  refs: Record<string, unknown>;
+  project?: string | null;
+  created_by?: string | null;
+  created_at: Date;
+}
+
+export interface ExperienceListOptions {
+  bank_id?: string;
+  session_id?: string;
+  agent_id?: string;
+  event_type?: ExperienceEventType;
+  project?: string;
+  created_by?: string;
+  limit?: number;
+}
+
+export interface ExperienceSearchOptions extends ExperienceListOptions {
+  threshold?: number;
+}
+
+export interface ExperienceSearchResult extends ExperienceRow {
+  similarity: number;
+}
+
 // ─── Consolidation Jobs ─────────────────────────────────────────────
 
 export type ConsolidationJobType =
@@ -1540,6 +1596,197 @@ export async function updateConsolidatedObservation(
   } finally {
     client.release();
   }
+}
+
+
+// ─── Experience Queries ──────────────────────────────────────────────
+
+function boundedExperienceLimit(limit?: number): number {
+  if (!Number.isFinite(limit ?? 50)) return 50;
+  return Math.max(1, Math.min(100, Math.trunc(limit ?? 50)));
+}
+
+function buildExperienceFilters(
+  options: ExperienceListOptions,
+  params: unknown[],
+  startClause = "WHERE"
+): string {
+  const clauses: string[] = [];
+  const add = (value: unknown): string => {
+    params.push(value);
+    return `$${params.length}`;
+  };
+
+  clauses.push(`bank_id = ${add(options.bank_id ?? "openbrain")}`);
+  if (options.session_id !== undefined) clauses.push(`session_id = ${add(options.session_id)}`);
+  if (options.agent_id !== undefined) clauses.push(`agent_id = ${add(options.agent_id)}`);
+  if (options.event_type !== undefined) clauses.push(`event_type = ${add(options.event_type)}`);
+  if (options.project !== undefined) clauses.push(`project = ${add(options.project)}`);
+  if (options.created_by !== undefined) clauses.push(`created_by = ${add(options.created_by)}`);
+
+  return `${startClause} ${clauses.join(" AND ")}`;
+}
+
+export async function insertExperience(
+  pool: pg.Pool,
+  experience: ExperienceInput
+): Promise<ExperienceRow> {
+  const key = getCipherKey();
+  const embeddingStr = `[${experience.embedding.join(",")}]`;
+  const { rows } = await pool.query<ExperienceRow>(
+    `INSERT INTO experiences (
+       bank_id,
+       session_id,
+       agent_id,
+       occurred_at,
+       event_type,
+       content_enc,
+       embedding,
+       fts,
+       refs,
+       project,
+       created_by
+     )
+     VALUES (
+       COALESCE($1, 'openbrain'),
+       $2,
+       $3,
+       COALESCE($4::timestamptz, now()),
+       $5,
+       pgp_sym_encrypt($6, $11),
+       $7::vector,
+       to_tsvector('english', $6),
+       $8::jsonb,
+       $9,
+       $10
+     )
+     RETURNING id,
+               bank_id,
+               session_id,
+               agent_id,
+               occurred_at,
+               event_type,
+               pgp_sym_decrypt(content_enc, $11)::text AS content,
+               refs,
+               project,
+               created_by,
+               created_at`,
+    [
+      experience.bank_id ?? null,
+      experience.session_id ?? null,
+      experience.agent_id ?? null,
+      experience.occurred_at ?? null,
+      experience.event_type,
+      experience.content,
+      embeddingStr,
+      JSON.stringify(experience.refs ?? {}),
+      experience.project ?? null,
+      experience.created_by ?? null,
+      key,
+    ]
+  );
+  return rows[0]!;
+}
+
+export async function getExperience(
+  pool: pg.Pool,
+  id: string
+): Promise<ExperienceRow | null> {
+  const key = getCipherKey();
+  const { rows } = await pool.query<ExperienceRow>(
+    `SELECT id,
+            bank_id,
+            session_id,
+            agent_id,
+            occurred_at,
+            event_type,
+            pgp_sym_decrypt(content_enc, $2)::text AS content,
+            refs,
+            project,
+            created_by,
+            created_at
+     FROM experiences
+     WHERE id = $1`,
+    [id, key]
+  );
+  return rows[0] ?? null;
+}
+
+export async function listExperiences(
+  pool: pg.Pool,
+  options: ExperienceListOptions = {}
+): Promise<ExperienceRow[]> {
+  const key = getCipherKey();
+  const params: unknown[] = [key];
+  const where = buildExperienceFilters(options, params);
+  params.push(boundedExperienceLimit(options.limit));
+  const limitPlaceholder = `$${params.length}`;
+
+  const { rows } = await pool.query<ExperienceRow>(
+    `SELECT id,
+            bank_id,
+            session_id,
+            agent_id,
+            occurred_at,
+            event_type,
+            pgp_sym_decrypt(content_enc, $1)::text AS content,
+            refs,
+            project,
+            created_by,
+            created_at
+     FROM experiences
+     ${where}
+     ORDER BY occurred_at DESC, created_at DESC
+     LIMIT ${limitPlaceholder}`,
+    params
+  );
+  return rows;
+}
+
+export async function searchExperiences(
+  pool: pg.Pool,
+  embedding: number[],
+  options: ExperienceSearchOptions = {}
+): Promise<ExperienceSearchResult[]> {
+  const key = getCipherKey();
+  const embeddingStr = `[${embedding.join(",")}]`;
+  const params: unknown[] = [embeddingStr, key];
+  const filterOptions: ExperienceListOptions = {
+    bank_id: options.bank_id,
+    session_id: options.session_id,
+    agent_id: options.agent_id,
+    event_type: options.event_type,
+    project: options.project,
+    created_by: options.created_by,
+  };
+  const where = buildExperienceFilters(filterOptions, params, "AND");
+  params.push(options.threshold ?? 0.3);
+  const thresholdPlaceholder = `$${params.length}`;
+  params.push(boundedExperienceLimit(options.limit));
+  const limitPlaceholder = `$${params.length}`;
+
+  const { rows } = await pool.query<ExperienceSearchResult>(
+    `SELECT id,
+            bank_id,
+            session_id,
+            agent_id,
+            occurred_at,
+            event_type,
+            pgp_sym_decrypt(content_enc, $2)::text AS content,
+            refs,
+            project,
+            created_by,
+            created_at,
+            1 - (embedding <=> $1::vector) AS similarity
+     FROM experiences
+     WHERE embedding IS NOT NULL
+       AND 1 - (embedding <=> $1::vector) >= ${thresholdPlaceholder}
+       ${where}
+     ORDER BY embedding <=> $1::vector ASC
+     LIMIT ${limitPlaceholder}`,
+    params
+  );
+  return rows;
 }
 
 

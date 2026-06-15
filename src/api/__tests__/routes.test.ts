@@ -62,6 +62,11 @@ const mockSearchConsolidatedObservations = vi.fn();
 const mockUpdateConsolidatedObservation = vi.fn();
 const mockEnqueueConsolidationJob = vi.fn();
 const mockGetConsolidationJob = vi.fn();
+const mockInsertExperience = vi.fn();
+const mockGetExperience = vi.fn();
+const mockListExperiences = vi.fn();
+const mockSearchExperiences = vi.fn();
+const mockGetMemoryBankContext = vi.fn().mockResolvedValue({ id: "openbrain", name: "OpenBrain", mission: null, disposition: {}, directives: [] });
 const mockRunConsolidationJob = vi.fn();
 
 vi.mock("../../db/queries.js", () => ({
@@ -92,6 +97,11 @@ vi.mock("../../db/queries.js", () => ({
   updateConsolidatedObservation: (...args: any[]) => mockUpdateConsolidatedObservation(...args),
   enqueueConsolidationJob: (...args: any[]) => mockEnqueueConsolidationJob(...args),
   getConsolidationJob: (...args: any[]) => mockGetConsolidationJob(...args),
+  insertExperience: (...args: any[]) => mockInsertExperience(...args),
+  getExperience: (...args: any[]) => mockGetExperience(...args),
+  listExperiences: (...args: any[]) => mockListExperiences(...args),
+  searchExperiences: (...args: any[]) => mockSearchExperiences(...args),
+  getMemoryBankContext: (...args: any[]) => mockGetMemoryBankContext(...args),
 }));
 
 vi.mock("../../jobs/consolidation.js", () => ({
@@ -918,6 +928,118 @@ describe("REST API Routes", () => {
     const updateArg = mockUpdateConsolidatedObservation.mock.calls[0]![2];
     expect(updateArg.proof_count).toBe(3);
     expect(updateArg.edit_reason).toBe("refresh with more evidence");
+  });
+
+
+  // ─── Experiences ─────────────────────────────────────────────────────
+
+  it("POST /experiences captures explicit high-value experience events with retain directives", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockGetMemoryBankContext.mockResolvedValueOnce({
+      id: "openbrain",
+      name: "OpenBrain",
+      mission: "Durable memory",
+      disposition: {},
+      directives: [
+        { id: "741a9339-ceb3-468b-81ac-616567382122", name: "no_pii_verbatim", rule_text: "Never store MRN, PHIN, DOB, SIN, patient names, or identifying medical details verbatim.", severity: "hard", priority: 100 },
+      ],
+    });
+    mockInsertExperience.mockResolvedValueOnce({
+      id: "exp-123",
+      bank_id: "openbrain",
+      session_id: "session-slice-d",
+      agent_id: "hermes",
+      occurred_at: createdAt,
+      event_type: "tool_call",
+      content: "Ran a live smoke and archived the temporary row.",
+      refs: { consolidation_jobs: ["c51282a0-a8ba-4ff7-bcd7-55b74bf991e6"], applied_directive_ids: ["741a9339-ceb3-468b-81ac-616567382122"] },
+      project: "one-brain",
+      created_by: "hermes",
+      created_at: createdAt,
+    });
+
+    const res = await app.request("/experiences", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        event_type: "tool_call",
+        content: "Ran a live smoke and archived the temporary row.",
+        session_id: "session-slice-d",
+        agent_id: "hermes",
+        refs: { consolidation_jobs: ["c51282a0-a8ba-4ff7-bcd7-55b74bf991e6"] },
+        project: "one-brain",
+        created_by: "hermes",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockGetMemoryBankContext).toHaveBeenCalledWith(expect.anything(), "openbrain", "retain");
+    expect(mockGenerateEmbedding).toHaveBeenCalledWith("Ran a live smoke and archived the temporary row.");
+    const insertArg = mockInsertExperience.mock.calls[0]![1];
+    expect(insertArg.event_type).toBe("tool_call");
+    expect(insertArg.refs.applied_directive_ids).toEqual(["741a9339-ceb3-468b-81ac-616567382122"]);
+    const body = (await res.json()) as { id: string; event_type: string };
+    expect(body.id).toBe("exp-123");
+    expect(body.event_type).toBe("tool_call");
+  });
+
+  it("POST /experiences rejects verbatim identifiers when retain PII directive is active", async () => {
+    mockGetMemoryBankContext.mockResolvedValueOnce({
+      id: "openbrain",
+      name: "OpenBrain",
+      mission: "Durable memory",
+      disposition: {},
+      directives: [
+        { id: "741a9339-ceb3-468b-81ac-616567382122", name: "no_pii_verbatim", rule_text: "Never store MRN, PHIN, DOB, SIN, patient names, or identifying medical details verbatim.", severity: "hard", priority: 100 },
+      ],
+    });
+
+    const res = await app.request("/experiences", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        event_type: "user_message",
+        content: "Patient name: Jane Smith, MRN 123456 should never be captured.",
+      }),
+    });
+
+    expect(res.status).toBe(422);
+    expect(mockInsertExperience).not.toHaveBeenCalled();
+    expect(mockGenerateEmbedding).not.toHaveBeenCalled();
+  });
+
+  it("GET /experiences lists rows filtered by session_id and event_type", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockListExperiences.mockResolvedValueOnce([
+      { id: "exp-123", bank_id: "openbrain", session_id: "session-slice-d", agent_id: "hermes", occurred_at: createdAt, event_type: "assistant_message", content: "Final response summary", refs: {}, project: "one-brain", created_by: "hermes", created_at: createdAt },
+    ]);
+
+    const res = await app.request("/experiences?session_id=session-slice-d&event_type=assistant_message&project=one-brain&limit=5");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { count: number; results: Array<{ session_id: string; event_type: string }> };
+    expect(body.count).toBe(1);
+    expect(body.results[0]!.session_id).toBe("session-slice-d");
+    expect(mockListExperiences.mock.calls[0]![1]).toMatchObject({ session_id: "session-slice-d", event_type: "assistant_message", project: "one-brain", limit: 5 });
+  });
+
+  it("POST /experiences/search embeds query and applies session/event filters", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockSearchExperiences.mockResolvedValueOnce([
+      { id: "exp-123", bank_id: "openbrain", session_id: "session-slice-d", agent_id: "hermes", occurred_at: createdAt, event_type: "tool_call", content: "Consolidation smoke succeeded", refs: {}, project: "one-brain", created_by: "hermes", similarity: 0.83, created_at: createdAt },
+    ]);
+
+    const res = await app.request("/experiences/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "consolidation smoke", session_id: "session-slice-d", event_type: "tool_call", limit: 3 }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockGenerateEmbedding).toHaveBeenCalledWith("consolidation smoke");
+    expect(mockSearchExperiences.mock.calls[0]![2]).toMatchObject({ session_id: "session-slice-d", event_type: "tool_call", limit: 3 });
+    const body = (await res.json()) as { results: Array<{ similarity: number }> };
+    expect(body.results[0]!.similarity).toBe(0.83);
   });
 
 

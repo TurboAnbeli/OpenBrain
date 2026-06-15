@@ -31,6 +31,11 @@ import {
   completeConsolidationJob,
   failConsolidationJob,
   getMemoryBankContext,
+  insertExperience,
+  getExperience,
+  listExperiences,
+  searchExperiences,
+  type ExperienceInput,
   type ThoughtMetadata,
   type DocumentInput,
   type DocumentChunkInput,
@@ -948,6 +953,112 @@ describe("consolidated observations", () => {
     expect(updateParams[4]).toEqual(updated.source_memory_ids);
     expect(updateParams[5]).toEqual(JSON.stringify(updated.source_quotes));
     expect(result.source_quotes).toEqual(updated.source_quotes);
+  });
+});
+
+
+// ─── Experiences ─────────────────────────────────────────────────────
+
+describe("experiences", () => {
+  const createdAt = new Date("2026-06-15T00:00:00Z");
+  const experienceInput: ExperienceInput = {
+    bank_id: "openbrain",
+    session_id: "session-slice-d",
+    agent_id: "hermes",
+    occurred_at: "2026-06-15T00:00:00Z",
+    event_type: "tool_call",
+    content: "Ran a live consolidation smoke and archived the temporary observation.",
+    embedding: [0.1, 0.2, 0.3],
+    refs: { consolidation_jobs: ["c51282a0-a8ba-4ff7-bcd7-55b74bf991e6"] },
+    project: "one-brain",
+    created_by: "hermes",
+  };
+  const experienceRow = {
+    id: "exp-123",
+    ...experienceInput,
+    occurred_at: createdAt,
+    created_at: createdAt,
+  };
+
+  it("inserts encrypted first-class experience events with provenance refs", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [experienceRow] });
+
+    const result = await insertExperience(pool, experienceInput);
+
+    expect(result.id).toBe("exp-123");
+    expect(result.content).toBe(experienceInput.content);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("INSERT INTO experiences");
+    expect(sql).toContain("pgp_sym_encrypt($6, $11)");
+    expect(sql).toContain("pgp_sym_decrypt(content_enc, $11)");
+    expect(sql).toContain("to_tsvector('english', $6)");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[0]).toBe("openbrain");
+    expect(params[1]).toBe("session-slice-d");
+    expect(params[4]).toBe("tool_call");
+    expect(params[5]).toBe(experienceInput.content);
+    expect(params[6]).toBe("[0.1,0.2,0.3]");
+    expect(JSON.parse(params[7] as string)).toEqual(experienceInput.refs);
+    expect(params).toHaveLength(11);
+  });
+
+  it("fetches experiences by id with decrypted content", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [experienceRow] });
+
+    const result = await getExperience(pool, "a1b2c3d4-1234-5678-9abc-def012345678");
+
+    expect(result?.content).toBe(experienceInput.content);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("FROM experiences");
+    expect(sql).toContain("pgp_sym_decrypt(content_enc");
+    expect(mockQuery.mock.calls[0]![1][0]).toBe("a1b2c3d4-1234-5678-9abc-def012345678");
+  });
+
+  it("lists experiences filtered by session_id and event_type", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [experienceRow] });
+
+    const results = await listExperiences(pool, {
+      bank_id: "openbrain",
+      session_id: "session-slice-d",
+      event_type: "tool_call",
+      project: "one-brain",
+      limit: 5,
+    });
+
+    expect(results).toHaveLength(1);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("FROM experiences");
+    expect(sql).toContain("session_id = $");
+    expect(sql).toContain("event_type = $");
+    expect(sql).toContain("ORDER BY occurred_at DESC");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params).toContain("session-slice-d");
+    expect(params).toContain("tool_call");
+  });
+
+  it("searches experiences by vector with event filters", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [{ ...experienceRow, similarity: 0.82 }] });
+
+    const results = await searchExperiences(pool, [0.1, 0.2, 0.3], {
+      bank_id: "openbrain",
+      session_id: "session-slice-d",
+      event_type: "tool_call",
+      threshold: 0.3,
+      limit: 3,
+    });
+
+    expect(results[0]!.similarity).toBe(0.82);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("1 - (embedding <=> $1::vector) AS similarity");
+    expect(sql).toContain("ORDER BY embedding <=> $1::vector ASC");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[0]).toBe("[0.1,0.2,0.3]");
+    expect(params).toContain("session-slice-d");
+    expect(params).toContain("tool_call");
   });
 });
 

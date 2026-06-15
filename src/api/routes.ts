@@ -36,6 +36,11 @@ import {
   updateConsolidatedObservation,
   enqueueConsolidationJob,
   getConsolidationJob,
+  insertExperience,
+  getExperience,
+  listExperiences,
+  searchExperiences,
+  getMemoryBankContext,
   type ListFilters,
   type BatchThoughtInput,
   type SearchResult,
@@ -44,6 +49,8 @@ import {
   type DocumentRow,
   type ConsolidatedObservationRow,
   type ConsolidationJobRow,
+  type ExperienceEventType,
+  type ExperienceRow,
 } from "../db/queries.js";
 import { getEmbedder } from "../embedder/index.js";
 import { hasSpecificityMarker, applyRecencyBoost, overfetchLimit } from "./recency_boost.js";
@@ -62,6 +69,7 @@ import {
   entityWeightedRRF,
 } from "./entity_ranking.js";
 import { extractEntities } from "./entity_extraction.js";
+import { guardExperienceRetainDirectives } from "./experience_guard.js";
 
 const HYDE_MODEL = process.env.OPENBRAIN_HYDE_MODEL ?? "smollm2:1.7b";
 const HYDE_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
@@ -113,6 +121,8 @@ const DOCUMENT_INTENT_SET = new Set<string>(DOCUMENT_INTENTS);
 const CONSOLIDATED_OBSERVATION_TREND_SET = new Set<string>(CONSOLIDATED_OBSERVATION_TRENDS);
 const CONSOLIDATION_JOB_TYPES = ["observe_thoughts", "observe_documents"] as const;
 const CONSOLIDATION_JOB_TYPE_SET = new Set<string>(CONSOLIDATION_JOB_TYPES);
+const EXPERIENCE_EVENT_TYPES = ["tool_call", "user_message", "assistant_message", "decide", "external_inbox"] as const;
+const EXPERIENCE_EVENT_TYPE_SET = new Set<string>(EXPERIENCE_EVENT_TYPES);
 
 function isValidTimestamp(value: string): boolean {
   return !Number.isNaN(Date.parse(value));
@@ -183,6 +193,30 @@ function serializeConsolidatedObservation(observation: ConsolidatedObservationRo
     updated_at: observation.updated_at.toISOString(),
     ...(typeof observation.similarity === "number" ? { similarity: observation.similarity } : {}),
   };
+}
+
+function serializeExperience(experience: ExperienceRow & { similarity?: number }) {
+  return {
+    id: experience.id,
+    bank_id: experience.bank_id,
+    session_id: experience.session_id ?? null,
+    agent_id: experience.agent_id ?? null,
+    occurred_at: experience.occurred_at.toISOString(),
+    event_type: experience.event_type,
+    content: experience.content,
+    refs: experience.refs ?? {},
+    project: experience.project ?? null,
+    created_by: experience.created_by ?? null,
+    created_at: experience.created_at.toISOString(),
+    ...(typeof experience.similarity === "number" ? { similarity: experience.similarity } : {}),
+  };
+}
+
+function parseBoundedLimit(value: string | undefined, fallback = 50, max = 100): number {
+  if (value === undefined) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.min(max, parsed));
 }
 
 export function createApi(): Hono {
@@ -627,6 +661,158 @@ export function createApi(): Hono {
         { error: "Failed to delete thought", detail: message },
         502
       );
+    }
+  });
+
+
+  // ─── Experiences ───────────────────────────────────────────────────
+
+  app.post("/experiences", async (c) => {
+    const body = await c.req.json<{
+      content?: string;
+      bank_id?: string;
+      session_id?: string;
+      agent_id?: string;
+      occurred_at?: string;
+      event_type?: string;
+      refs?: Record<string, unknown>;
+      project?: string;
+      created_by?: string;
+    }>();
+
+    if (!body.content || body.content.trim().length === 0) {
+      return c.json({ error: "content is required" }, 400);
+    }
+    if (!body.event_type || !EXPERIENCE_EVENT_TYPE_SET.has(body.event_type)) {
+      return c.json({ error: `event_type must be one of: ${EXPERIENCE_EVENT_TYPES.join(", ")}` }, 400);
+    }
+    if (body.bank_id !== undefined && body.bank_id.trim().length === 0) {
+      return c.json({ error: "bank_id must not be empty" }, 400);
+    }
+    if (body.occurred_at !== undefined && !isValidTimestamp(body.occurred_at)) {
+      return c.json({ error: "occurred_at must be a valid timestamp" }, 400);
+    }
+    if (body.refs !== undefined && (typeof body.refs !== "object" || Array.isArray(body.refs) || body.refs === null)) {
+      return c.json({ error: "refs must be an object" }, 400);
+    }
+
+    const bankId = body.bank_id ?? "openbrain";
+    try {
+      const memoryBank = await getMemoryBankContext(pool, bankId, "retain");
+      const guard = guardExperienceRetainDirectives(body.content, memoryBank);
+      if (!guard.allowed) {
+        return c.json({
+          error: "experience content violates active retain directives",
+          violations: guard.violations,
+          directive_ids: guard.applied_directive_ids,
+        }, 422);
+      }
+
+      const embedding = await embedder.generateEmbedding(body.content);
+      const refs = {
+        ...(body.refs ?? {}),
+        applied_directive_ids: guard.applied_directive_ids,
+      };
+      const result = await insertExperience(pool, {
+        content: body.content,
+        embedding,
+        event_type: body.event_type as ExperienceEventType,
+        bank_id: bankId,
+        session_id: body.session_id,
+        agent_id: body.agent_id,
+        occurred_at: body.occurred_at,
+        refs,
+        project: body.project,
+        created_by: body.created_by,
+      });
+
+      return c.json(serializeExperience(result));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Experience capture failed:", message);
+      return c.json({ error: "Failed to capture experience", detail: message }, 502);
+    }
+  });
+
+  app.get("/experiences", async (c) => {
+    const eventType = c.req.query("event_type");
+    if (eventType !== undefined && !EXPERIENCE_EVENT_TYPE_SET.has(eventType)) {
+      return c.json({ error: `event_type must be one of: ${EXPERIENCE_EVENT_TYPES.join(", ")}` }, 400);
+    }
+
+    try {
+      const results = await listExperiences(pool, {
+        bank_id: c.req.query("bank_id") ?? "openbrain",
+        session_id: c.req.query("session_id"),
+        agent_id: c.req.query("agent_id"),
+        event_type: eventType as ExperienceEventType | undefined,
+        project: c.req.query("project"),
+        created_by: c.req.query("created_by"),
+        limit: parseBoundedLimit(c.req.query("limit")),
+      });
+      return c.json({ count: results.length, results: results.map(serializeExperience) });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Experience list failed:", message);
+      return c.json({ error: "Failed to list experiences", detail: message }, 502);
+    }
+  });
+
+  app.post("/experiences/search", async (c) => {
+    const body = await c.req.json<{
+      query?: string;
+      bank_id?: string;
+      session_id?: string;
+      agent_id?: string;
+      event_type?: string;
+      project?: string;
+      created_by?: string;
+      threshold?: number;
+      limit?: number;
+    }>();
+
+    if (!body.query || body.query.trim().length === 0) {
+      return c.json({ error: "query is required" }, 400);
+    }
+    if (body.event_type !== undefined && !EXPERIENCE_EVENT_TYPE_SET.has(body.event_type)) {
+      return c.json({ error: `event_type must be one of: ${EXPERIENCE_EVENT_TYPES.join(", ")}` }, 400);
+    }
+
+    try {
+      const embedding = await embedder.generateEmbedding(body.query);
+      const results = await searchExperiences(pool, embedding, {
+        bank_id: body.bank_id ?? "openbrain",
+        session_id: body.session_id,
+        agent_id: body.agent_id,
+        event_type: body.event_type as ExperienceEventType | undefined,
+        project: body.project,
+        created_by: body.created_by,
+        threshold: body.threshold ?? parseFloat(process.env.OPENBRAIN_SEARCH_THRESHOLD ?? "0.3"),
+        limit: Math.max(1, Math.min(100, body.limit ?? 10)),
+      });
+      return c.json({ count: results.length, results: results.map(serializeExperience) });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Experience search failed:", message);
+      return c.json({ error: "Failed to search experiences", detail: message }, 502);
+    }
+  });
+
+  app.get("/experiences/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
+    try {
+      const result = await getExperience(pool, id);
+      if (!result) {
+        return c.json({ error: `Experience not found: ${id}` }, 404);
+      }
+      return c.json(serializeExperience(result));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Experience fetch failed:", message);
+      return c.json({ error: "Failed to fetch experience", detail: message }, 502);
     }
   });
 
