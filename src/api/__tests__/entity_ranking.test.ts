@@ -1,20 +1,30 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
 import { entityWeightedRRF, shouldUseEntityRanking } from "../entity_ranking.js";
+
+const originalEntityRankingEnv = process.env.OPENBRAIN_ENTITY_RANKING;
+
+afterEach(() => {
+  if (originalEntityRankingEnv === undefined) {
+    delete process.env.OPENBRAIN_ENTITY_RANKING;
+    return;
+  }
+  process.env.OPENBRAIN_ENTITY_RANKING = originalEntityRankingEnv;
+});
 
 describe("shouldUseEntityRanking", () => {
   it("returns true when query contains proper nouns", () => {
+    delete process.env.OPENBRAIN_ENTITY_RANKING;
     expect(shouldUseEntityRanking("What is OpenClaw?")).toBe(true);
   });
 
   it("returns false for plain queries", () => {
+    delete process.env.OPENBRAIN_ENTITY_RANKING;
     expect(shouldUseEntityRanking("what is the meaning of life")).toBe(false);
   });
 
   it("respects OPENBRAIN_ENTITY_RANKING=false", () => {
-    const orig = process.env.OPENBRAIN_ENTITY_RANKING;
     process.env.OPENBRAIN_ENTITY_RANKING = "false";
     expect(shouldUseEntityRanking("OpenClaw is great")).toBe(false);
-    process.env.OPENBRAIN_ENTITY_RANKING = orig;
   });
 });
 
