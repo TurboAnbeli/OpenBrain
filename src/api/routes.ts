@@ -33,6 +33,9 @@ import {
   type ListFilters,
   type BatchThoughtInput,
   type SearchResult,
+  type DocumentKind,
+  type DocumentIntent,
+  type DocumentRow,
 } from "../db/queries.js";
 import { getEmbedder } from "../embedder/index.js";
 import { hasSpecificityMarker, applyRecencyBoost, overfetchLimit } from "./recency_boost.js";
@@ -78,6 +81,59 @@ const SYNTHESIS_MODEL =
 const SYNTHESIS_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const DOCUMENT_KINDS: DocumentKind[] = [
+  "article",
+  "handoff",
+  "decision",
+  "reflection",
+  "research",
+  "postmortem",
+  "reference",
+  "project_note",
+  "journal",
+  "clipping",
+];
+const DOCUMENT_INTENTS: DocumentIntent[] = [
+  "durable_knowledge",
+  "operational_log",
+  "transitional_archive",
+];
+const DOCUMENT_KIND_SET = new Set<string>(DOCUMENT_KINDS);
+const DOCUMENT_INTENT_SET = new Set<string>(DOCUMENT_INTENTS);
+
+function isValidTimestamp(value: string): boolean {
+  return !Number.isNaN(Date.parse(value));
+}
+
+function serializeOptionalTimestamp(value: Date | string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) return value.toISOString();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+}
+
+function serializeDocument(document: DocumentRow) {
+  return {
+    id: document.id,
+    title: document.title,
+    source_type: document.source_type,
+    source_uri: document.source_uri ?? null,
+    content: document.content,
+    metadata: document.metadata,
+    project: document.project ?? null,
+    created_by: document.created_by ?? null,
+    bank_id: document.bank_id ?? null,
+    document_kind: document.document_kind ?? null,
+    session_id: document.session_id ?? null,
+    task_id: document.task_id ?? null,
+    intent: document.intent ?? null,
+    event_started_at: serializeOptionalTimestamp(document.event_started_at),
+    event_ended_at: serializeOptionalTimestamp(document.event_ended_at),
+    status: document.status,
+    created_at: document.created_at.toISOString(),
+    updated_at: document.updated_at.toISOString(),
+  };
+}
 
 export function createApi(): Hono {
   const app = new Hono();
@@ -606,6 +662,13 @@ export function createApi(): Hono {
       metadata?: Record<string, unknown>;
       project?: string;
       created_by?: string;
+      bank_id?: string;
+      document_kind?: DocumentKind;
+      session_id?: string;
+      task_id?: string;
+      intent?: DocumentIntent;
+      event_started_at?: string;
+      event_ended_at?: string;
     }>();
 
     if (!body.title || body.title.trim().length === 0) {
@@ -617,6 +680,27 @@ export function createApi(): Hono {
     if (!body.content || body.content.trim().length === 0) {
       return c.json({ error: "content is required" }, 400);
     }
+    if (body.bank_id !== undefined && body.bank_id.trim().length === 0) {
+      return c.json({ error: "bank_id must not be empty" }, 400);
+    }
+    if (body.session_id !== undefined && body.session_id.trim().length === 0) {
+      return c.json({ error: "session_id must not be empty" }, 400);
+    }
+    if (body.task_id !== undefined && body.task_id.trim().length === 0) {
+      return c.json({ error: "task_id must not be empty" }, 400);
+    }
+    if (body.document_kind !== undefined && !DOCUMENT_KIND_SET.has(body.document_kind)) {
+      return c.json({ error: `document_kind must be one of: ${DOCUMENT_KINDS.join(", ")}` }, 400);
+    }
+    if (body.intent !== undefined && !DOCUMENT_INTENT_SET.has(body.intent)) {
+      return c.json({ error: `intent must be one of: ${DOCUMENT_INTENTS.join(", ")}` }, 400);
+    }
+    if (body.event_started_at !== undefined && !isValidTimestamp(body.event_started_at)) {
+      return c.json({ error: "event_started_at must be a valid ISO timestamp" }, 400);
+    }
+    if (body.event_ended_at !== undefined && !isValidTimestamp(body.event_ended_at)) {
+      return c.json({ error: "event_ended_at must be a valid ISO timestamp" }, 400);
+    }
 
     try {
       const result = await insertDocument(pool, {
@@ -627,21 +711,16 @@ export function createApi(): Hono {
         metadata: body.metadata ?? {},
         project: body.project,
         created_by: body.created_by,
+        bank_id: body.bank_id,
+        document_kind: body.document_kind,
+        session_id: body.session_id,
+        task_id: body.task_id,
+        intent: body.intent,
+        event_started_at: body.event_started_at,
+        event_ended_at: body.event_ended_at,
       });
 
-      return c.json({
-        id: result.id,
-        title: result.title,
-        source_type: result.source_type,
-        source_uri: result.source_uri,
-        content: result.content,
-        metadata: result.metadata,
-        project: result.project,
-        created_by: result.created_by,
-        status: result.status,
-        created_at: result.created_at.toISOString(),
-        updated_at: result.updated_at.toISOString(),
-      });
+      return c.json(serializeDocument(result));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error("[api] Document create failed:", message);
@@ -665,11 +744,7 @@ export function createApi(): Hono {
       return c.json({ error: "Document not found" }, 404);
     }
 
-    return c.json({
-      ...document,
-      created_at: document.created_at.toISOString(),
-      updated_at: document.updated_at.toISOString(),
-    });
+    return c.json(serializeDocument(document));
   });
 
   app.get("/documents/:id", async (c) => {
@@ -684,19 +759,7 @@ export function createApi(): Hono {
         return c.json({ error: `Document not found: ${id}` }, 404);
       }
 
-      return c.json({
-        id: result.id,
-        title: result.title,
-        source_type: result.source_type,
-        source_uri: result.source_uri,
-        content: result.content,
-        metadata: result.metadata,
-        project: result.project,
-        created_by: result.created_by,
-        status: result.status,
-        created_at: result.created_at.toISOString(),
-        updated_at: result.updated_at.toISOString(),
-      });
+      return c.json(serializeDocument(result));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error("[api] Document fetch failed:", message);
@@ -744,19 +807,7 @@ export function createApi(): Hono {
         updated_by: body.updated_by,
       });
 
-      return c.json({
-        id: result.id,
-        title: result.title,
-        source_type: result.source_type,
-        source_uri: result.source_uri,
-        content: result.content,
-        metadata: result.metadata,
-        project: result.project,
-        created_by: result.created_by,
-        status: result.status,
-        created_at: result.created_at.toISOString(),
-        updated_at: result.updated_at.toISOString(),
-      });
+      return c.json(serializeDocument(result));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("not found")) {

@@ -14,6 +14,20 @@ interface CliOptions {
   overlapChars?: number;
 }
 
+function emitSummaryWarnings(summary: { skipped_existing?: number; skipped_empty?: number }): void {
+  const parts: string[] = [];
+  if (summary.skipped_existing) {
+    const noun = summary.skipped_existing === 1 ? "file" : "files";
+    parts.push(`${summary.skipped_existing} existing markdown ${noun}`);
+  }
+  if (summary.skipped_empty) {
+    const noun = summary.skipped_empty === 1 ? "file" : "files";
+    parts.push(`${summary.skipped_empty} empty markdown ${noun}`);
+  }
+  if (parts.length === 0) return;
+  console.error(`Skipped ${parts.join("; ")}`);
+}
+
 function parseArgs(argv: string[]): CliOptions {
   const opts: CliOptions = {
     files: [],
@@ -75,6 +89,13 @@ async function main(): Promise<void> {
       source_uri: doc.source_uri,
       source_type: doc.source_type,
       project: doc.project,
+      bank_id: doc.bank_id,
+      document_kind: doc.document_kind,
+      session_id: doc.session_id,
+      task_id: doc.task_id,
+      intent: doc.intent,
+      event_started_at: doc.event_started_at,
+      event_ended_at: doc.event_ended_at,
       chunks: doc.chunks.length,
       status: doc.status,
       document_id: doc.document_id,
@@ -85,6 +106,7 @@ async function main(): Promise<void> {
     await writeFile(opts.manifestPath, output + "\n");
   }
   console.log(output);
+  emitSummaryWarnings(plan.summary);
 }
 
 main().catch((err) => {

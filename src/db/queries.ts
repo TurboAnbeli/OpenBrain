@@ -44,6 +44,19 @@ export interface SearchResult extends ThoughtRow {
 // ─── Source Documents ───────────────────────────────────────────────
 
 export type DocumentStatus = "active" | "archived" | "deleted";
+export type DocumentKind =
+  | "article"
+  | "handoff"
+  | "decision"
+  | "reflection"
+  | "research"
+  | "postmortem"
+  | "reference"
+  | "project_note"
+  | "journal"
+  | "clipping";
+export type DocumentIntent = "durable_knowledge" | "operational_log" | "transitional_archive";
+export type DocumentTimestampInput = string | Date;
 
 export interface DocumentMetadata {
   [key: string]: unknown;
@@ -57,6 +70,13 @@ export interface DocumentInput {
   metadata?: DocumentMetadata;
   project?: string;
   created_by?: string;
+  bank_id?: string;
+  document_kind?: DocumentKind;
+  session_id?: string;
+  task_id?: string;
+  intent?: DocumentIntent;
+  event_started_at?: DocumentTimestampInput;
+  event_ended_at?: DocumentTimestampInput;
 }
 
 export interface DocumentRow {
@@ -68,6 +88,13 @@ export interface DocumentRow {
   metadata: DocumentMetadata;
   project?: string | null;
   created_by?: string | null;
+  bank_id?: string | null;
+  document_kind?: DocumentKind | null;
+  session_id?: string | null;
+  task_id?: string | null;
+  intent?: DocumentIntent | null;
+  event_started_at?: Date | null;
+  event_ended_at?: Date | null;
   status: DocumentStatus;
   created_at: Date;
   updated_at: Date;
@@ -756,11 +783,45 @@ export async function insertDocument(
 ): Promise<DocumentRow> {
   const key = getCipherKey();
   const { rows } = await pool.query<DocumentRow>(
-    `INSERT INTO documents (title, source_type, source_uri, content_enc, metadata, project, created_by, fts)
-     VALUES ($1, $2, $3, pgp_sym_encrypt($4, $8), $5::jsonb, $6, $7, to_tsvector('english', $4))
+    `INSERT INTO documents (
+       title,
+       source_type,
+       source_uri,
+       content_enc,
+       metadata,
+       project,
+       created_by,
+       bank_id,
+       document_kind,
+       session_id,
+       task_id,
+       intent,
+       event_started_at,
+       event_ended_at,
+       fts
+     )
+     VALUES (
+       $1,
+       $2,
+       $3,
+       pgp_sym_encrypt($4, $15),
+       $5::jsonb,
+       $6,
+       $7,
+       COALESCE($8, 'openbrain'),
+       COALESCE($9, 'article'),
+       $10,
+       $11,
+       $12,
+       $13,
+       $14,
+       to_tsvector('english', $4)
+     )
      RETURNING id, title, source_type, source_uri,
-               pgp_sym_decrypt(content_enc, $8)::text AS content,
-               metadata, project, created_by, status, created_at, updated_at`,
+               pgp_sym_decrypt(content_enc, $15)::text AS content,
+               metadata, project, created_by, bank_id, document_kind,
+               session_id, task_id, intent, event_started_at, event_ended_at,
+               status, created_at, updated_at`,
     [
       document.title,
       document.source_type,
@@ -769,6 +830,13 @@ export async function insertDocument(
       JSON.stringify(document.metadata ?? {}),
       document.project ?? null,
       document.created_by ?? null,
+      document.bank_id ?? null,
+      document.document_kind ?? null,
+      document.session_id ?? null,
+      document.task_id ?? null,
+      document.intent ?? null,
+      document.event_started_at ?? null,
+      document.event_ended_at ?? null,
       key,
     ]
   );
@@ -783,7 +851,9 @@ export async function getDocumentBySourceUri(
   const { rows } = await pool.query<DocumentRow>(
     `SELECT id, title, source_type, source_uri,
             pgp_sym_decrypt(content_enc, $2)::text AS content,
-            metadata, project, status, created_by, created_at, updated_at
+            metadata, project, status, created_by, bank_id, document_kind,
+            session_id, task_id, intent, event_started_at, event_ended_at,
+            created_at, updated_at
      FROM documents
      WHERE source_uri = $1 AND status = 'active'
      LIMIT 1`,
@@ -800,7 +870,9 @@ export async function getDocument(
   const { rows } = await pool.query<DocumentRow>(
     `SELECT id, title, source_type, source_uri,
             pgp_sym_decrypt(content_enc, $2)::text AS content,
-            metadata, project, created_by, status, created_at, updated_at
+            metadata, project, created_by, bank_id, document_kind,
+            session_id, task_id, intent, event_started_at, event_ended_at,
+            status, created_at, updated_at
      FROM documents
      WHERE id = $1 AND status != 'deleted'`,
     [id, key]
@@ -822,7 +894,9 @@ export async function updateDocument(
     const existingResult = await client.query<DocumentRow>(
       `SELECT id, title, source_type, source_uri,
               pgp_sym_decrypt(content_enc, $2)::text AS content,
-              metadata, project, created_by, status, created_at, updated_at
+              metadata, project, created_by, bank_id, document_kind,
+              session_id, task_id, intent, event_started_at, event_ended_at,
+              status, created_at, updated_at
        FROM documents
        WHERE id = $1 AND status != 'deleted'
        FOR UPDATE`,
@@ -878,7 +952,9 @@ export async function updateDocument(
        WHERE id = $1
        RETURNING id, title, source_type, source_uri,
                  pgp_sym_decrypt(content_enc, $7)::text AS content,
-                 metadata, project, created_by, status, created_at, updated_at`,
+                 metadata, project, created_by, bank_id, document_kind,
+                 session_id, task_id, intent, event_started_at, event_ended_at,
+                 status, created_at, updated_at`,
       [
         id,
         newTitle,

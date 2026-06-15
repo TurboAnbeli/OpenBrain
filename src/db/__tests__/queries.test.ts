@@ -398,6 +398,13 @@ describe("documents", () => {
     metadata: { doi: "10.1056/example", tags: ["pulmonary-embolism"] },
     project: "medical-literature",
     created_by: "ryan",
+    bank_id: "openbrain",
+    document_kind: "research",
+    session_id: "session-42",
+    task_id: "task-7",
+    intent: "durable_knowledge",
+    event_started_at: "2026-06-14T08:00:00Z",
+    event_ended_at: "2026-06-14T09:00:00Z",
   };
 
   it("inserts source documents with encrypted content and provenance metadata", async () => {
@@ -411,6 +418,13 @@ describe("documents", () => {
       metadata: documentInput.metadata,
       project: documentInput.project,
       created_by: documentInput.created_by,
+      bank_id: documentInput.bank_id,
+      document_kind: documentInput.document_kind,
+      session_id: documentInput.session_id,
+      task_id: documentInput.task_id,
+      intent: documentInput.intent,
+      event_started_at: new Date("2026-06-14T08:00:00Z"),
+      event_ended_at: new Date("2026-06-14T09:00:00Z"),
       status: "active",
       created_at: new Date(),
       updated_at: new Date(),
@@ -425,6 +439,10 @@ describe("documents", () => {
     expect(sql).toContain("INSERT INTO documents");
     expect(sql).toContain("pgp_sym_encrypt($4");
     expect(sql).toContain("to_tsvector('english', $4)");
+    expect(sql).toContain("bank_id");
+    expect(sql).toContain("document_kind");
+    expect(sql).toContain("intent");
+    expect(sql).toContain("event_started_at");
     const params = mockQuery.mock.calls[0]![1] as unknown[];
     expect(params[0]).toBe(documentInput.title);
     expect(params[1]).toBe(documentInput.source_type);
@@ -433,6 +451,13 @@ describe("documents", () => {
     expect(JSON.parse(params[4] as string)).toEqual(documentInput.metadata);
     expect(params[5]).toBe(documentInput.project);
     expect(params[6]).toBe(documentInput.created_by);
+    expect(params[7]).toBe(documentInput.bank_id);
+    expect(params[8]).toBe(documentInput.document_kind);
+    expect(params[9]).toBe(documentInput.session_id);
+    expect(params[10]).toBe(documentInput.task_id);
+    expect(params[11]).toBe(documentInput.intent);
+    expect(params[12]).toBe(documentInput.event_started_at);
+    expect(params[13]).toBe(documentInput.event_ended_at);
   });
 
   it("uses the cipher key parameter consistently when inserting documents", async () => {
@@ -451,9 +476,9 @@ describe("documents", () => {
 
     const sql = mockQuery.mock.calls[0]![0] as string;
     const params = mockQuery.mock.calls[0]![1] as unknown[];
-    expect(sql).toContain("pgp_sym_encrypt($4, $8)");
-    expect(sql).toContain("pgp_sym_decrypt(content_enc, $8)");
-    expect(params).toHaveLength(8);
+    expect(sql).toContain("pgp_sym_encrypt($4, $15)");
+    expect(sql).toContain("pgp_sym_decrypt(content_enc, $15)");
+    expect(params).toHaveLength(15);
   });
 
   it("fetches active documents with decrypted content by id", async () => {

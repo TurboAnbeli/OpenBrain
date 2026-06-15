@@ -321,13 +321,20 @@ describe("REST API Routes", () => {
     const createdAt = new Date();
     mockInsertDocument.mockResolvedValueOnce({
       id: "a1b2c3d4-1234-5678-9abc-def012345678",
-      title: "One brain design note",
+      title: "One brain completion handoff",
       source_type: "manual_note",
-      source_uri: "onebrain://notes/design",
-      content: "A database-first design note",
+      source_uri: "onebrain://notes/handoff",
+      content: "A database-first handoff note",
       metadata: { tags: ["one-brain"] },
       project: "one-brain",
       created_by: "ryan",
+      bank_id: "openbrain",
+      document_kind: "handoff",
+      session_id: "session-42",
+      task_id: "task-7",
+      intent: "operational_log",
+      event_started_at: new Date("2026-06-13T00:00:00Z"),
+      event_ended_at: new Date("2026-06-13T01:00:00Z"),
       status: "active",
       created_at: createdAt,
       updated_at: createdAt,
@@ -337,26 +344,45 @@ describe("REST API Routes", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        title: "One brain design note",
+        title: "One brain completion handoff",
         source_type: "manual_note",
-        source_uri: "onebrain://notes/design",
-        content: "A database-first design note",
+        source_uri: "onebrain://notes/handoff",
+        content: "A database-first handoff note",
         metadata: { tags: ["one-brain"] },
         project: "one-brain",
         created_by: "ryan",
+        bank_id: "openbrain",
+        document_kind: "handoff",
+        session_id: "session-42",
+        task_id: "task-7",
+        intent: "operational_log",
+        event_started_at: "2026-06-13T00:00:00Z",
+        event_ended_at: "2026-06-13T01:00:00Z",
       }),
     });
 
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string; title: string; status: string };
+    const body = (await res.json()) as Record<string, unknown>;
     expect(body.id).toBe("a1b2c3d4-1234-5678-9abc-def012345678");
-    expect(body.title).toBe("One brain design note");
+    expect(body.title).toBe("One brain completion handoff");
     expect(body.status).toBe("active");
+    expect(body.bank_id).toBe("openbrain");
+    expect(body.document_kind).toBe("handoff");
+    expect(body.intent).toBe("operational_log");
+    expect(body.event_started_at).toBe("2026-06-13T00:00:00.000Z");
+    expect(body.event_ended_at).toBe("2026-06-13T01:00:00.000Z");
     expect(mockInsertDocument).toHaveBeenCalled();
     const docArg = mockInsertDocument.mock.calls[0]![1];
-    expect(docArg.title).toBe("One brain design note");
+    expect(docArg.title).toBe("One brain completion handoff");
     expect(docArg.source_type).toBe("manual_note");
-    expect(docArg.content).toBe("A database-first design note");
+    expect(docArg.content).toBe("A database-first handoff note");
+    expect(docArg.bank_id).toBe("openbrain");
+    expect(docArg.document_kind).toBe("handoff");
+    expect(docArg.session_id).toBe("session-42");
+    expect(docArg.task_id).toBe("task-7");
+    expect(docArg.intent).toBe("operational_log");
+    expect(docArg.event_started_at).toBe("2026-06-13T00:00:00Z");
+    expect(docArg.event_ended_at).toBe("2026-06-13T01:00:00Z");
   });
 
   it("POST /documents returns 400 for missing title/source_type/content", async () => {

@@ -1,5 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import type { DocumentIntent, DocumentKind } from "../db/queries.js";
 
 export interface MarkdownSourceFile {
   path: string;
@@ -40,11 +41,18 @@ export interface MarkdownImportOptions {
   fetcher?: typeof fetch;
 }
 
-export type MarkdownImportStatus = "planned" | "skipped_existing" | "applied";
+export type MarkdownImportStatus = "planned" | "skipped_existing" | "skipped_empty" | "applied";
 
 export interface MarkdownImportDocumentPlan extends ParsedMarkdownDocument {
   source_type: string;
   created_by: string;
+  bank_id: string;
+  document_kind: DocumentKind;
+  session_id?: string;
+  task_id?: string;
+  intent: DocumentIntent;
+  event_started_at?: string;
+  event_ended_at?: string;
   chunks: MarkdownImportChunk[];
   status: MarkdownImportStatus;
   document_id?: string;
@@ -55,6 +63,7 @@ export interface MarkdownImportSummary {
   total: number;
   planned: number;
   skipped_existing: number;
+  skipped_empty: number;
   applied: number;
 }
 
@@ -88,6 +97,123 @@ export interface ParityReport {
 
 function fileUri(filePath: string): string {
   return `file://${filePath}`;
+}
+
+const DOCUMENT_KIND_VALUES: DocumentKind[] = [
+  "article",
+  "handoff",
+  "decision",
+  "reflection",
+  "research",
+  "postmortem",
+  "reference",
+  "project_note",
+  "journal",
+  "clipping",
+];
+const DOCUMENT_INTENT_VALUES: DocumentIntent[] = [
+  "durable_knowledge",
+  "operational_log",
+  "transitional_archive",
+];
+const DOCUMENT_KIND_SET = new Set<string>(DOCUMENT_KIND_VALUES);
+const DOCUMENT_INTENT_SET = new Set<string>(DOCUMENT_INTENT_VALUES);
+
+function optionalString(metadata: Record<string, unknown>, key: string): string | undefined {
+  const value = metadata[key];
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function optionalDocumentKind(metadata: Record<string, unknown>, key: string): DocumentKind | undefined {
+  const value = optionalString(metadata, key);
+  return value && DOCUMENT_KIND_SET.has(value) ? value as DocumentKind : undefined;
+}
+
+function optionalDocumentIntent(metadata: Record<string, unknown>, key: string): DocumentIntent | undefined {
+  const value = optionalString(metadata, key);
+  return value && DOCUMENT_INTENT_SET.has(value) ? value as DocumentIntent : undefined;
+}
+
+function normalizeTimestamp(value: unknown): string | undefined {
+  if (typeof value !== "string" && !(value instanceof Date)) return undefined;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+}
+
+function normalizeDateOnly(value: string): string | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
+  return normalizeTimestamp(`${value}T00:00:00.000Z`);
+}
+
+function deriveDocumentKind(filePath: string, metadata: Record<string, unknown>): DocumentKind {
+  const explicitKind = optionalDocumentKind(metadata, "document_kind") ?? optionalDocumentKind(metadata, "type");
+  if (explicitKind) return explicitKind;
+
+  const normalizedPath = filePath.replace(/\\/g, "/").toLowerCase();
+  const basename = path.basename(normalizedPath);
+
+  if (normalizedPath.includes("/agent-notes/general/") && basename.includes("handoff")) return "handoff";
+  if (normalizedPath.includes("/agent-notes/decision/")) return "decision";
+  if (normalizedPath.includes("/agent-notes/reflections/")) return "reflection";
+  if (normalizedPath.includes("/agent-notes/research/")) return "research";
+  if (normalizedPath.includes("/agent-notes/postmortem/")) return "postmortem";
+  if (normalizedPath.includes("/agent-notes/reference/")) return "reference";
+  if (normalizedPath.includes("/journal/")) return "journal";
+  if (normalizedPath.includes("/clippings/")) return "clipping";
+  if (normalizedPath.includes("/projects/")) return "project_note";
+  if (normalizedPath.includes("/raw/processed/")) return "article";
+  if (normalizedPath.includes("/agent-notes/general/")) return "project_note";
+  return "article";
+}
+
+function deriveDocumentIntent(
+  filePath: string,
+  metadata: Record<string, unknown>,
+  documentKind: DocumentKind
+): DocumentIntent {
+  const explicitIntent = optionalDocumentIntent(metadata, "intent");
+  if (explicitIntent) return explicitIntent;
+
+  const normalizedPath = filePath.replace(/\\/g, "/").toLowerCase();
+  if (normalizedPath.includes("/clippings/") || normalizedPath.includes("/raw/processed/")) {
+    return "transitional_archive";
+  }
+  if (documentKind === "handoff" || documentKind === "journal" || normalizedPath.includes("/agent-notes/general/")) {
+    return "operational_log";
+  }
+  return "durable_knowledge";
+}
+
+function deriveEventStartedAt(filePath: string, metadata: Record<string, unknown>): string | undefined {
+  const explicit = normalizeTimestamp(metadata.event_started_at);
+  if (explicit) return explicit;
+
+  const dateField = optionalString(metadata, "date");
+  if (dateField) {
+    const normalized = normalizeDateOnly(dateField) ?? normalizeTimestamp(dateField);
+    if (normalized) return normalized;
+  }
+
+  const basenameDate = path.basename(filePath).match(/(20\d{2}-\d{2}-\d{2})/);
+  if (basenameDate?.[1]) {
+    return normalizeDateOnly(basenameDate[1]);
+  }
+  return undefined;
+}
+
+function deriveDocumentSemantics(filePath: string, metadata: Record<string, unknown>) {
+  const document_kind = deriveDocumentKind(filePath, metadata);
+  return {
+    bank_id: optionalString(metadata, "bank_id") ?? "openbrain",
+    document_kind,
+    session_id: optionalString(metadata, "session_id"),
+    task_id: optionalString(metadata, "task_id"),
+    intent: deriveDocumentIntent(filePath, metadata, document_kind),
+    event_started_at: deriveEventStartedAt(filePath, metadata),
+    event_ended_at: normalizeTimestamp(metadata.event_ended_at),
+  };
 }
 
 async function walkMarkdownFiles(input: string): Promise<string[]> {
@@ -255,6 +381,7 @@ function summarize(documents: MarkdownImportDocumentPlan[]): MarkdownImportSumma
     total: documents.length,
     planned: documents.filter((doc) => doc.status === "planned").length,
     skipped_existing: documents.filter((doc) => doc.status === "skipped_existing").length,
+    skipped_empty: documents.filter((doc) => doc.status === "skipped_empty").length,
     applied: documents.filter((doc) => doc.status === "applied").length,
   };
 }
@@ -283,17 +410,25 @@ export async function buildMarkdownImportManifest(options: MarkdownImportOptions
 
   for (const file of options.files) {
     const parsed = parseMarkdownDocument(file.content, file.path);
+    const semantics = deriveDocumentSemantics(file.path, parsed.metadata);
+    const chunks = chunkMarkdown(parsed.content, {
+      maxChars: options.maxChars,
+      overlapChars: options.overlapChars,
+    });
     const doc: MarkdownImportDocumentPlan = {
       ...parsed,
       project: options.project ?? parsed.project,
       source_type: sourceType,
       created_by: createdBy,
-      chunks: chunkMarkdown(parsed.content, {
-        maxChars: options.maxChars,
-        overlapChars: options.overlapChars,
-      }),
-      status: "planned",
+      ...semantics,
+      chunks,
+      status: chunks.length === 0 ? "skipped_empty" : "planned",
     };
+
+    if (doc.status === "skipped_empty") {
+      documents.push(doc);
+      continue;
+    }
 
     if (options.skipExisting) {
       const existing = await lookupExistingDocument(apiBaseUrl, doc.source_uri, fetcher);
@@ -334,7 +469,7 @@ export async function applyMarkdownImport(options: MarkdownImportOptions): Promi
 
   const fetcher = options.fetcher ?? fetch;
   for (const doc of plan.documents) {
-    if (doc.status === "skipped_existing") continue;
+    if (doc.status !== "planned") continue;
     const documentResponse = await fetcher(`${plan.apiBaseUrl}/documents`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -346,6 +481,13 @@ export async function applyMarkdownImport(options: MarkdownImportOptions): Promi
         metadata: doc.metadata,
         project: doc.project,
         created_by: doc.created_by,
+        bank_id: doc.bank_id,
+        document_kind: doc.document_kind,
+        session_id: doc.session_id,
+        task_id: doc.task_id,
+        intent: doc.intent,
+        event_started_at: doc.event_started_at,
+        event_ended_at: doc.event_ended_at,
       }),
     });
     const created = await parseJsonResponse<{ id: string }>(documentResponse);
