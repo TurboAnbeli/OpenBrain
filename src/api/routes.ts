@@ -348,6 +348,23 @@ export function createApi(): Hono {
         pool, body.content, embedding, fullMetadata, body.project, body.supersedes, body.created_by
       );
 
+      if (body.supersedes) {
+        try {
+          await insertMemoryLink(pool, {
+            bank_id: "openbrain",
+            source_type: "thought",
+            source_id: result.id,
+            target_type: "thought",
+            target_id: body.supersedes,
+            relationship: "supersedes",
+            weight: 1,
+            inferred: true,
+          });
+        } catch (e) {
+          console.error("[api] Supersedes memory link failed (non-fatal):", e);
+        }
+      }
+
       // Link extracted entities to the new thought (fire-and-forget; failure
       // does not invalidate the capture since the thought itself succeeded).
       try {
@@ -939,6 +956,15 @@ export function createApi(): Hono {
         project: body.project,
         created_by: body.created_by,
       });
+
+      if (result.session_id) {
+        try {
+          await inferExperienceTemporalLinks(pool, { bank_id: bankId, session_id: result.session_id });
+          await inferExperienceReferenceLinks(pool, { bank_id: bankId, session_id: result.session_id });
+        } catch (e) {
+          console.error("[api] Experience memory link inference failed (non-fatal):", e);
+        }
+      }
 
       return c.json(serializeExperience(result));
     } catch (err) {

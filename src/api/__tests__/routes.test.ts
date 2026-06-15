@@ -142,10 +142,22 @@ describe("REST API Routes", () => {
 
   it("POST /memories accepts project and supersedes", async () => {
     mockInsertThought.mockResolvedValueOnce({
-      id: "abc-123",
+      id: "22222222-2222-4222-8222-222222222222",
       content: "test",
       metadata: { type: "decision" },
       project: "plan-forge",
+      created_at: new Date(),
+    });
+    mockInsertMemoryLink.mockResolvedValueOnce({
+      id: "link-123",
+      bank_id: "openbrain",
+      source_type: "thought",
+      source_id: "22222222-2222-4222-8222-222222222222",
+      target_type: "thought",
+      target_id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      relationship: "supersedes",
+      weight: 1,
+      inferred: true,
       created_at: new Date(),
     });
 
@@ -162,6 +174,16 @@ describe("REST API Routes", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { project: string };
     expect(body.project).toBe("plan-forge");
+    expect(mockInsertMemoryLink).toHaveBeenCalledWith(expect.anything(), {
+      bank_id: "openbrain",
+      source_type: "thought",
+      source_id: "22222222-2222-4222-8222-222222222222",
+      target_type: "thought",
+      target_id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      relationship: "supersedes",
+      weight: 1,
+      inferred: true,
+    });
   });
 
   it("POST /memories returns 400 for invalid supersedes UUID", async () => {
@@ -969,6 +991,8 @@ describe("REST API Routes", () => {
       created_by: "hermes",
       created_at: createdAt,
     });
+    mockInferExperienceTemporalLinks.mockResolvedValueOnce([]);
+    mockInferExperienceReferenceLinks.mockResolvedValueOnce([]);
 
     const res = await app.request("/experiences", {
       method: "POST",
@@ -990,6 +1014,8 @@ describe("REST API Routes", () => {
     const insertArg = mockInsertExperience.mock.calls[0]![1];
     expect(insertArg.event_type).toBe("tool_call");
     expect(insertArg.refs.applied_directive_ids).toEqual(["741a9339-ceb3-468b-81ac-616567382122"]);
+    expect(mockInferExperienceTemporalLinks).toHaveBeenCalledWith(expect.anything(), { bank_id: "openbrain", session_id: "session-slice-d" });
+    expect(mockInferExperienceReferenceLinks).toHaveBeenCalledWith(expect.anything(), { bank_id: "openbrain", session_id: "session-slice-d" });
     const body = (await res.json()) as { id: string; event_type: string };
     expect(body.id).toBe("exp-123");
     expect(body.event_type).toBe("tool_call");
