@@ -54,10 +54,13 @@ import {
   type DocumentKind,
   type DocumentIntent,
   type DocumentRow,
+  type DocumentChunkSearchResult,
   type ConsolidatedObservationRow,
+  type ConsolidatedObservationSearchResult,
   type ConsolidationJobRow,
   type ExperienceEventType,
   type ExperienceRow,
+  type ExperienceSearchResult,
   type MemoryLinkSourceType,
   type MemoryLinkRelationship,
   type MemoryLinkRow,
@@ -265,6 +268,192 @@ function serializeMemoryLinkExpansion(row: MemoryLinkExpansionRow) {
       created_at: serializeOptionalTimestamp(row.linked_created_at ?? null),
     },
   };
+}
+
+type RecallSourceType = "thought" | "document_chunk" | "consolidated_observation" | "experience" | MemoryLinkSourceType;
+
+type RecallTemporalLaneStatus = "stub";
+
+interface RecallApiResult {
+  source_type: RecallSourceType;
+  id: string;
+  content: string | null;
+  title: string | null;
+  metadata: Record<string, unknown>;
+  project: string | null;
+  created_at: string | null;
+  score: number;
+  semantic_score: number;
+  bm25_score: number;
+  temporal_score: number;
+  link_score: number;
+  link?: ReturnType<typeof serializeMemoryLink>;
+  seed?: { source_type: MemoryLinkSourceType; source_id: string };
+  direction?: "incoming" | "outgoing";
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+function scoreValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function recallKey(result: Pick<RecallApiResult, "source_type" | "id">): string {
+  return `${result.source_type}:${result.id}`;
+}
+
+function upsertRecallResult(results: Map<string, RecallApiResult>, next: RecallApiResult): void {
+  const key = recallKey(next);
+  const current = results.get(key);
+  if (!current) {
+    results.set(key, next);
+    return;
+  }
+
+  current.content = current.content ?? next.content;
+  current.title = current.title ?? next.title;
+  current.metadata = { ...current.metadata, ...next.metadata };
+  current.project = current.project ?? next.project;
+  current.created_at = current.created_at ?? next.created_at;
+  current.semantic_score = Math.max(current.semantic_score, next.semantic_score);
+  current.bm25_score = Math.max(current.bm25_score, next.bm25_score);
+  current.temporal_score = Math.max(current.temporal_score, next.temporal_score);
+  current.link_score = Math.max(current.link_score, next.link_score);
+  current.score = Math.max(current.score, next.score);
+  if (next.link) current.link = next.link;
+  if (next.seed) current.seed = next.seed;
+  if (next.direction) current.direction = next.direction;
+}
+
+function sortRecallResults(results: RecallApiResult[]): RecallApiResult[] {
+  return results.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    const aTime = a.created_at ? Date.parse(a.created_at) : 0;
+    const bTime = b.created_at ? Date.parse(b.created_at) : 0;
+    return bTime - aTime;
+  });
+}
+
+function recallFromThought(row: SearchResult, lane: "semantic" | "bm25"): RecallApiResult {
+  const score = scoreValue(row.similarity);
+  return {
+    source_type: "thought",
+    id: row.id,
+    content: row.content,
+    title: null,
+    metadata: asRecord(row.metadata),
+    project: row.project ?? null,
+    created_at: serializeOptionalTimestamp(row.created_at),
+    score,
+    semantic_score: lane === "semantic" ? score : 0,
+    bm25_score: lane === "bm25" ? score : 0,
+    temporal_score: 0,
+    link_score: 0,
+  };
+}
+
+function recallFromDocumentChunk(row: DocumentChunkSearchResult): RecallApiResult {
+  return {
+    source_type: "document_chunk",
+    id: row.id,
+    content: row.content,
+    title: row.document_title,
+    metadata: {
+      ...asRecord(row.metadata),
+      document_id: row.document_id,
+      chunk_index: row.chunk_index,
+      document_source_type: row.document_source_type,
+      document_source_uri: row.document_source_uri ?? null,
+      fts_rank: row.fts_rank,
+    },
+    project: row.project ?? null,
+    created_at: serializeOptionalTimestamp(row.created_at),
+    score: scoreValue(row.score),
+    semantic_score: scoreValue(row.similarity),
+    bm25_score: scoreValue(row.fts_rank),
+    temporal_score: 0,
+    link_score: 0,
+  };
+}
+
+function recallFromObservation(row: ConsolidatedObservationSearchResult): RecallApiResult {
+  const score = scoreValue(row.similarity);
+  return {
+    source_type: "consolidated_observation",
+    id: row.id,
+    content: row.content,
+    title: null,
+    metadata: {
+      proof_count: row.proof_count,
+      source_memory_ids: row.source_memory_ids ?? [],
+      source_quotes: row.source_quotes ?? {},
+      tags: row.tags ?? [],
+      trend: row.trend ?? null,
+    },
+    project: row.project ?? null,
+    created_at: serializeOptionalTimestamp(row.created_at),
+    score,
+    semantic_score: score,
+    bm25_score: 0,
+    temporal_score: 0,
+    link_score: 0,
+  };
+}
+
+function recallFromExperience(row: ExperienceSearchResult): RecallApiResult {
+  const score = scoreValue(row.similarity);
+  return {
+    source_type: "experience",
+    id: row.id,
+    content: row.content,
+    title: null,
+    metadata: {
+      ...asRecord(row.refs),
+      event_type: row.event_type,
+      session_id: row.session_id ?? null,
+      agent_id: row.agent_id ?? null,
+      occurred_at: serializeOptionalTimestamp(row.occurred_at),
+    },
+    project: row.project ?? null,
+    created_at: serializeOptionalTimestamp(row.created_at),
+    score,
+    semantic_score: score,
+    bm25_score: 0,
+    temporal_score: 0,
+    link_score: 0,
+  };
+}
+
+function recallFromMemoryLink(row: MemoryLinkExpansionRow): RecallApiResult {
+  const score = scoreValue(row.weight);
+  return {
+    source_type: row.linked_type,
+    id: row.linked_id,
+    content: row.linked_content ?? null,
+    title: row.linked_title ?? null,
+    metadata: asRecord(row.linked_metadata),
+    project: row.linked_project ?? null,
+    created_at: serializeOptionalTimestamp(row.linked_created_at ?? null),
+    score,
+    semantic_score: 0,
+    bm25_score: 0,
+    temporal_score: 0,
+    link_score: score,
+    link: serializeMemoryLink(row),
+    seed: { source_type: row.seed_type, source_id: row.seed_id },
+    direction: row.direction,
+  };
+}
+
+function parseBodyLimit(value: unknown, fallback = 10, max = 50): number {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.max(1, Math.min(max, Math.trunc(value)));
 }
 
 function parseOptionalBoolean(value: string | undefined): boolean | undefined {
@@ -650,6 +839,174 @@ export function createApi(): Hono {
         { error: "Failed to search thoughts", detail: message },
         502
       );
+    }
+  });
+
+  // ─── Recall Facade ───────────────────────────────────────────────
+
+  app.post("/recall", async (c) => {
+    const body = await c.req.json<{
+      query?: string;
+      bank_id?: string;
+      project?: string;
+      created_by?: string;
+      type?: string;
+      topic?: string;
+      include_archived?: boolean;
+      include_documents?: boolean;
+      include_observations?: boolean;
+      include_experiences?: boolean;
+      expand_from_seeds?: Array<{ source_type?: string; source_id?: string }>;
+      link_direction?: string;
+      link_relationship?: string;
+      limit?: number;
+      threshold?: number;
+    }>();
+
+    if (!body.query || body.query.trim().length === 0) {
+      return c.json({ error: "query is required" }, 400);
+    }
+    if (body.bank_id !== undefined && body.bank_id.trim().length === 0) {
+      return c.json({ error: "bank_id must not be empty" }, 400);
+    }
+    if (body.include_archived !== undefined && typeof body.include_archived !== "boolean") {
+      return c.json({ error: "include_archived must be a boolean" }, 400);
+    }
+    if (body.include_documents !== undefined && typeof body.include_documents !== "boolean") {
+      return c.json({ error: "include_documents must be a boolean" }, 400);
+    }
+    if (body.include_observations !== undefined && typeof body.include_observations !== "boolean") {
+      return c.json({ error: "include_observations must be a boolean" }, 400);
+    }
+    if (body.include_experiences !== undefined && typeof body.include_experiences !== "boolean") {
+      return c.json({ error: "include_experiences must be a boolean" }, 400);
+    }
+    if (body.limit !== undefined && (typeof body.limit !== "number" || !Number.isFinite(body.limit))) {
+      return c.json({ error: "limit must be a finite number" }, 400);
+    }
+    if (body.threshold !== undefined && (typeof body.threshold !== "number" || !Number.isFinite(body.threshold))) {
+      return c.json({ error: "threshold must be a finite number" }, 400);
+    }
+
+    const seeds: Array<{ source_type: MemoryLinkSourceType; source_id: string }> = [];
+    if (body.expand_from_seeds !== undefined) {
+      if (!Array.isArray(body.expand_from_seeds) || body.expand_from_seeds.length === 0) {
+        return c.json({ error: "expand_from_seeds must be a non-empty array when provided" }, 400);
+      }
+      if (body.expand_from_seeds.length > 50) {
+        return c.json({ error: "expand_from_seeds must contain no more than 50 entries" }, 400);
+      }
+      for (const seed of body.expand_from_seeds) {
+        if (!seed || typeof seed !== "object") {
+          return c.json({ error: "each expand_from_seeds entry must be an object" }, 400);
+        }
+        if (!seed.source_type || !MEMORY_LINK_SOURCE_TYPE_SET.has(seed.source_type)) {
+          return c.json({ error: `seed.source_type must be one of: ${MEMORY_LINK_SOURCE_TYPES.join(", ")}` }, 400);
+        }
+        if (!seed.source_id || !UUID_RE.test(seed.source_id)) {
+          return c.json({ error: "seed.source_id must be a valid UUID" }, 400);
+        }
+        seeds.push({ source_type: seed.source_type as MemoryLinkSourceType, source_id: seed.source_id });
+      }
+    }
+
+    const linkDirection = body.link_direction ?? "both";
+    if (!MEMORY_LINK_EXPANSION_DIRECTION_SET.has(linkDirection)) {
+      return c.json({ error: `link_direction must be one of: ${MEMORY_LINK_EXPANSION_DIRECTIONS.join(", ")}` }, 400);
+    }
+    if (body.link_relationship !== undefined && !MEMORY_LINK_RELATIONSHIP_SET.has(body.link_relationship)) {
+      return c.json({ error: `link_relationship must be one of: ${MEMORY_LINK_RELATIONSHIPS.join(", ")}` }, 400);
+    }
+
+    const bankId = body.bank_id ?? "openbrain";
+    const limit = parseBodyLimit(body.limit, 10, 50);
+    const threshold = body.threshold ?? parseFloat(process.env.OPENBRAIN_SEARCH_THRESHOLD ?? "0.3");
+    const includeDocuments = body.include_documents ?? true;
+    const includeObservations = body.include_observations ?? true;
+    const includeExperiences = body.include_experiences ?? true;
+    const filter: Record<string, unknown> = {};
+    if (body.type) filter.type = body.type;
+    if (body.topic) filter.topics = [body.topic];
+
+    try {
+      const queryEmbedding = await embedder.generateEmbedding(body.query);
+      const [semanticResults, bm25Results, documentResults, observationResults, experienceResults, linkResults] = await Promise.all([
+        searchThoughts(
+          pool, queryEmbedding, limit, threshold, filter,
+          body.project, body.include_archived, body.created_by
+        ),
+        bm25SearchThoughts(
+          pool, body.query, limit, filter,
+          body.project, body.include_archived, body.created_by
+        ),
+        includeDocuments
+          ? searchDocumentChunks(pool, queryEmbedding, {
+              query: body.query,
+              mode: "hybrid",
+              limit,
+              threshold,
+              project: body.project,
+            })
+          : Promise.resolve([]),
+        includeObservations
+          ? searchConsolidatedObservations(pool, queryEmbedding, {
+              bank_id: bankId,
+              project: body.project,
+              created_by: body.created_by,
+              include_archived: body.include_archived,
+              limit,
+              threshold,
+            })
+          : Promise.resolve([]),
+        includeExperiences
+          ? searchExperiences(pool, queryEmbedding, {
+              bank_id: bankId,
+              project: body.project,
+              created_by: body.created_by,
+              limit,
+              threshold,
+            })
+          : Promise.resolve([]),
+        seeds.length > 0
+          ? expandMemoryLinks(pool, {
+              bank_id: bankId,
+              seeds,
+              direction: linkDirection as MemoryLinkExpansionDirectionFilter,
+              relationship: body.link_relationship as MemoryLinkRelationship | undefined,
+              include_archived: body.include_archived ?? false,
+              limit,
+            })
+          : Promise.resolve([]),
+      ]);
+
+      const recallResults = new Map<string, RecallApiResult>();
+      semanticResults.forEach((row) => upsertRecallResult(recallResults, recallFromThought(row, "semantic")));
+      bm25Results.forEach((row) => upsertRecallResult(recallResults, recallFromThought(row, "bm25")));
+      documentResults.forEach((row) => upsertRecallResult(recallResults, recallFromDocumentChunk(row)));
+      observationResults.forEach((row) => upsertRecallResult(recallResults, recallFromObservation(row)));
+      experienceResults.forEach((row) => upsertRecallResult(recallResults, recallFromExperience(row)));
+      linkResults.forEach((row) => upsertRecallResult(recallResults, recallFromMemoryLink(row)));
+
+      const results = sortRecallResults([...recallResults.values()]).slice(0, limit);
+      return c.json({
+        query: body.query,
+        bank_id: bankId,
+        count: results.length,
+        lanes: {
+          semantic: true,
+          bm25: true,
+          documents: includeDocuments,
+          observations: includeObservations,
+          experiences: includeExperiences,
+          link_expansion: seeds.length > 0,
+          temporal: "stub" as RecallTemporalLaneStatus,
+        },
+        results,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Recall failed:", message);
+      return c.json({ error: "Failed to recall memories", detail: message }, 502);
     }
   });
 

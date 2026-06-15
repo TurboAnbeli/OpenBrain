@@ -269,6 +269,182 @@ describe("REST API Routes", () => {
     expect(body.negation_terms).toContain("hormuz");
   });
 
+
+  // ─── POST /recall ──────────────────────────────────────────────────
+
+  it("POST /recall returns unified recall results with lane scores and explicit link expansion", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockSearchThoughts.mockResolvedValueOnce([
+      {
+        id: "11111111-1111-4111-8111-111111111111",
+        content: "Semantic thought content",
+        metadata: { type: "decision" },
+        project: "one-brain",
+        proof_count: 2,
+        similarity: 0.82,
+        created_at: createdAt,
+      },
+    ]);
+    mockBm25SearchThoughts.mockResolvedValueOnce([
+      {
+        id: "11111111-1111-4111-8111-111111111111",
+        content: "Semantic thought content",
+        metadata: { type: "decision" },
+        project: "one-brain",
+        proof_count: 2,
+        similarity: 0.41,
+        created_at: createdAt,
+      },
+    ]);
+    mockSearchDocumentChunks.mockResolvedValueOnce([
+      {
+        id: "33333333-3333-4333-8333-333333333333",
+        document_id: "44444444-4444-4444-8444-444444444444",
+        document_title: "One brain design",
+        document_source_type: "agent-note",
+        document_source_uri: "file:///note.md",
+        project: "one-brain",
+        chunk_index: 0,
+        content: "Document chunk content",
+        metadata: { section: "recall" },
+        similarity: 0.77,
+        fts_rank: 0.2,
+        score: 0.63,
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+    ]);
+    mockSearchConsolidatedObservations.mockResolvedValueOnce([
+      {
+        id: "55555555-5555-4555-8555-555555555555",
+        bank_id: "openbrain",
+        content: "Observation content",
+        proof_count: 3,
+        source_memory_ids: ["11111111-1111-4111-8111-111111111111"],
+        source_quotes: {},
+        tags: ["recall"],
+        history: [],
+        trend: "stable",
+        project: "one-brain",
+        archived: false,
+        similarity: 0.72,
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+    ]);
+    mockSearchExperiences.mockResolvedValueOnce([
+      {
+        id: "66666666-6666-4666-8666-666666666666",
+        bank_id: "openbrain",
+        session_id: "slice-h",
+        agent_id: "hermes",
+        occurred_at: createdAt,
+        event_type: "tool_call",
+        content: "Experience content",
+        refs: { temporary: true },
+        project: "one-brain",
+        created_by: "hermes",
+        similarity: 0.66,
+        created_at: createdAt,
+      },
+    ]);
+    mockExpandMemoryLinks.mockResolvedValueOnce([
+      {
+        id: "link-123",
+        bank_id: "openbrain",
+        source_type: "experience",
+        source_id: "22222222-2222-4222-8222-222222222222",
+        target_type: "experience",
+        target_id: "77777777-7777-4777-8777-777777777777",
+        relationship: "temporal_after",
+        weight: 1,
+        inferred: true,
+        created_at: createdAt,
+        seed_type: "experience",
+        seed_id: "22222222-2222-4222-8222-222222222222",
+        direction: "outgoing",
+        linked_type: "experience",
+        linked_id: "77777777-7777-4777-8777-777777777777",
+        linked_content: "Linked earlier experience",
+        linked_title: null,
+        linked_metadata: { event_type: "user_message" },
+        linked_project: "one-brain",
+        linked_created_at: createdAt,
+      },
+    ]);
+
+    const res = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "recall explicit links",
+        bank_id: "openbrain",
+        project: "one-brain",
+        include_experiences: true,
+        include_observations: true,
+        include_documents: true,
+        expand_from_seeds: [{ source_type: "experience", source_id: "22222222-2222-4222-8222-222222222222" }],
+        link_direction: "outgoing",
+        link_relationship: "temporal_after",
+        limit: 10,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockGenerateEmbedding).toHaveBeenCalledWith("recall explicit links");
+    expect(mockSearchThoughts).toHaveBeenCalled();
+    expect(mockBm25SearchThoughts).toHaveBeenCalled();
+    expect(mockSearchDocumentChunks).toHaveBeenCalledWith(expect.anything(), [0.1, 0.2, 0.3], expect.objectContaining({ mode: "hybrid", project: "one-brain" }));
+    expect(mockSearchConsolidatedObservations).toHaveBeenCalledWith(expect.anything(), [0.1, 0.2, 0.3], expect.objectContaining({ bank_id: "openbrain", project: "one-brain" }));
+    expect(mockSearchExperiences).toHaveBeenCalledWith(expect.anything(), [0.1, 0.2, 0.3], expect.objectContaining({ bank_id: "openbrain", project: "one-brain" }));
+    expect(mockExpandMemoryLinks).toHaveBeenCalledWith(expect.anything(), {
+      bank_id: "openbrain",
+      seeds: [{ source_type: "experience", source_id: "22222222-2222-4222-8222-222222222222" }],
+      direction: "outgoing",
+      relationship: "temporal_after",
+      include_archived: false,
+      limit: 10,
+    });
+
+    const body = (await res.json()) as {
+      count: number;
+      lanes: { semantic: boolean; bm25: boolean; documents: boolean; observations: boolean; experiences: boolean; link_expansion: boolean; temporal: string };
+      results: Array<{ source_type: string; id: string; semantic_score: number; bm25_score: number; link_score: number; content: string }>;
+    };
+    expect(body.count).toBe(5);
+    expect(body.lanes).toMatchObject({ semantic: true, bm25: true, documents: true, observations: true, experiences: true, link_expansion: true, temporal: "stub" });
+    const thought = body.results.find((result) => result.source_type === "thought");
+    expect(thought?.semantic_score).toBe(0.82);
+    expect(thought?.bm25_score).toBe(0.41);
+    const linked = body.results.find((result) => result.id === "77777777-7777-4777-8777-777777777777");
+    expect(linked?.source_type).toBe("experience");
+    expect(linked?.link_score).toBe(1);
+    expect(linked?.content).toBe("Linked earlier experience");
+  });
+
+  it("POST /recall validates query, seed ids, and link direction", async () => {
+    const empty = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "" }),
+    });
+    expect(empty.status).toBe(400);
+
+    const invalid = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "bad seed",
+        expand_from_seeds: [{ source_type: "experience", source_id: "not-a-uuid" }],
+        link_direction: "sideways",
+      }),
+    });
+
+    expect(invalid.status).toBe(400);
+    expect(mockSearchThoughts).not.toHaveBeenCalled();
+    expect(mockExpandMemoryLinks).not.toHaveBeenCalled();
+  });
+
   // ─── PUT /memories/:id ─────────────────────────────────────────────
 
   it("PUT /memories/:id returns updated thought", async () => {
