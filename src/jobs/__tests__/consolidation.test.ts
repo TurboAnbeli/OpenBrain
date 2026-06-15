@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   insertConsolidatedObservation: vi.fn(),
   completeConsolidationJob: vi.fn(),
   failConsolidationJob: vi.fn(),
+  getMemoryBankContext: vi.fn(),
   synthesizeObservation: vi.fn(),
 }));
 
@@ -20,6 +21,7 @@ vi.mock("../../db/queries.js", () => ({
   insertConsolidatedObservation: (...args: any[]) => mocks.insertConsolidatedObservation(...args),
   completeConsolidationJob: (...args: any[]) => mocks.completeConsolidationJob(...args),
   failConsolidationJob: (...args: any[]) => mocks.failConsolidationJob(...args),
+  getMemoryBankContext: (...args: any[]) => mocks.getMemoryBankContext(...args),
 }));
 
 vi.mock("../../api/synthesize.js", () => ({
@@ -58,6 +60,14 @@ const job = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.getMemoryBankContext.mockResolvedValue({
+    id: "openbrain",
+    name: "OpenBrain",
+    mission: "Durable, evidence-grounded memory.",
+    disposition: { skepticism: 4 },
+    project: null,
+    directives: [],
+  });
 });
 
 describe("runConsolidationJob", () => {
@@ -114,6 +124,88 @@ describe("runConsolidationJob", () => {
       source_ids: job.input.thought_ids,
     });
   });
+
+
+  it("passes active reflect directives into synthesis context before materializing observations", async () => {
+    const pool = mockPool();
+    const sources = [
+      { id: job.input.thought_ids[0], content: "First observation includes a direct identifier that should not be repeated", project: "one-brain", created_by: "ryan", archived: false, proof_count: 1, metadata: {}, created_at: new Date() },
+      { id: job.input.thought_ids[1], content: "Second observation says the fact conflicts with an earlier memory", project: "one-brain", created_by: "ryan", archived: false, proof_count: 1, metadata: {}, created_at: new Date() },
+    ];
+    mocks.getMemoryBankContext.mockResolvedValueOnce({
+      id: "openbrain",
+      name: "OpenBrain",
+      mission: "Durable, evidence-grounded memory.",
+      disposition: { skepticism: 4 },
+      project: null,
+      directives: [
+        {
+          id: "741a9339-ceb3-468b-81ac-616567382122",
+          bank_id: "openbrain",
+          name: "no_pii_verbatim",
+          rule_text: "Never store patient identifiers verbatim.",
+          applies_to: ["reflect", "retain"],
+          severity: "hard",
+          active: true,
+          priority: 100,
+          revision: 1,
+        },
+        {
+          id: "06e1de99-502b-4865-b1e2-87c8adf01853",
+          bank_id: "openbrain",
+          name: "no_fact_averaging",
+          rule_text: "Do not average conflicting facts.",
+          applies_to: ["reflect"],
+          severity: "hard",
+          active: true,
+          priority: 90,
+          revision: 1,
+        },
+      ],
+    });
+    mocks.startConsolidationJob.mockResolvedValueOnce(job);
+    mocks.getThoughtsByIds.mockResolvedValueOnce(sources);
+    mocks.synthesizeObservation.mockResolvedValueOnce("Directive-safe synthesis.");
+    mocks.insertConsolidatedObservation.mockResolvedValueOnce({
+      id: "obs-directive",
+      bank_id: "openbrain",
+      content: "Directive-safe synthesis.",
+      proof_count: 2,
+      source_memory_ids: job.input.thought_ids,
+      source_quotes: Object.fromEntries(sources.map((s) => [s.id, s.content])),
+      tags: ["one-brain"],
+      history: [],
+      trend: null,
+      trend_computed_at: null,
+      project: "one-brain",
+      created_by: "hermes",
+      archived: false,
+      created_at: new Date("2026-06-15T00:01:00Z"),
+      updated_at: new Date("2026-06-15T00:01:00Z"),
+    });
+    mocks.completeConsolidationJob.mockImplementationOnce(async (_pool, id, output) => ({ ...job, id, status: "success", output }));
+
+    await runConsolidationJob(pool, "job-123", {
+      embedder,
+      synthesis: { endpoint: "http://127.0.0.1:11434", model: "test-model" },
+    });
+
+    expect(mocks.getMemoryBankContext).toHaveBeenCalledWith(pool, "openbrain", "reflect");
+    expect(mocks.synthesizeObservation.mock.calls[0]![1]).toMatchObject({
+      memoryBank: {
+        id: "openbrain",
+        mission: "Durable, evidence-grounded memory.",
+        directives: [
+          { name: "no_pii_verbatim", severity: "hard", rule_text: "Never store patient identifiers verbatim." },
+          { name: "no_fact_averaging", severity: "hard", rule_text: "Do not average conflicting facts." },
+        ],
+      },
+    });
+    expect(mocks.insertConsolidatedObservation.mock.calls[0]![1].history[0]).toMatchObject({
+      directive_ids: ["741a9339-ceb3-468b-81ac-616567382122", "06e1de99-502b-4865-b1e2-87c8adf01853"],
+    });
+  });
+
 
   it("marks observe_documents jobs error when explicit sources are missing", async () => {
     const pool = mockPool();

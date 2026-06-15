@@ -10,6 +10,7 @@ import {
   insertConsolidatedObservation,
   completeConsolidationJob,
   failConsolidationJob,
+  getMemoryBankContext,
   type ConsolidationJobRow,
   type ConsolidationJobInputPayload,
   type ConsolidatedObservationRow,
@@ -135,9 +136,15 @@ export async function runConsolidationJob(
       throw new Error("observe_thoughts requires at least 2 active source thoughts");
     }
 
+    const memoryBank = await getMemoryBankContext(pool, job.bank_id, "reflect");
+    const directiveIds = memoryBank?.directives.map((directive) => directive.id) ?? [];
+
     const synthesis = await synthesizeObservation(
       sources.map((source) => source.content),
-      options.synthesis
+      {
+        ...options.synthesis,
+        ...(memoryBank ? { memoryBank } : {}),
+      }
     );
     if (!synthesis) {
       throw new Error("synthesis quality gate failed");
@@ -160,6 +167,7 @@ export async function runConsolidationJob(
         consolidation_job_id: job.id,
         job_type: job.job_type,
         source_kind: sourceKind,
+        directive_ids: directiveIds,
       }],
       trend: null,
       trend_computed_at: null,
@@ -171,7 +179,10 @@ export async function runConsolidationJob(
     const completed = await completeConsolidationJob(
       pool,
       job.id,
-      outputEnvelope(sourceKind, sources, observation.id)
+      {
+        ...outputEnvelope(sourceKind, sources, observation.id),
+        directive_ids: directiveIds,
+      }
     );
     return { job: completed, observation };
   } catch (error) {

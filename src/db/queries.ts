@@ -265,6 +265,29 @@ export interface ConsolidationJobRow {
   created_at: Date;
 }
 
+export interface MemoryBankDirectiveContext {
+  id: string;
+  bank_id: string;
+  name: string;
+  rule_text: string;
+  applies_to: string[];
+  severity: string;
+  active: boolean;
+  priority: number;
+  revision: number;
+  created_at?: Date | null;
+  updated_at?: Date | null;
+}
+
+export interface MemoryBankContext {
+  id: string;
+  name: string;
+  mission?: string | null;
+  disposition: Record<string, unknown>;
+  project?: string | null;
+  directives: MemoryBankDirectiveContext[];
+}
+
 export interface ThoughtStats {
   total_thoughts: number;
   types: Record<string, number>;
@@ -1517,6 +1540,82 @@ export async function updateConsolidatedObservation(
   } finally {
     client.release();
   }
+}
+
+
+// ─── Memory Bank Context ─────────────────────────────────────────────
+
+interface MemoryBankContextRow {
+  id: string;
+  name: string;
+  mission: string | null;
+  disposition: Record<string, unknown> | null;
+  project: string | null;
+  directive_id: string | null;
+  directive_name: string | null;
+  directive_rule_text: string | null;
+  directive_applies_to: string[] | null;
+  directive_severity: string | null;
+  directive_priority: number | null;
+  directive_revision: number | null;
+  directive_created_at: Date | null;
+  directive_updated_at: Date | null;
+}
+
+export async function getMemoryBankContext(
+  pool: pg.Pool,
+  bankId = "openbrain",
+  appliesTo = "reflect"
+): Promise<MemoryBankContext | null> {
+  const { rows } = await pool.query<MemoryBankContextRow>(
+    `SELECT mb.id,
+            mb.name,
+            mb.mission,
+            mb.disposition,
+            mb.project,
+            d.id AS directive_id,
+            d.name AS directive_name,
+            d.rule_text AS directive_rule_text,
+            d.applies_to AS directive_applies_to,
+            d.severity AS directive_severity,
+            d.priority AS directive_priority,
+            d.revision AS directive_revision,
+            d.created_at AS directive_created_at,
+            d.updated_at AS directive_updated_at
+     FROM memory_banks mb
+     LEFT JOIN directives d
+       ON d.bank_id = mb.id
+      AND d.active = true
+      AND d.applies_to ? $2
+     WHERE mb.id = $1
+     ORDER BY d.priority DESC NULLS LAST, d.name ASC NULLS LAST`,
+    [bankId, appliesTo]
+  );
+
+  if (rows.length === 0) return null;
+  const first = rows[0]!;
+  return {
+    id: first.id,
+    name: first.name,
+    mission: first.mission,
+    disposition: first.disposition ?? {},
+    project: first.project,
+    directives: rows
+      .filter((row) => row.directive_id !== null)
+      .map((row) => ({
+        id: row.directive_id!,
+        bank_id: first.id,
+        name: row.directive_name!,
+        rule_text: row.directive_rule_text!,
+        applies_to: row.directive_applies_to ?? [],
+        severity: row.directive_severity!,
+        active: true,
+        priority: row.directive_priority ?? 0,
+        revision: row.directive_revision ?? 1,
+        created_at: row.directive_created_at,
+        updated_at: row.directive_updated_at,
+      })),
+  };
 }
 
 

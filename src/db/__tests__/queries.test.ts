@@ -30,6 +30,7 @@ import {
   startConsolidationJob,
   completeConsolidationJob,
   failConsolidationJob,
+  getMemoryBankContext,
   type ThoughtMetadata,
   type DocumentInput,
   type DocumentChunkInput,
@@ -947,6 +948,63 @@ describe("consolidated observations", () => {
     expect(updateParams[4]).toEqual(updated.source_memory_ids);
     expect(updateParams[5]).toEqual(JSON.stringify(updated.source_quotes));
     expect(result.source_quotes).toEqual(updated.source_quotes);
+  });
+});
+
+
+// ─── Memory Bank Context ─────────────────────────────────────────────
+
+describe("memory bank directive context", () => {
+  it("loads active reflect directives ordered by priority with the bank mission", async () => {
+    const { pool, mockQuery } = createMockPool();
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          id: "openbrain",
+          name: "OpenBrain",
+          mission: "Durable, evidence-grounded memory.",
+          disposition: { skepticism: 4 },
+          project: null,
+          directive_id: "741a9339-ceb3-468b-81ac-616567382122",
+          directive_name: "no_pii_verbatim",
+          directive_rule_text: "Never store patient identifiers verbatim.",
+          directive_applies_to: ["reflect", "retain"],
+          directive_severity: "hard",
+          directive_priority: 100,
+          directive_revision: 1,
+          directive_created_at: createdAt,
+          directive_updated_at: createdAt,
+        },
+        {
+          id: "openbrain",
+          name: "OpenBrain",
+          mission: "Durable, evidence-grounded memory.",
+          disposition: { skepticism: 4 },
+          project: null,
+          directive_id: "06e1de99-502b-4865-b1e2-87c8adf01853",
+          directive_name: "no_fact_averaging",
+          directive_rule_text: "Do not average conflicting facts.",
+          directive_applies_to: ["reflect"],
+          directive_severity: "hard",
+          directive_priority: 90,
+          directive_revision: 1,
+          directive_created_at: createdAt,
+          directive_updated_at: createdAt,
+        },
+      ],
+    });
+
+    const context = await getMemoryBankContext(pool, "openbrain", "reflect");
+
+    expect(context?.id).toBe("openbrain");
+    expect(context?.mission).toContain("evidence-grounded");
+    expect(context?.directives.map((d) => d.name)).toEqual(["no_pii_verbatim", "no_fact_averaging"]);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("FROM memory_banks");
+    expect(sql).toContain("LEFT JOIN directives");
+    expect(sql).toContain("ORDER BY d.priority DESC");
+    expect(mockQuery.mock.calls[0]![1]).toEqual(["openbrain", "reflect"]);
   });
 });
 

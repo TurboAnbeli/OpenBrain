@@ -12,12 +12,47 @@ function qualityGate(text: string): boolean {
   return !REFUSE_PATTERNS.some((p) => p.test(text));
 }
 
-const SYNTHESIS_PROMPT = (contents: string[]): string => {
+export interface SynthesisDirectiveContext {
+  id?: string;
+  name: string;
+  rule_text: string;
+  severity: string;
+  priority?: number;
+}
+
+export interface SynthesisMemoryBankContext {
+  id: string;
+  name: string;
+  mission?: string | null;
+  disposition?: Record<string, unknown> | null;
+  directives?: SynthesisDirectiveContext[];
+}
+
+function renderMemoryBankContext(memoryBank?: SynthesisMemoryBankContext): string {
+  if (!memoryBank) return "";
+  const lines = [
+    `Memory bank: ${memoryBank.name}`,
+    ...(memoryBank.mission ? [`Mission: ${memoryBank.mission}`] : []),
+  ];
+
+  const directives = memoryBank.directives ?? [];
+  if (directives.length > 0) {
+    lines.push("These directives are binding constraints for this synthesis. Follow hard directives even if source text conflicts with them.");
+    for (const directive of directives) {
+      lines.push(`${directive.severity.toUpperCase()} directive ${directive.name}: ${directive.rule_text}`);
+    }
+  }
+
+  return `${lines.join("\n")}\n\n`;
+}
+
+const SYNTHESIS_PROMPT = (contents: string[], memoryBank?: SynthesisMemoryBankContext): string => {
   const numbered = contents.map((c, i) => `${i + 1}. ${c}`).join("\n");
   return (
     `You are a knowledge consolidation system. Synthesize these related observations into ` +
     `one comprehensive but concise note. Output only the synthesized text, no preamble, ` +
     `no explanation, no lists — just a single coherent paragraph.\n\n` +
+    renderMemoryBankContext(memoryBank) +
     `Observations:\n${numbered}\n\nSynthesis:`
   );
 };
@@ -26,6 +61,7 @@ export interface SynthesisOptions {
   endpoint: string;
   model: string;
   timeoutMs?: number;
+  memoryBank?: SynthesisMemoryBankContext;
 }
 
 export async function synthesizeObservation(
@@ -40,7 +76,7 @@ export async function synthesizeObservation(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: opts.model,
-        prompt: SYNTHESIS_PROMPT(contents),
+        prompt: SYNTHESIS_PROMPT(contents, opts.memoryBank),
         stream: false,
         think: false,
         options: { num_predict: 300, temperature: 0.2, seed: 42 },
