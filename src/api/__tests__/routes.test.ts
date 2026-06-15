@@ -67,6 +67,12 @@ const mockGetExperience = vi.fn();
 const mockListExperiences = vi.fn();
 const mockSearchExperiences = vi.fn();
 const mockGetMemoryBankContext = vi.fn().mockResolvedValue({ id: "openbrain", name: "OpenBrain", mission: null, disposition: {}, directives: [] });
+const mockInsertMemoryLink = vi.fn();
+const mockGetMemoryLink = vi.fn();
+const mockListMemoryLinks = vi.fn();
+const mockInferExperienceTemporalLinks = vi.fn();
+const mockInferSupersedesMemoryLinks = vi.fn();
+const mockInferExperienceReferenceLinks = vi.fn();
 const mockRunConsolidationJob = vi.fn();
 
 vi.mock("../../db/queries.js", () => ({
@@ -102,6 +108,12 @@ vi.mock("../../db/queries.js", () => ({
   listExperiences: (...args: any[]) => mockListExperiences(...args),
   searchExperiences: (...args: any[]) => mockSearchExperiences(...args),
   getMemoryBankContext: (...args: any[]) => mockGetMemoryBankContext(...args),
+  insertMemoryLink: (...args: any[]) => mockInsertMemoryLink(...args),
+  getMemoryLink: (...args: any[]) => mockGetMemoryLink(...args),
+  listMemoryLinks: (...args: any[]) => mockListMemoryLinks(...args),
+  inferExperienceTemporalLinks: (...args: any[]) => mockInferExperienceTemporalLinks(...args),
+  inferSupersedesMemoryLinks: (...args: any[]) => mockInferSupersedesMemoryLinks(...args),
+  inferExperienceReferenceLinks: (...args: any[]) => mockInferExperienceReferenceLinks(...args),
 }));
 
 vi.mock("../../jobs/consolidation.js", () => ({
@@ -1040,6 +1052,86 @@ describe("REST API Routes", () => {
     expect(mockSearchExperiences.mock.calls[0]![2]).toMatchObject({ session_id: "session-slice-d", event_type: "tool_call", limit: 3 });
     const body = (await res.json()) as { results: Array<{ similarity: number }> };
     expect(body.results[0]!.similarity).toBe(0.83);
+  });
+
+
+  // ─── Memory Links ────────────────────────────────────────────────────
+
+  it("POST /memory-links upserts explicit deterministic links", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockInsertMemoryLink.mockResolvedValueOnce({
+      id: "link-123",
+      bank_id: "openbrain",
+      source_type: "experience",
+      source_id: "22222222-2222-4222-8222-222222222222",
+      target_type: "experience",
+      target_id: "11111111-1111-4111-8111-111111111111",
+      relationship: "temporal_after",
+      weight: 1,
+      inferred: true,
+      created_at: createdAt,
+    });
+
+    const res = await app.request("/memory-links", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source_type: "experience",
+        source_id: "22222222-2222-4222-8222-222222222222",
+        target_type: "experience",
+        target_id: "11111111-1111-4111-8111-111111111111",
+        relationship: "temporal_after",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const insertArg = mockInsertMemoryLink.mock.calls[0]![1];
+    expect(insertArg).toMatchObject({ bank_id: "openbrain", relationship: "temporal_after", inferred: true });
+    const body = (await res.json()) as { id: string; relationship: string };
+    expect(body.id).toBe("link-123");
+    expect(body.relationship).toBe("temporal_after");
+  });
+
+  it("GET /memory-links lists links with relationship and source filters", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockListMemoryLinks.mockResolvedValueOnce([
+      { id: "link-123", bank_id: "openbrain", source_type: "experience", source_id: "22222222-2222-4222-8222-222222222222", target_type: "experience", target_id: "11111111-1111-4111-8111-111111111111", relationship: "temporal_after", weight: 1, inferred: true, created_at: createdAt },
+    ]);
+
+    const res = await app.request("/memory-links?source_type=experience&source_id=22222222-2222-4222-8222-222222222222&relationship=temporal_after&limit=5");
+
+    expect(res.status).toBe(200);
+    expect(mockListMemoryLinks.mock.calls[0]![1]).toMatchObject({ source_type: "experience", source_id: "22222222-2222-4222-8222-222222222222", relationship: "temporal_after", limit: 5 });
+    const body = (await res.json()) as { count: number; results: Array<{ relationship: string }> };
+    expect(body.count).toBe(1);
+    expect(body.results[0]!.relationship).toBe("temporal_after");
+  });
+
+  it("POST /memory-links/infer runs only requested deterministic rules", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    const temporalLink = { id: "temporal-link", bank_id: "openbrain", source_type: "experience", source_id: "22222222-2222-4222-8222-222222222222", target_type: "experience", target_id: "11111111-1111-4111-8111-111111111111", relationship: "temporal_after", weight: 1, inferred: true, created_at: createdAt };
+    const supersedesLink = { id: "supersedes-link", bank_id: "openbrain", source_type: "thought", source_id: "33333333-3333-4333-8333-333333333333", target_type: "thought", target_id: "44444444-4444-4444-8444-444444444444", relationship: "supersedes", weight: 1, inferred: true, created_at: createdAt };
+    mockInferExperienceTemporalLinks.mockResolvedValueOnce([temporalLink]);
+    mockInferSupersedesMemoryLinks.mockResolvedValueOnce([supersedesLink]);
+
+    const res = await app.request("/memory-links/infer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        bank_id: "openbrain",
+        session_id: "slice-e-smoke",
+        rules: ["experience_temporal_after", "thought_supersedes"],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockInferExperienceTemporalLinks).toHaveBeenCalledWith(expect.anything(), { bank_id: "openbrain", session_id: "slice-e-smoke" });
+    expect(mockInferSupersedesMemoryLinks).toHaveBeenCalledWith(expect.anything(), { bank_id: "openbrain" });
+    expect(mockInferExperienceReferenceLinks).not.toHaveBeenCalled();
+    const body = (await res.json()) as { count: number; rules: Record<string, number> };
+    expect(body.count).toBe(2);
+    expect(body.rules.experience_temporal_after).toBe(1);
+    expect(body.rules.thought_supersedes).toBe(1);
   });
 
 

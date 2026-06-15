@@ -35,7 +35,14 @@ import {
   getExperience,
   listExperiences,
   searchExperiences,
+  insertMemoryLink,
+  getMemoryLink,
+  listMemoryLinks,
+  inferExperienceTemporalLinks,
+  inferSupersedesMemoryLinks,
+  inferExperienceReferenceLinks,
   type ExperienceInput,
+  type MemoryLinkInput,
   type ThoughtMetadata,
   type DocumentInput,
   type DocumentChunkInput,
@@ -1059,6 +1066,122 @@ describe("experiences", () => {
     expect(params[0]).toBe("[0.1,0.2,0.3]");
     expect(params).toContain("session-slice-d");
     expect(params).toContain("tool_call");
+  });
+});
+
+
+// ─── Memory Links ────────────────────────────────────────────────────
+
+describe("memory links", () => {
+  const createdAt = new Date("2026-06-15T00:00:00Z");
+  const linkInput: MemoryLinkInput = {
+    bank_id: "openbrain",
+    source_type: "experience",
+    source_id: "22222222-2222-4222-8222-222222222222",
+    target_type: "experience",
+    target_id: "11111111-1111-4111-8111-111111111111",
+    relationship: "temporal_after",
+    weight: 1,
+    inferred: true,
+  };
+  const linkRow = {
+    id: "link-123",
+    ...linkInput,
+    created_at: createdAt,
+  };
+
+  it("upserts deterministic memory links by edge identity", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [linkRow] });
+
+    const result = await insertMemoryLink(pool, linkInput);
+
+    expect(result.id).toBe("link-123");
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("INSERT INTO memory_links");
+    expect(sql).toContain("ON CONFLICT (source_type, source_id, target_type, target_id, relationship)");
+    expect(sql).toContain("RETURNING id, source_type, source_id, target_type, target_id, relationship");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[0]).toBe("openbrain");
+    expect(params[1]).toBe("experience");
+    expect(params[3]).toBe("experience");
+    expect(params[5]).toBe("temporal_after");
+  });
+
+  it("fetches and lists memory links with source/target filters", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [linkRow] });
+    mockQuery.mockResolvedValueOnce({ rows: [linkRow] });
+
+    const byId = await getMemoryLink(pool, "a1b2c3d4-1234-5678-9abc-def012345678");
+    const listed = await listMemoryLinks(pool, {
+      bank_id: "openbrain",
+      source_type: "experience",
+      source_id: linkInput.source_id,
+      relationship: "temporal_after",
+      limit: 5,
+    });
+
+    expect(byId?.id).toBe("link-123");
+    expect(listed).toHaveLength(1);
+    const getSql = mockQuery.mock.calls[0]![0] as string;
+    const listSql = mockQuery.mock.calls[1]![0] as string;
+    expect(getSql).toContain("FROM memory_links");
+    expect(listSql).toContain("source_type = $");
+    expect(listSql).toContain("source_id = $");
+    expect(listSql).toContain("relationship = $");
+    expect(listSql).toContain("ORDER BY created_at DESC");
+  });
+
+  it("infers temporal_after links between adjacent experiences in the same session", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [linkRow] });
+
+    const results = await inferExperienceTemporalLinks(pool, {
+      bank_id: "openbrain",
+      session_id: "slice-e-smoke",
+    });
+
+    expect(results).toHaveLength(1);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("WITH ordered_experiences AS");
+    expect(sql).toContain("LAG(id) OVER");
+    expect(sql).toContain("temporal_after");
+    expect(sql).toContain("ON CONFLICT (source_type, source_id, target_type, target_id, relationship)");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params).toContain("openbrain");
+    expect(params).toContain("slice-e-smoke");
+  });
+
+  it("infers supersedes links from explicit thought supersession metadata", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [{ ...linkRow, source_type: "thought", target_type: "thought", relationship: "supersedes" }] });
+
+    const results = await inferSupersedesMemoryLinks(pool, { bank_id: "openbrain" });
+
+    expect(results[0]!.relationship).toBe("supersedes");
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("FROM thoughts");
+    expect(sql).toContain("supersedes IS NOT NULL");
+    expect(sql).toContain("'supersedes'");
+    expect(sql).toContain("ON CONFLICT (source_type, source_id, target_type, target_id, relationship)");
+  });
+
+  it("infers evidence_for links from experience refs to consolidated observations", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [{ ...linkRow, target_type: "consolidated_observation", relationship: "evidence_for" }] });
+
+    const results = await inferExperienceReferenceLinks(pool, {
+      bank_id: "openbrain",
+      session_id: "slice-e-smoke",
+    });
+
+    expect(results[0]!.relationship).toBe("evidence_for");
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("jsonb_array_elements_text");
+    expect(sql).toContain("refs->'consolidated_observations'");
+    expect(sql).toContain("consolidated_observation");
+    expect(sql).toContain("evidence_for");
   });
 });
 

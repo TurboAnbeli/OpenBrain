@@ -279,6 +279,66 @@ export interface ExperienceSearchResult extends ExperienceRow {
   similarity: number;
 }
 
+// ─── Memory Links ────────────────────────────────────────────────────
+
+export type MemoryLinkSourceType =
+  | "thought"
+  | "document"
+  | "chunk"
+  | "consolidated_observation"
+  | "experience"
+  | "mental_model";
+
+export type MemoryLinkRelationship =
+  | "temporal_after"
+  | "temporal_before"
+  | "causal_cause"
+  | "causal_effect"
+  | "semantic_similar"
+  | "entity_co"
+  | "supersedes"
+  | "evidence_for";
+
+export interface MemoryLinkInput {
+  bank_id?: string;
+  source_type: MemoryLinkSourceType;
+  source_id: string;
+  target_type: MemoryLinkSourceType;
+  target_id: string;
+  relationship: MemoryLinkRelationship;
+  weight?: number;
+  inferred?: boolean;
+}
+
+export interface MemoryLinkRow {
+  id: string;
+  bank_id: string;
+  source_type: MemoryLinkSourceType;
+  source_id: string;
+  target_type: MemoryLinkSourceType;
+  target_id: string;
+  relationship: MemoryLinkRelationship;
+  weight: number;
+  inferred: boolean;
+  created_at: Date;
+}
+
+export interface MemoryLinkListOptions {
+  bank_id?: string;
+  source_type?: MemoryLinkSourceType;
+  source_id?: string;
+  target_type?: MemoryLinkSourceType;
+  target_id?: string;
+  relationship?: MemoryLinkRelationship;
+  inferred?: boolean;
+  limit?: number;
+}
+
+export interface MemoryLinkInferOptions {
+  bank_id?: string;
+  session_id?: string;
+}
+
 // ─── Consolidation Jobs ─────────────────────────────────────────────
 
 export type ConsolidationJobType =
@@ -1784,6 +1844,233 @@ export async function searchExperiences(
        ${where}
      ORDER BY embedding <=> $1::vector ASC
      LIMIT ${limitPlaceholder}`,
+    params
+  );
+  return rows;
+}
+
+
+// ─── Memory Link Queries ──────────────────────────────────────────────
+
+function boundedMemoryLinkLimit(limit?: number): number {
+  if (!Number.isFinite(limit ?? 50)) return 50;
+  return Math.max(1, Math.min(500, Math.trunc(limit ?? 50)));
+}
+
+function memoryLinkReturnColumns(): string {
+  return `id, bank_id, source_type, source_id, target_type, target_id, relationship,
+          weight, inferred, created_at`;
+}
+
+function buildMemoryLinkFilters(options: MemoryLinkListOptions, params: unknown[]): string {
+  const clauses: string[] = [];
+  const add = (value: unknown): string => {
+    params.push(value);
+    return `$${params.length}`;
+  };
+
+  clauses.push(`bank_id = ${add(options.bank_id ?? "openbrain")}`);
+  if (options.source_type !== undefined) clauses.push(`source_type = ${add(options.source_type)}`);
+  if (options.source_id !== undefined) clauses.push(`source_id = ${add(options.source_id)}`);
+  if (options.target_type !== undefined) clauses.push(`target_type = ${add(options.target_type)}`);
+  if (options.target_id !== undefined) clauses.push(`target_id = ${add(options.target_id)}`);
+  if (options.relationship !== undefined) clauses.push(`relationship = ${add(options.relationship)}`);
+  if (options.inferred !== undefined) clauses.push(`inferred = ${add(options.inferred)}`);
+
+  return `WHERE ${clauses.join(" AND ")}`;
+}
+
+export async function insertMemoryLink(
+  pool: pg.Pool,
+  link: MemoryLinkInput
+): Promise<MemoryLinkRow> {
+  const { rows } = await pool.query<MemoryLinkRow>(
+    `INSERT INTO memory_links (
+       bank_id, source_type, source_id, target_type, target_id, relationship, weight, inferred
+     )
+     VALUES (COALESCE($1, 'openbrain'), $2, $3, $4, $5, $6, COALESCE($7, 1.0), COALESCE($8, true))
+     ON CONFLICT (source_type, source_id, target_type, target_id, relationship)
+     DO UPDATE SET
+       bank_id = EXCLUDED.bank_id,
+       weight = EXCLUDED.weight,
+       inferred = EXCLUDED.inferred
+     RETURNING id, source_type, source_id, target_type, target_id, relationship,
+               bank_id, weight, inferred, created_at`,
+    [
+      link.bank_id ?? null,
+      link.source_type,
+      link.source_id,
+      link.target_type,
+      link.target_id,
+      link.relationship,
+      link.weight ?? null,
+      link.inferred ?? null,
+    ]
+  );
+  return rows[0]!;
+}
+
+export async function getMemoryLink(
+  pool: pg.Pool,
+  id: string
+): Promise<MemoryLinkRow | null> {
+  const { rows } = await pool.query<MemoryLinkRow>(
+    `SELECT ${memoryLinkReturnColumns()}
+     FROM memory_links
+     WHERE id = $1`,
+    [id]
+  );
+  return rows[0] ?? null;
+}
+
+export async function listMemoryLinks(
+  pool: pg.Pool,
+  options: MemoryLinkListOptions = {}
+): Promise<MemoryLinkRow[]> {
+  const params: unknown[] = [];
+  const where = buildMemoryLinkFilters(options, params);
+  params.push(boundedMemoryLinkLimit(options.limit));
+  const limitPlaceholder = `$${params.length}`;
+
+  const { rows } = await pool.query<MemoryLinkRow>(
+    `SELECT ${memoryLinkReturnColumns()}
+     FROM memory_links
+     ${where}
+     ORDER BY created_at DESC, id DESC
+     LIMIT ${limitPlaceholder}`,
+    params
+  );
+  return rows;
+}
+
+export async function inferExperienceTemporalLinks(
+  pool: pg.Pool,
+  options: MemoryLinkInferOptions = {}
+): Promise<MemoryLinkRow[]> {
+  const params: unknown[] = [options.bank_id ?? "openbrain"];
+  let sessionFilter = "";
+  if (options.session_id !== undefined) {
+    params.push(options.session_id);
+    sessionFilter = `AND session_id = $${params.length}`;
+  }
+
+  const { rows } = await pool.query<MemoryLinkRow>(
+    `WITH ordered_experiences AS (
+       SELECT id,
+              bank_id,
+              session_id,
+              LAG(id) OVER (
+                PARTITION BY bank_id, session_id
+                ORDER BY occurred_at ASC, created_at ASC, id ASC
+              ) AS previous_id
+       FROM experiences
+       WHERE bank_id = $1
+         AND session_id IS NOT NULL
+         ${sessionFilter}
+     )
+     INSERT INTO memory_links (
+       bank_id, source_type, source_id, target_type, target_id, relationship, weight, inferred
+     )
+     SELECT bank_id,
+            'experience',
+            id,
+            'experience',
+            previous_id,
+            'temporal_after',
+            1.0,
+            true
+     FROM ordered_experiences
+     WHERE previous_id IS NOT NULL
+     ON CONFLICT (source_type, source_id, target_type, target_id, relationship)
+     DO UPDATE SET
+       bank_id = EXCLUDED.bank_id,
+       weight = EXCLUDED.weight,
+       inferred = true
+     RETURNING id, bank_id, source_type, source_id, target_type, target_id, relationship,
+               weight, inferred, created_at`,
+    params
+  );
+  return rows;
+}
+
+export async function inferSupersedesMemoryLinks(
+  pool: pg.Pool,
+  options: MemoryLinkInferOptions = {}
+): Promise<MemoryLinkRow[]> {
+  const { rows } = await pool.query<MemoryLinkRow>(
+    `INSERT INTO memory_links (
+       bank_id, source_type, source_id, target_type, target_id, relationship, weight, inferred
+     )
+     SELECT bank_id,
+            'thought',
+            id,
+            'thought',
+            supersedes,
+            'supersedes',
+            1.0,
+            true
+     FROM thoughts
+     WHERE bank_id = $1
+       AND supersedes IS NOT NULL
+     ON CONFLICT (source_type, source_id, target_type, target_id, relationship)
+     DO UPDATE SET
+       bank_id = EXCLUDED.bank_id,
+       weight = EXCLUDED.weight,
+       inferred = true
+     RETURNING id, bank_id, source_type, source_id, target_type, target_id, relationship,
+               weight, inferred, created_at`,
+    [options.bank_id ?? "openbrain"]
+  );
+  return rows;
+}
+
+export async function inferExperienceReferenceLinks(
+  pool: pg.Pool,
+  options: MemoryLinkInferOptions = {}
+): Promise<MemoryLinkRow[]> {
+  const params: unknown[] = [options.bank_id ?? "openbrain"];
+  let sessionFilter = "";
+  if (options.session_id !== undefined) {
+    params.push(options.session_id);
+    sessionFilter = `AND e.session_id = $${params.length}`;
+  }
+
+  const { rows } = await pool.query<MemoryLinkRow>(
+    `WITH referenced_observations AS (
+       SELECT e.bank_id,
+              e.id AS source_id,
+              ref_id::uuid AS target_id
+       FROM experiences e
+       CROSS JOIN LATERAL jsonb_array_elements_text(
+         CASE
+           WHEN jsonb_typeof(e.refs->'consolidated_observations') = 'array'
+           THEN e.refs->'consolidated_observations'
+           ELSE '[]'::jsonb
+         END
+       ) AS refs(ref_id)
+       WHERE e.bank_id = $1
+         ${sessionFilter}
+         AND ref_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+     )
+     INSERT INTO memory_links (
+       bank_id, source_type, source_id, target_type, target_id, relationship, weight, inferred
+     )
+     SELECT bank_id,
+            'experience',
+            source_id,
+            'consolidated_observation',
+            target_id,
+            'evidence_for',
+            1.0,
+            true
+     FROM referenced_observations
+     ON CONFLICT (source_type, source_id, target_type, target_id, relationship)
+     DO UPDATE SET
+       bank_id = EXCLUDED.bank_id,
+       weight = EXCLUDED.weight,
+       inferred = true
+     RETURNING id, bank_id, source_type, source_id, target_type, target_id, relationship,
+               weight, inferred, created_at`,
     params
   );
   return rows;

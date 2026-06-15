@@ -40,6 +40,12 @@ import {
   getExperience,
   listExperiences,
   searchExperiences,
+  insertMemoryLink,
+  getMemoryLink,
+  listMemoryLinks,
+  inferExperienceTemporalLinks,
+  inferSupersedesMemoryLinks,
+  inferExperienceReferenceLinks,
   getMemoryBankContext,
   type ListFilters,
   type BatchThoughtInput,
@@ -51,6 +57,9 @@ import {
   type ConsolidationJobRow,
   type ExperienceEventType,
   type ExperienceRow,
+  type MemoryLinkSourceType,
+  type MemoryLinkRelationship,
+  type MemoryLinkRow,
 } from "../db/queries.js";
 import { getEmbedder } from "../embedder/index.js";
 import { hasSpecificityMarker, applyRecencyBoost, overfetchLimit } from "./recency_boost.js";
@@ -123,6 +132,12 @@ const CONSOLIDATION_JOB_TYPES = ["observe_thoughts", "observe_documents"] as con
 const CONSOLIDATION_JOB_TYPE_SET = new Set<string>(CONSOLIDATION_JOB_TYPES);
 const EXPERIENCE_EVENT_TYPES = ["tool_call", "user_message", "assistant_message", "decide", "external_inbox"] as const;
 const EXPERIENCE_EVENT_TYPE_SET = new Set<string>(EXPERIENCE_EVENT_TYPES);
+const MEMORY_LINK_SOURCE_TYPES = ["thought", "document", "chunk", "consolidated_observation", "experience", "mental_model"] as const;
+const MEMORY_LINK_SOURCE_TYPE_SET = new Set<string>(MEMORY_LINK_SOURCE_TYPES);
+const MEMORY_LINK_RELATIONSHIPS = ["temporal_after", "temporal_before", "causal_cause", "causal_effect", "semantic_similar", "entity_co", "supersedes", "evidence_for"] as const;
+const MEMORY_LINK_RELATIONSHIP_SET = new Set<string>(MEMORY_LINK_RELATIONSHIPS);
+const MEMORY_LINK_INFER_RULES = ["experience_temporal_after", "thought_supersedes", "experience_refs"] as const;
+const MEMORY_LINK_INFER_RULE_SET = new Set<string>(MEMORY_LINK_INFER_RULES);
 
 function isValidTimestamp(value: string): boolean {
   return !Number.isNaN(Date.parse(value));
@@ -210,6 +225,36 @@ function serializeExperience(experience: ExperienceRow & { similarity?: number }
     created_at: experience.created_at.toISOString(),
     ...(typeof experience.similarity === "number" ? { similarity: experience.similarity } : {}),
   };
+}
+
+function serializeMemoryLink(link: MemoryLinkRow) {
+  return {
+    id: link.id,
+    bank_id: link.bank_id,
+    source_type: link.source_type,
+    source_id: link.source_id,
+    target_type: link.target_type,
+    target_id: link.target_id,
+    relationship: link.relationship,
+    weight: link.weight,
+    inferred: link.inferred,
+    created_at: link.created_at.toISOString(),
+  };
+}
+
+function parseOptionalBoolean(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  return undefined;
+}
+
+function parseOptionalWeight(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return undefined;
+  return parsed;
 }
 
 function parseBoundedLimit(value: string | undefined, fallback = 50, max = 100): number {
@@ -661,6 +706,175 @@ export function createApi(): Hono {
         { error: "Failed to delete thought", detail: message },
         502
       );
+    }
+  });
+  // ─── Memory Links ───────────────────────────────────────────────────
+
+  app.post("/memory-links", async (c) => {
+    const body = await c.req.json<{
+      bank_id?: string;
+      source_type?: string;
+      source_id?: string;
+      target_type?: string;
+      target_id?: string;
+      relationship?: string;
+      weight?: number;
+      inferred?: boolean;
+    }>();
+
+    if (body.bank_id !== undefined && body.bank_id.trim().length === 0) {
+      return c.json({ error: "bank_id must not be empty" }, 400);
+    }
+    if (!body.source_type || !MEMORY_LINK_SOURCE_TYPE_SET.has(body.source_type)) {
+      return c.json({ error: `source_type must be one of: ${MEMORY_LINK_SOURCE_TYPES.join(", ")}` }, 400);
+    }
+    if (!body.target_type || !MEMORY_LINK_SOURCE_TYPE_SET.has(body.target_type)) {
+      return c.json({ error: `target_type must be one of: ${MEMORY_LINK_SOURCE_TYPES.join(", ")}` }, 400);
+    }
+    if (!body.relationship || !MEMORY_LINK_RELATIONSHIP_SET.has(body.relationship)) {
+      return c.json({ error: `relationship must be one of: ${MEMORY_LINK_RELATIONSHIPS.join(", ")}` }, 400);
+    }
+    if (!body.source_id || !UUID_RE.test(body.source_id)) {
+      return c.json({ error: "source_id must be a valid UUID" }, 400);
+    }
+    if (!body.target_id || !UUID_RE.test(body.target_id)) {
+      return c.json({ error: "target_id must be a valid UUID" }, 400);
+    }
+    const weight = parseOptionalWeight(body.weight);
+    if (body.weight !== undefined && weight === undefined) {
+      return c.json({ error: "weight must be a finite number" }, 400);
+    }
+    if (body.inferred !== undefined && typeof body.inferred !== "boolean") {
+      return c.json({ error: "inferred must be a boolean" }, 400);
+    }
+
+    try {
+      const result = await insertMemoryLink(pool, {
+        bank_id: body.bank_id ?? "openbrain",
+        source_type: body.source_type as MemoryLinkSourceType,
+        source_id: body.source_id,
+        target_type: body.target_type as MemoryLinkSourceType,
+        target_id: body.target_id,
+        relationship: body.relationship as MemoryLinkRelationship,
+        weight,
+        inferred: body.inferred ?? true,
+      });
+      return c.json(serializeMemoryLink(result));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Memory link upsert failed:", message);
+      return c.json({ error: "Failed to upsert memory link", detail: message }, 502);
+    }
+  });
+
+  app.get("/memory-links", async (c) => {
+    const sourceType = c.req.query("source_type");
+    const targetType = c.req.query("target_type");
+    const relationship = c.req.query("relationship");
+    const inferred = parseOptionalBoolean(c.req.query("inferred"));
+
+    if (sourceType !== undefined && !MEMORY_LINK_SOURCE_TYPE_SET.has(sourceType)) {
+      return c.json({ error: `source_type must be one of: ${MEMORY_LINK_SOURCE_TYPES.join(", ")}` }, 400);
+    }
+    if (targetType !== undefined && !MEMORY_LINK_SOURCE_TYPE_SET.has(targetType)) {
+      return c.json({ error: `target_type must be one of: ${MEMORY_LINK_SOURCE_TYPES.join(", ")}` }, 400);
+    }
+    if (relationship !== undefined && !MEMORY_LINK_RELATIONSHIP_SET.has(relationship)) {
+      return c.json({ error: `relationship must be one of: ${MEMORY_LINK_RELATIONSHIPS.join(", ")}` }, 400);
+    }
+    if (c.req.query("inferred") !== undefined && inferred === undefined) {
+      return c.json({ error: "inferred must be true or false" }, 400);
+    }
+    const sourceId = c.req.query("source_id");
+    const targetId = c.req.query("target_id");
+    if (sourceId !== undefined && !UUID_RE.test(sourceId)) {
+      return c.json({ error: "source_id must be a valid UUID" }, 400);
+    }
+    if (targetId !== undefined && !UUID_RE.test(targetId)) {
+      return c.json({ error: "target_id must be a valid UUID" }, 400);
+    }
+
+    try {
+      const results = await listMemoryLinks(pool, {
+        bank_id: c.req.query("bank_id") ?? "openbrain",
+        source_type: sourceType as MemoryLinkSourceType | undefined,
+        source_id: sourceId,
+        target_type: targetType as MemoryLinkSourceType | undefined,
+        target_id: targetId,
+        relationship: relationship as MemoryLinkRelationship | undefined,
+        inferred,
+        limit: parseBoundedLimit(c.req.query("limit"), 50, 500),
+      });
+      return c.json({ count: results.length, results: results.map(serializeMemoryLink) });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Memory link list failed:", message);
+      return c.json({ error: "Failed to list memory links", detail: message }, 502);
+    }
+  });
+
+  app.post("/memory-links/infer", async (c) => {
+    const body = await c.req.json<{
+      bank_id?: string;
+      session_id?: string;
+      rules?: string[];
+    }>();
+
+    if (body.bank_id !== undefined && body.bank_id.trim().length === 0) {
+      return c.json({ error: "bank_id must not be empty" }, 400);
+    }
+    if (body.rules !== undefined && !Array.isArray(body.rules)) {
+      return c.json({ error: "rules must be an array" }, 400);
+    }
+    const requestedRules = body.rules ?? ["experience_temporal_after", "thought_supersedes", "experience_refs"];
+    for (const rule of requestedRules) {
+      if (!MEMORY_LINK_INFER_RULE_SET.has(rule)) {
+        return c.json({ error: `rules must contain only: ${MEMORY_LINK_INFER_RULES.join(", ")}` }, 400);
+      }
+    }
+
+    const bankId = body.bank_id ?? "openbrain";
+    const results: MemoryLinkRow[] = [];
+    const counts: Record<string, number> = {};
+    try {
+      if (requestedRules.includes("experience_temporal_after")) {
+        const links = await inferExperienceTemporalLinks(pool, { bank_id: bankId, session_id: body.session_id });
+        counts.experience_temporal_after = links.length;
+        results.push(...links);
+      }
+      if (requestedRules.includes("thought_supersedes")) {
+        const links = await inferSupersedesMemoryLinks(pool, { bank_id: bankId });
+        counts.thought_supersedes = links.length;
+        results.push(...links);
+      }
+      if (requestedRules.includes("experience_refs")) {
+        const links = await inferExperienceReferenceLinks(pool, { bank_id: bankId, session_id: body.session_id });
+        counts.experience_refs = links.length;
+        results.push(...links);
+      }
+      return c.json({ count: results.length, rules: counts, results: results.map(serializeMemoryLink) });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Memory link inference failed:", message);
+      return c.json({ error: "Failed to infer memory links", detail: message }, 502);
+    }
+  });
+
+  app.get("/memory-links/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
+    try {
+      const result = await getMemoryLink(pool, id);
+      if (!result) {
+        return c.json({ error: `Memory link not found: ${id}` }, 404);
+      }
+      return c.json(serializeMemoryLink(result));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Memory link fetch failed:", message);
+      return c.json({ error: "Failed to fetch memory link", detail: message }, 502);
     }
   });
 
