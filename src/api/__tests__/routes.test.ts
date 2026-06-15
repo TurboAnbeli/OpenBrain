@@ -52,6 +52,10 @@ const mockUpdateDocument = vi.fn();
 const mockReplaceDocumentChunks = vi.fn();
 const mockListDocumentChunks = vi.fn();
 const mockSearchDocumentChunks = vi.fn();
+const mockInsertConsolidatedObservation = vi.fn();
+const mockGetConsolidatedObservation = vi.fn();
+const mockSearchConsolidatedObservations = vi.fn();
+const mockUpdateConsolidatedObservation = vi.fn();
 
 vi.mock("../../db/queries.js", () => ({
   insertThought: (...args: any[]) => mockInsertThought(...args),
@@ -71,6 +75,10 @@ vi.mock("../../db/queries.js", () => ({
   replaceDocumentChunks: (...args: any[]) => mockReplaceDocumentChunks(...args),
   listDocumentChunks: (...args: any[]) => mockListDocumentChunks(...args),
   searchDocumentChunks: (...args: any[]) => mockSearchDocumentChunks(...args),
+  insertConsolidatedObservation: (...args: any[]) => mockInsertConsolidatedObservation(...args),
+  getConsolidatedObservation: (...args: any[]) => mockGetConsolidatedObservation(...args),
+  searchConsolidatedObservations: (...args: any[]) => mockSearchConsolidatedObservations(...args),
+  updateConsolidatedObservation: (...args: any[]) => mockUpdateConsolidatedObservation(...args),
 }));
 
 import { createApi } from "../routes.js";
@@ -744,6 +752,155 @@ describe("REST API Routes", () => {
     });
     expect(res.status).toBe(200);
     expect(mockSearchDocumentChunks.mock.calls[0]![2].limit).toBe(100);
+  });
+
+  // ─── Consolidated Observations ───────────────────────────────────────────────────
+
+  it("POST /consolidated-observations creates a first-class observation row", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockInsertConsolidatedObservation.mockResolvedValueOnce({
+      id: "obs-123",
+      bank_id: "openbrain",
+      content: "Consolidated one-brain note",
+      proof_count: 2,
+      source_memory_ids: [
+        "a1b2c3d4-1234-5678-9abc-def012345678",
+        "11111111-2222-3333-4444-555555555555",
+      ],
+      tags: ["strategy"],
+      history: [],
+      trend: "stable",
+      trend_computed_at: createdAt,
+      project: "one-brain",
+      created_by: "ryan",
+      archived: false,
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+
+    const res = await app.request("/consolidated-observations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "Consolidated one-brain note",
+        source_memory_ids: [
+          "a1b2c3d4-1234-5678-9abc-def012345678",
+          "11111111-2222-3333-4444-555555555555",
+        ],
+        tags: ["strategy"],
+        trend: "stable",
+        project: "one-brain",
+        created_by: "ryan",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockGenerateEmbedding).toHaveBeenCalledWith("Consolidated one-brain note");
+    expect(mockInsertConsolidatedObservation).toHaveBeenCalled();
+    const insertArg = mockInsertConsolidatedObservation.mock.calls[0]![1];
+    expect(insertArg.proof_count).toBe(2);
+    expect(insertArg.project).toBe("one-brain");
+  });
+
+  it("POST /consolidated-observations/search embeds the query and returns matches", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockSearchConsolidatedObservations.mockResolvedValueOnce([
+      {
+        id: "obs-123",
+        bank_id: "openbrain",
+        content: "Consolidated one-brain note",
+        proof_count: 2,
+        source_memory_ids: [],
+        source_quotes: {},
+        tags: ["strategy"],
+        history: [],
+        trend: "stable",
+        trend_computed_at: null,
+        project: "one-brain",
+        created_by: "ryan",
+        archived: false,
+        similarity: 0.87,
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+    ]);
+
+    const res = await app.request("/consolidated-observations/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "one-brain strategy", project: "one-brain", limit: 5 }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { count: number; results: Array<{ similarity: number }> };
+    expect(body.count).toBe(1);
+    expect(body.results[0]!.similarity).toBe(0.87);
+    expect(mockGenerateEmbedding).toHaveBeenCalledWith("one-brain strategy");
+    expect(mockSearchConsolidatedObservations.mock.calls[0]![2].project).toBe("one-brain");
+  });
+
+  it("GET /consolidated-observations/:id returns the observation payload", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockGetConsolidatedObservation.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      bank_id: "openbrain",
+      content: "Consolidated one-brain note",
+      proof_count: 2,
+      source_memory_ids: [],
+      tags: ["strategy"],
+      history: [],
+      trend: "stable",
+      trend_computed_at: null,
+      project: "one-brain",
+      created_by: "ryan",
+      archived: false,
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+
+    const res = await app.request("/consolidated-observations/a1b2c3d4-1234-5678-9abc-def012345678");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; content: string };
+    expect(body.id).toBe("a1b2c3d4-1234-5678-9abc-def012345678");
+    expect(body.content).toBe("Consolidated one-brain note");
+  });
+
+  it("PUT /consolidated-observations/:id updates the observation and re-embeds changed content", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockUpdateConsolidatedObservation.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      bank_id: "openbrain",
+      content: "Updated observation",
+      proof_count: 3,
+      source_memory_ids: [],
+      tags: ["strategy"],
+      history: [{ previous_content: "Consolidated one-brain note" }],
+      trend: "strengthening",
+      trend_computed_at: null,
+      project: "one-brain",
+      created_by: "ryan",
+      archived: false,
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+
+    const res = await app.request("/consolidated-observations/a1b2c3d4-1234-5678-9abc-def012345678", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "Updated observation",
+        proof_count: 3,
+        trend: "strengthening",
+        edit_reason: "refresh with more evidence",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockGenerateEmbedding).toHaveBeenCalledWith("Updated observation");
+    const updateArg = mockUpdateConsolidatedObservation.mock.calls[0]![2];
+    expect(updateArg.proof_count).toBe(3);
+    expect(updateArg.edit_reason).toBe("refresh with more evidence");
   });
 
   // ─── GET /stats ────────────────────────────────────────────────────

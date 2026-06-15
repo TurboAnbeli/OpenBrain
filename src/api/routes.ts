@@ -30,12 +30,17 @@ import {
   replaceDocumentChunks,
   listDocumentChunks,
   searchDocumentChunks,
+  insertConsolidatedObservation,
+  getConsolidatedObservation,
+  searchConsolidatedObservations,
+  updateConsolidatedObservation,
   type ListFilters,
   type BatchThoughtInput,
   type SearchResult,
   type DocumentKind,
   type DocumentIntent,
   type DocumentRow,
+  type ConsolidatedObservationRow,
 } from "../db/queries.js";
 import { getEmbedder } from "../embedder/index.js";
 import { hasSpecificityMarker, applyRecencyBoost, overfetchLimit } from "./recency_boost.js";
@@ -98,8 +103,10 @@ const DOCUMENT_INTENTS: DocumentIntent[] = [
   "operational_log",
   "transitional_archive",
 ];
+const CONSOLIDATED_OBSERVATION_TRENDS = ["strengthening", "stable", "weakening", "stale"] as const;
 const DOCUMENT_KIND_SET = new Set<string>(DOCUMENT_KINDS);
 const DOCUMENT_INTENT_SET = new Set<string>(DOCUMENT_INTENTS);
+const CONSOLIDATED_OBSERVATION_TREND_SET = new Set<string>(CONSOLIDATED_OBSERVATION_TRENDS);
 
 function isValidTimestamp(value: string): boolean {
   return !Number.isNaN(Date.parse(value));
@@ -132,6 +139,27 @@ function serializeDocument(document: DocumentRow) {
     status: document.status,
     created_at: document.created_at.toISOString(),
     updated_at: document.updated_at.toISOString(),
+  };
+}
+
+function serializeConsolidatedObservation(observation: ConsolidatedObservationRow & { similarity?: number }) {
+  return {
+    id: observation.id,
+    bank_id: observation.bank_id ?? null,
+    content: observation.content,
+    proof_count: observation.proof_count,
+    source_memory_ids: observation.source_memory_ids ?? [],
+    source_quotes: observation.source_quotes ?? {},
+    tags: observation.tags ?? [],
+    history: observation.history ?? [],
+    trend: observation.trend ?? null,
+    trend_computed_at: serializeOptionalTimestamp(observation.trend_computed_at),
+    project: observation.project ?? null,
+    created_by: observation.created_by ?? null,
+    archived: observation.archived,
+    created_at: observation.created_at.toISOString(),
+    updated_at: observation.updated_at.toISOString(),
+    ...(typeof observation.similarity === "number" ? { similarity: observation.similarity } : {}),
   };
 }
 
@@ -580,15 +608,12 @@ export function createApi(): Hono {
     }
   });
 
-  // ─── Consolidate Observations ────────────────────────────────────────
+  // ─── Observations ───────────────────────────────────────────────────
 
-  app.post("/observations", async (c) => {
-    const body = await c.req.json<{
-      thought_ids: string[];
-      project?: string;
-      created_by?: string;
-    }>();
-
+  async function consolidateObservation(
+    body: { thought_ids: string[]; project?: string; created_by?: string },
+    c: any
+  ) {
     if (!Array.isArray(body.thought_ids) || body.thought_ids.length < 2) {
       return c.json({ error: "thought_ids must be an array of at least 2 UUIDs" }, 400);
     }
@@ -622,17 +647,20 @@ export function createApi(): Hono {
         embedder.generateEmbedding(synthesis),
         embedder.extractMetadata(synthesis),
       ]);
-      const fullMetadata = {
-        ...metadata,
-        type: "observation" as const,
-        source: "observations-api",
-        embedder_version: embedder.getVersion(),
-        consolidates: sources.map((s) => s.id),
-      };
 
-      const result = await insertThought(
-        pool, synthesis, embedding, fullMetadata, body.project, undefined, body.created_by
-      );
+      const result = await insertConsolidatedObservation(pool, {
+        content: synthesis,
+        embedding,
+        proof_count: sources.length,
+        source_memory_ids: sources.map((s) => s.id),
+        source_quotes: Object.fromEntries(sources.map((s) => [s.id, s.content])),
+        tags: metadata.topics ?? [],
+        history: [],
+        trend: null,
+        trend_computed_at: null,
+        project: body.project,
+        created_by: body.created_by,
+      });
       const archived = await archiveThoughts(pool, sources.map((s) => s.id));
 
       return c.json({
@@ -648,8 +676,222 @@ export function createApi(): Hono {
         502
       );
     }
+  }
+
+  app.post("/consolidated-observations", async (c) => {
+    const body = await c.req.json<{
+      content?: string;
+      bank_id?: string;
+      proof_count?: number;
+      source_memory_ids?: string[];
+      source_quotes?: Record<string, string>;
+      tags?: unknown[];
+      history?: unknown[];
+      trend?: (typeof CONSOLIDATED_OBSERVATION_TRENDS)[number] | null;
+      trend_computed_at?: string | null;
+      project?: string;
+      created_by?: string;
+      archived?: boolean;
+      thought_ids?: string[];
+    }>();
+
+    if (Array.isArray(body.thought_ids)) {
+      return consolidateObservation(
+        { thought_ids: body.thought_ids, project: body.project, created_by: body.created_by },
+        c
+      );
+    }
+
+    if (!body.content || body.content.trim().length === 0) {
+      return c.json({ error: "content is required" }, 400);
+    }
+    if (body.bank_id !== undefined && body.bank_id.trim().length === 0) {
+      return c.json({ error: "bank_id must not be empty" }, 400);
+    }
+    if (body.trend !== undefined && body.trend !== null && !CONSOLIDATED_OBSERVATION_TREND_SET.has(body.trend)) {
+      return c.json({ error: `trend must be one of: ${CONSOLIDATED_OBSERVATION_TRENDS.join(", ")}` }, 400);
+    }
+    if (body.trend_computed_at !== undefined && body.trend_computed_at !== null && !isValidTimestamp(body.trend_computed_at)) {
+      return c.json({ error: "trend_computed_at must be a valid ISO timestamp" }, 400);
+    }
+    if (body.source_memory_ids !== undefined && !Array.isArray(body.source_memory_ids)) {
+      return c.json({ error: "source_memory_ids must be an array of UUIDs" }, 400);
+    }
+    for (const id of body.source_memory_ids ?? []) {
+      if (!UUID_RE.test(id)) {
+        return c.json({ error: `invalid UUID: ${id}` }, 400);
+      }
+    }
+
+    try {
+      const embedding = await embedder.generateEmbedding(body.content);
+      const result = await insertConsolidatedObservation(pool, {
+        content: body.content,
+        embedding,
+        bank_id: body.bank_id,
+        proof_count: body.proof_count ?? Math.max(body.source_memory_ids?.length ?? 0, 1),
+        source_memory_ids: body.source_memory_ids ?? [],
+        source_quotes: body.source_quotes ?? {},
+        tags: body.tags ?? [],
+        history: body.history ?? [],
+        trend: body.trend ?? null,
+        trend_computed_at: body.trend_computed_at,
+        project: body.project,
+        created_by: body.created_by,
+        archived: body.archived ?? false,
+      });
+
+      return c.json(serializeConsolidatedObservation(result));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Observation create failed:", message);
+      return c.json(
+        { error: "Failed to create observation", detail: message },
+        502
+      );
+    }
   });
 
+  app.post("/consolidated-observations/consolidate", async (c) => {
+    const body = await c.req.json<{
+      thought_ids: string[];
+      project?: string;
+      created_by?: string;
+    }>();
+    return consolidateObservation(body, c);
+  });
+
+  app.post("/consolidated-observations/search", async (c) => {
+    const body = await c.req.json<{
+      query: string;
+      bank_id?: string;
+      project?: string;
+      created_by?: string;
+      include_archived?: boolean;
+      limit?: number;
+      threshold?: number;
+    }>();
+
+    if (!body.query || body.query.trim().length === 0) {
+      return c.json({ error: "query is required" }, 400);
+    }
+
+    const limit = Math.min(Math.max(body.limit ?? 10, 1), 100);
+
+    try {
+      const embedding = await embedder.generateEmbedding(body.query);
+      const results = await searchConsolidatedObservations(pool, embedding, {
+        bank_id: body.bank_id,
+        project: body.project,
+        created_by: body.created_by,
+        include_archived: body.include_archived,
+        limit,
+        threshold: body.threshold,
+      });
+      return c.json({
+        query: body.query,
+        count: results.length,
+        results: results.map((result) => serializeConsolidatedObservation(result)),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Observation search failed:", message);
+      return c.json(
+        { error: "Failed to search observations", detail: message },
+        502
+      );
+    }
+  });
+
+  app.get("/consolidated-observations/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
+
+    try {
+      const result = await getConsolidatedObservation(pool, id);
+      if (!result) {
+        return c.json({ error: `Observation not found: ${id}` }, 404);
+      }
+      return c.json(serializeConsolidatedObservation(result));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Observation fetch failed:", message);
+      return c.json(
+        { error: "Failed to fetch observation", detail: message },
+        502
+      );
+    }
+  });
+
+  app.put("/consolidated-observations/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
+
+    const body = await c.req.json<{
+      content?: string;
+      proof_count?: number;
+      source_memory_ids?: string[];
+      source_quotes?: Record<string, string>;
+      tags?: unknown[];
+      history?: unknown[];
+      trend?: (typeof CONSOLIDATED_OBSERVATION_TRENDS)[number] | null;
+      trend_computed_at?: string | null;
+      project?: string | null;
+      archived?: boolean;
+      edit_reason?: string;
+    }>();
+
+    if (body.content !== undefined && body.content.trim().length === 0) {
+      return c.json({ error: "content must not be empty" }, 400);
+    }
+    if (body.trend !== undefined && body.trend !== null && !CONSOLIDATED_OBSERVATION_TREND_SET.has(body.trend)) {
+      return c.json({ error: `trend must be one of: ${CONSOLIDATED_OBSERVATION_TRENDS.join(", ")}` }, 400);
+    }
+    if (body.trend_computed_at !== undefined && body.trend_computed_at !== null && !isValidTimestamp(body.trend_computed_at)) {
+      return c.json({ error: "trend_computed_at must be a valid ISO timestamp" }, 400);
+    }
+    if (body.source_memory_ids !== undefined && !Array.isArray(body.source_memory_ids)) {
+      return c.json({ error: "source_memory_ids must be an array of UUIDs" }, 400);
+    }
+    for (const sourceId of body.source_memory_ids ?? []) {
+      if (!UUID_RE.test(sourceId)) {
+        return c.json({ error: `invalid UUID: ${sourceId}` }, 400);
+      }
+    }
+
+    try {
+      const embedding = body.content ? await embedder.generateEmbedding(body.content) : undefined;
+      const result = await updateConsolidatedObservation(pool, id, {
+        content: body.content,
+        embedding,
+        proof_count: body.proof_count,
+        source_memory_ids: body.source_memory_ids,
+        source_quotes: body.source_quotes,
+        tags: body.tags,
+        history: body.history,
+        trend: body.trend,
+        trend_computed_at: body.trend_computed_at,
+        project: body.project,
+        archived: body.archived,
+        edit_reason: body.edit_reason,
+      });
+      return c.json(serializeConsolidatedObservation(result));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("Observation not found")) {
+        return c.json({ error: message }, 404);
+      }
+      console.error("[api] Observation update failed:", message);
+      return c.json(
+        { error: "Failed to update observation", detail: message },
+        502
+      );
+    }
+  });
 
   // ─── Source Documents ─────────────────────────────────────────────
 

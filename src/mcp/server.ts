@@ -28,6 +28,7 @@ import {
   getThoughtsByIds,
   archiveThoughts,
   searchThoughtsByEntity,
+  insertConsolidatedObservation,
   type ListFilters,
   type BatchThoughtInput,
   type SearchResult,
@@ -793,15 +794,20 @@ export function createMcpServer(): Server {
             embedder.generateEmbedding(synthesis),
             embedder.extractMetadata(synthesis),
           ]);
-          const fullObsMetadata = {
-            ...obsMetadata,
-            type: "observation",
-            source: "mcp",
-            embedder_version: embedder.getVersion(),
-            consolidates: sources.map((s) => s.id),
-          };
 
-          const obsResult = await insertThought(pool, synthesis, obsEmbedding, fullObsMetadata, project, undefined, created_by);
+          const obsResult = await insertConsolidatedObservation(pool, {
+            content: synthesis,
+            embedding: obsEmbedding,
+            proof_count: sources.length,
+            source_memory_ids: sources.map((s) => s.id),
+            source_quotes: Object.fromEntries(sources.map((s) => [s.id, s.content])),
+            tags: obsMetadata.topics ?? [],
+            history: [],
+            trend: null,
+            trend_computed_at: null,
+            project,
+            created_by,
+          });
           const archived = await archiveThoughts(pool, sources.map((s) => s.id));
 
           const durCons = Date.now() - t0;

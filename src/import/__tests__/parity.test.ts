@@ -68,8 +68,15 @@ describe("import parity reporting", () => {
       ryelSearch,
     });
 
-    expect(report.summary).toMatchObject({ query_count: 1, overlap_at_5: 1 });
-    expect(report.queries[0]!.query).toBe("hybrid memory");
+    expect(report.summary).toMatchObject({ query_count: 1, overlap_at_5: 1, deduped_overlap_at_5: 1 });
+    expect(report.queries[0]).toMatchObject({
+      query: "hybrid memory",
+      deduped_overlap: 1,
+      openbrain_unique_sources_at_5: 1,
+      ryel_unique_sources_at_5: 1,
+      openbrain_duplicate_sources_at_5: 0,
+      ryel_duplicate_sources_at_5: 0,
+    });
     expect(fetcher).toHaveBeenCalledWith("http://127.0.0.1:8000/documents/search", expect.objectContaining({ method: "POST" }));
   });
 
@@ -79,10 +86,12 @@ describe("import parity reporting", () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify({
       results: [
         { document_title: "Hybrid Memory", document_source_uri: "file:///vault/hybrid_memory.md", score: 0.8 },
+        { document_title: "Hybrid Memory", document_source_uri: "file:///vault/hybrid_memory.md", score: 0.7 },
       ],
     }), { status: 200 }));
     const ryelSearch = vi.fn(async () => [
-      { title: "Hybrid Memory", path: "/vault/hybrid_memory.md", score: 0.7 },
+      { title: "Hybrid Memory", path: "/vault/hybrid_memory.md", source_uri: "file:///vault/hybrid_memory.md", score: 0.7 },
+      { title: "Hybrid Memory", path: "/vault/hybrid_memory.md", source_uri: "file:///vault/hybrid_memory.md", score: 0.6 },
     ]);
 
     const report = await runParityReport({
@@ -92,7 +101,15 @@ describe("import parity reporting", () => {
       ryelSearch,
     });
 
-    expect(report.summary.overlap_at_5).toBe(1);
+    expect(report.summary.overlap_at_5).toBe(2);
+    expect(report.summary.deduped_overlap_at_5).toBe(1);
+    expect(report.queries[0]).toMatchObject({
+      deduped_overlap: 1,
+      openbrain_unique_sources_at_5: 1,
+      ryel_unique_sources_at_5: 1,
+      openbrain_duplicate_sources_at_5: 1,
+      ryel_duplicate_sources_at_5: 1,
+    });
   });
 
   it("shell-quotes ryel command queries with punctuation", async () => {
@@ -110,8 +127,18 @@ describe("import parity reporting", () => {
     try {
       const out = join(dir, "report.json");
       await writeParityReport(out, {
-        summary: { query_count: 1, overlap_at_5: 1 },
-        queries: [{ query: "hybrid", openbrain: [], ryel: [], overlap: 1 }],
+        summary: { query_count: 1, overlap_at_5: 1, deduped_overlap_at_5: 1 },
+        queries: [{
+          query: "hybrid",
+          openbrain: [],
+          ryel: [],
+          overlap: 1,
+          deduped_overlap: 1,
+          openbrain_unique_sources_at_5: 0,
+          ryel_unique_sources_at_5: 0,
+          openbrain_duplicate_sources_at_5: 0,
+          ryel_duplicate_sources_at_5: 0,
+        }],
       });
       const parsed = JSON.parse(await readFile(out, "utf8"));
       expect(parsed.summary.query_count).toBe(1);

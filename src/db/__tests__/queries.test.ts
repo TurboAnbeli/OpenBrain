@@ -21,9 +21,14 @@ import {
   replaceDocumentChunks,
   listDocumentChunks,
   searchDocumentChunks,
+  insertConsolidatedObservation,
+  getConsolidatedObservation,
+  searchConsolidatedObservations,
+  updateConsolidatedObservation,
   type ThoughtMetadata,
   type DocumentInput,
   type DocumentChunkInput,
+  type ConsolidatedObservationInput,
 } from "../queries.js";
 
 // ─── Mock Pool Factory ──────────────────────────────────────────────
@@ -731,5 +736,211 @@ describe("documents", () => {
     expect(sql).toContain("pgp_sym_decrypt(content_enc, $2)");
     expect(sql).toContain("ORDER BY chunk_index ASC");
     expect(mockQuery.mock.calls[0]![1]).toHaveLength(2);
+  });
+});
+
+// ─── Consolidated Observations ───────────────────────────────────────────────────
+
+describe("consolidated observations", () => {
+  const observationInput: ConsolidatedObservationInput = {
+    content: "Consolidated note about one-brain direction.",
+    embedding: [0.11, 0.22, 0.33],
+    bank_id: "openbrain",
+    proof_count: 2,
+    source_memory_ids: [
+      "a1b2c3d4-1234-5678-9abc-def012345678",
+      "11111111-2222-3333-4444-555555555555",
+    ],
+    source_quotes: {
+      "a1b2c3d4-1234-5678-9abc-def012345678": "first quote",
+      "11111111-2222-3333-4444-555555555555": "second quote",
+    },
+    tags: ["strategy", "one-brain"],
+    history: [],
+    trend: "stable",
+    trend_computed_at: "2026-06-15T00:00:00Z",
+    project: "one-brain",
+    created_by: "ryan",
+  };
+
+  it("inserts observations with encrypted content and evidence metadata", async () => {
+    const { pool, mockQuery } = createMockPool();
+    const row = {
+      id: "obs-123",
+      bank_id: observationInput.bank_id,
+      content: observationInput.content,
+      proof_count: observationInput.proof_count,
+      source_memory_ids: observationInput.source_memory_ids,
+      source_quotes: {},
+      tags: observationInput.tags,
+      history: observationInput.history,
+      trend: observationInput.trend,
+      trend_computed_at: new Date("2026-06-15T00:00:00Z"),
+      project: observationInput.project,
+      created_by: observationInput.created_by,
+      archived: false,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+    mockQuery.mockResolvedValueOnce({ rows: [row] });
+
+    const result = await insertConsolidatedObservation(pool, observationInput);
+
+    expect(result.id).toBe("obs-123");
+    expect(result.content).toBe(observationInput.content);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("INSERT INTO consolidated_observations");
+    expect(sql).toContain("pgp_sym_encrypt($2, $12)");
+    expect(sql).toContain("source_memory_ids");
+    expect(sql).toContain("source_quotes");
+    expect(sql).toContain("proof_count");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[0]).toBe(observationInput.bank_id);
+    expect(params[1]).toBe(observationInput.content);
+    expect(params[2]).toBe("[0.11,0.22,0.33]");
+    expect(params[3]).toBe(observationInput.proof_count);
+    expect(params[4]).toEqual(observationInput.source_memory_ids);
+    expect(params[5]).toEqual(JSON.stringify(observationInput.source_quotes ?? {}));
+  });
+
+  it("fetches observations by id with decrypted content", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: "obs-123",
+        bank_id: "openbrain",
+        content: "Consolidated note",
+        proof_count: 2,
+        source_memory_ids: [],
+        source_quotes: {},
+        tags: [],
+        history: [],
+        trend: "stable",
+        trend_computed_at: null,
+        project: "one-brain",
+        created_by: "ryan",
+        archived: false,
+        created_at: new Date(),
+        updated_at: new Date(),
+      }],
+    });
+
+    const result = await getConsolidatedObservation(pool, "obs-123");
+
+    expect(result?.id).toBe("obs-123");
+    expect(result?.content).toBe("Consolidated note");
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("FROM consolidated_observations");
+    expect(sql).toContain("pgp_sym_decrypt(content_enc, $2)");
+  });
+
+  it("searches active observations by vector similarity with bank/project filters", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: "obs-123",
+        bank_id: "openbrain",
+        content: "Consolidated note",
+        proof_count: 2,
+        source_memory_ids: [],
+        source_quotes: {},
+        tags: [],
+        history: [],
+        trend: "stable",
+        trend_computed_at: null,
+        project: "one-brain",
+        created_by: "ryan",
+        archived: false,
+        similarity: 0.88,
+        created_at: new Date(),
+        updated_at: new Date(),
+      }],
+    });
+
+    const results = await searchConsolidatedObservations(pool, [0.1, 0.2, 0.3], {
+      bank_id: "openbrain",
+      project: "one-brain",
+      created_by: "ryan",
+      limit: 5,
+      threshold: 0.4,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.similarity).toBe(0.88);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("FROM consolidated_observations");
+    expect(sql).toContain("archived = false");
+    expect(sql).toContain("1 - (embedding <=> $1::vector) AS similarity");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[0]).toBe("[0.1,0.2,0.3]");
+    expect(params[2]).toBe(5);
+    expect(params[3]).toBe(0.4);
+    expect(params[4]).toBe("openbrain");
+    expect(params[5]).toBe("one-brain");
+    expect(params[6]).toBe("ryan");
+  });
+
+  it("updates observations while appending prior state to history", async () => {
+    const { pool, mockConnect } = createMockPool();
+    const client = await mockConnect();
+    const existing = {
+      id: "obs-123",
+      bank_id: "openbrain",
+      content: "Old observation",
+      proof_count: 1,
+      source_memory_ids: ["a1b2c3d4-1234-5678-9abc-def012345678"],
+      source_quotes: { "a1b2c3d4-1234-5678-9abc-def012345678": "old quote" },
+      tags: ["old"],
+      history: [],
+      trend: "stable",
+      trend_computed_at: null,
+      project: "one-brain",
+      created_by: "ryan",
+      archived: false,
+      created_at: new Date(),
+      updated_at: new Date("2026-06-15T00:00:00Z"),
+    };
+    const updated = {
+      ...existing,
+      content: "New observation",
+      proof_count: 2,
+      source_memory_ids: [
+        "a1b2c3d4-1234-5678-9abc-def012345678",
+        "11111111-2222-3333-4444-555555555555",
+      ],
+      source_quotes: { "11111111-2222-3333-4444-555555555555": "new quote" },
+      tags: ["new"],
+      history: [{ previous_content: "Old observation", edit_reason: "refresh" }],
+    };
+    client.query
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ rows: [existing], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [updated], rowCount: 1 })
+      .mockResolvedValueOnce({});
+
+    const result = await updateConsolidatedObservation(pool, "obs-123", {
+      content: "New observation",
+      embedding: [0.9, 0.8, 0.7],
+      proof_count: 2,
+      source_memory_ids: updated.source_memory_ids,
+      source_quotes: updated.source_quotes,
+      tags: ["new"],
+      edit_reason: "refresh",
+    });
+
+    expect(result.content).toBe("New observation");
+    expect(client.query.mock.calls[0]![0]).toBe("BEGIN");
+    expect(client.query.mock.calls[1]![0] as string).toContain("FOR UPDATE");
+    const updateSql = client.query.mock.calls[2]![0] as string;
+    expect(updateSql).toContain("UPDATE consolidated_observations");
+    expect(updateSql).toContain("source_quotes = $6::jsonb");
+    expect(updateSql).toContain(`source_memory_ids,
+                 source_quotes,`);
+    expect(client.query.mock.calls[3]![0]).toBe("COMMIT");
+    const updateParams = client.query.mock.calls[2]![1] as unknown[];
+    expect(updateParams[3]).toBe(2);
+    expect(updateParams[4]).toEqual(updated.source_memory_ids);
+    expect(updateParams[5]).toEqual(JSON.stringify(updated.source_quotes));
+    expect(result.source_quotes).toEqual(updated.source_quotes);
   });
 });

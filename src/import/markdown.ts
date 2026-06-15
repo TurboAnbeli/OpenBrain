@@ -88,10 +88,19 @@ export interface ParityQueryResult {
   openbrain: ParitySearchResult[];
   ryel: ParitySearchResult[];
   overlap: number;
+  deduped_overlap: number;
+  openbrain_unique_sources_at_5: number;
+  ryel_unique_sources_at_5: number;
+  openbrain_duplicate_sources_at_5: number;
+  ryel_duplicate_sources_at_5: number;
 }
 
 export interface ParityReport {
-  summary: { query_count: number; overlap_at_5: number };
+  summary: {
+    query_count: number;
+    overlap_at_5: number;
+    deduped_overlap_at_5: number;
+  };
   queries: ParityQueryResult[];
 }
 
@@ -514,6 +523,22 @@ function resultKey(result: ParitySearchResult): string {
   return result.document_title ?? result.title ?? "";
 }
 
+function uniqueResultKeys(results: ParitySearchResult[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const result of results) {
+    const key = resultKey(result);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(key);
+  }
+  return unique;
+}
+
+function duplicateSourceCount(results: ParitySearchResult[]): number {
+  return results.length - uniqueResultKeys(results).length;
+}
+
 export async function evaluateImportParity(options: {
   queries: string[];
   apiBaseUrl: string;
@@ -540,15 +565,31 @@ export async function evaluateImportParity(options: {
     });
     const openBrainPayload = await parseJsonResponse<{ results: ParitySearchResult[] }>(response);
     const ryel = await options.ryelSearch(query);
-    const openKeys = new Set(openBrainPayload.results.slice(0, 5).map(resultKey));
-    const overlap = ryel.slice(0, 5).filter((result) => openKeys.has(resultKey(result))).length;
-    queries.push({ query, openbrain: openBrainPayload.results, ryel, overlap });
+    const openbrainTop5 = openBrainPayload.results.slice(0, 5);
+    const ryelTop5 = ryel.slice(0, 5);
+    const openKeys = new Set(openbrainTop5.map(resultKey));
+    const overlap = ryelTop5.filter((result) => openKeys.has(resultKey(result))).length;
+    const openUniqueKeys = uniqueResultKeys(openbrainTop5);
+    const ryelUniqueKeys = uniqueResultKeys(ryelTop5);
+    const dedupedOverlap = ryelUniqueKeys.filter((key) => new Set(openUniqueKeys).has(key)).length;
+    queries.push({
+      query,
+      openbrain: openBrainPayload.results,
+      ryel,
+      overlap,
+      deduped_overlap: dedupedOverlap,
+      openbrain_unique_sources_at_5: openUniqueKeys.length,
+      ryel_unique_sources_at_5: ryelUniqueKeys.length,
+      openbrain_duplicate_sources_at_5: duplicateSourceCount(openbrainTop5),
+      ryel_duplicate_sources_at_5: duplicateSourceCount(ryelTop5),
+    });
   }
 
   return {
     summary: {
       query_count: queries.length,
       overlap_at_5: queries.reduce((sum, item) => sum + item.overlap, 0),
+      deduped_overlap_at_5: queries.reduce((sum, item) => sum + item.deduped_overlap, 0),
     },
     queries,
   };

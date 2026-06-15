@@ -156,6 +156,73 @@ export interface DocumentChunkSearchResult extends DocumentChunkRow {
   score: number;
 }
 
+// ─── Consolidated Observations ─────────────────────────────────────────────────────
+
+export type ConsolidatedObservationTrend = "strengthening" | "stable" | "weakening" | "stale";
+export type ConsolidatedObservationTimestampInput = string | Date;
+
+export interface ConsolidatedObservationInput {
+  content: string;
+  embedding: number[];
+  bank_id?: string;
+  proof_count?: number;
+  source_memory_ids?: string[];
+  source_quotes?: Record<string, string>;
+  tags?: unknown[];
+  history?: unknown[];
+  trend?: ConsolidatedObservationTrend | null;
+  trend_computed_at?: ConsolidatedObservationTimestampInput | null;
+  project?: string;
+  created_by?: string;
+  archived?: boolean;
+}
+
+export interface ConsolidatedObservationRow {
+  id: string;
+  bank_id?: string | null;
+  content: string;
+  proof_count: number;
+  source_memory_ids: string[];
+  source_quotes?: Record<string, string>;
+  tags: unknown[];
+  history: unknown[];
+  trend?: ConsolidatedObservationTrend | null;
+  trend_computed_at?: Date | null;
+  project?: string | null;
+  created_by?: string | null;
+  archived: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface ConsolidatedObservationSearchOptions {
+  bank_id?: string;
+  project?: string;
+  created_by?: string;
+  include_archived?: boolean;
+  limit?: number;
+  threshold?: number;
+}
+
+export interface ConsolidatedObservationSearchResult extends ConsolidatedObservationRow {
+  similarity: number;
+}
+
+export interface ConsolidatedObservationUpdateInput {
+  content?: string;
+  embedding?: number[];
+  proof_count?: number;
+  source_memory_ids?: string[];
+  source_quotes?: Record<string, string>;
+  tags?: unknown[];
+  history?: unknown[];
+  trend?: ConsolidatedObservationTrend | null;
+  trend_computed_at?: ConsolidatedObservationTimestampInput | null;
+  project?: string | null;
+  archived?: boolean;
+  edit_reason?: string;
+}
+
 export interface ThoughtStats {
   total_thoughts: number;
   types: Record<string, number>;
@@ -1114,4 +1181,298 @@ export async function searchDocumentChunks(
     [embeddingStr, key, limit, threshold, project, sourceType]
   );
   return rows;
+}
+
+function serializeConsolidatedObservationTimestamp(
+  value: ConsolidatedObservationTimestampInput | null | undefined
+): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+}
+
+export async function insertConsolidatedObservation(
+  pool: pg.Pool,
+  observation: ConsolidatedObservationInput
+): Promise<ConsolidatedObservationRow> {
+  const key = getCipherKey();
+  const embeddingStr = `[${observation.embedding.join(",")}]`;
+  const sourceMemoryIds = observation.source_memory_ids ?? [];
+  const proofCount = observation.proof_count ?? Math.max(sourceMemoryIds.length, 1);
+  const { rows } = await pool.query<ConsolidatedObservationRow>(
+    `INSERT INTO consolidated_observations (
+       bank_id,
+       content_enc,
+       embedding,
+       proof_count,
+       source_memory_ids,
+       source_quotes,
+       tags,
+       history,
+       trend,
+       trend_computed_at,
+       project,
+       created_by,
+       archived,
+       fts
+     )
+     VALUES (
+       COALESCE($1, 'openbrain'),
+       pgp_sym_encrypt($2, $12),
+       $3::vector,
+       $4,
+       $5::uuid[],
+       $6::jsonb,
+       $7::jsonb,
+       $8::jsonb,
+       $9,
+       $10,
+       $11,
+       $13,
+       COALESCE($14, false),
+       to_tsvector('english', $2)
+     )
+     RETURNING id,
+               bank_id,
+               pgp_sym_decrypt(content_enc, $12)::text AS content,
+               proof_count,
+               source_memory_ids,
+               source_quotes,
+               tags,
+               history,
+               trend,
+               trend_computed_at,
+               project,
+               created_by,
+               archived,
+               created_at,
+               updated_at`,
+    [
+      observation.bank_id ?? null,
+      observation.content,
+      embeddingStr,
+      proofCount,
+      sourceMemoryIds,
+      JSON.stringify(observation.source_quotes ?? {}),
+      JSON.stringify(observation.tags ?? []),
+      JSON.stringify(observation.history ?? []),
+      observation.trend ?? null,
+      serializeConsolidatedObservationTimestamp(observation.trend_computed_at),
+      observation.project ?? null,
+      key,
+      observation.created_by ?? null,
+      observation.archived ?? false,
+    ]
+  );
+  return rows[0]!;
+}
+
+export async function getConsolidatedObservation(
+  pool: pg.Pool,
+  id: string
+): Promise<ConsolidatedObservationRow | null> {
+  const key = getCipherKey();
+  const { rows } = await pool.query<ConsolidatedObservationRow>(
+    `SELECT id,
+            bank_id,
+            pgp_sym_decrypt(content_enc, $2)::text AS content,
+            proof_count,
+            source_memory_ids,
+            source_quotes,
+            tags,
+            history,
+            trend,
+            trend_computed_at,
+            project,
+            created_by,
+            archived,
+            created_at,
+            updated_at
+     FROM consolidated_observations
+     WHERE id = $1`,
+    [id, key]
+  );
+  return rows[0] ?? null;
+}
+
+export async function searchConsolidatedObservations(
+  pool: pg.Pool,
+  queryEmbedding: number[],
+  options: ConsolidatedObservationSearchOptions = {}
+): Promise<ConsolidatedObservationSearchResult[]> {
+  const embeddingStr = `[${queryEmbedding.join(",")}]`;
+  const key = getCipherKey();
+  const limit = options.limit ?? 10;
+  const threshold = options.threshold ?? 0.3;
+  const archivedClause = options.include_archived ? "TRUE" : "archived = false";
+
+  const { rows } = await pool.query<ConsolidatedObservationSearchResult>(
+    `SELECT id,
+            bank_id,
+            pgp_sym_decrypt(content_enc, $2)::text AS content,
+            proof_count,
+            source_memory_ids,
+            source_quotes,
+            tags,
+            history,
+            trend,
+            trend_computed_at,
+            project,
+            created_by,
+            archived,
+            1 - (embedding <=> $1::vector) AS similarity,
+            created_at,
+            updated_at
+     FROM consolidated_observations
+     WHERE ${archivedClause}
+       AND embedding IS NOT NULL
+       AND 1 - (embedding <=> $1::vector) >= $4
+       AND ($5::text IS NULL OR bank_id = $5)
+       AND ($6::text IS NULL OR project = $6)
+       AND ($7::text IS NULL OR created_by = $7)
+     ORDER BY embedding <=> $1::vector ASC
+     LIMIT $3`,
+    [
+      embeddingStr,
+      key,
+      limit,
+      threshold,
+      options.bank_id ?? null,
+      options.project ?? null,
+      options.created_by ?? null,
+    ]
+  );
+  return rows;
+}
+
+export async function updateConsolidatedObservation(
+  pool: pg.Pool,
+  id: string,
+  patch: ConsolidatedObservationUpdateInput
+): Promise<ConsolidatedObservationRow> {
+  const client = await pool.connect();
+  const key = getCipherKey();
+
+  try {
+    await client.query("BEGIN");
+
+    const existingResult = await client.query<ConsolidatedObservationRow>(
+      `SELECT id,
+              bank_id,
+              pgp_sym_decrypt(content_enc, $2)::text AS content,
+              proof_count,
+              source_memory_ids,
+              source_quotes,
+              tags,
+              history,
+              trend,
+              trend_computed_at,
+              project,
+              created_by,
+              archived,
+              created_at,
+              updated_at
+       FROM consolidated_observations
+       WHERE id = $1
+       FOR UPDATE`,
+      [id, key]
+    );
+
+    if (!existingResult.rowCount || existingResult.rowCount === 0) {
+      throw new Error(`Observation not found: ${id}`);
+    }
+
+    const existing = existingResult.rows[0]!;
+    const nextContent = patch.content ?? existing.content;
+    const nextEmbedding = patch.embedding ? `[${patch.embedding.join(",")}]` : null;
+    const nextSourceMemoryIds = patch.source_memory_ids ?? existing.source_memory_ids ?? [];
+    const nextProofCount = patch.proof_count ?? existing.proof_count ?? Math.max(nextSourceMemoryIds.length, 1);
+    const nextSourceQuotes = patch.source_quotes ?? existing.source_quotes ?? {};
+    const nextTags = patch.tags ?? existing.tags ?? [];
+    const historyBase = Array.isArray(patch.history) ? patch.history : (existing.history ?? []);
+    const nextHistory = [
+      ...historyBase,
+      {
+        previous_content: existing.content,
+        previous_proof_count: existing.proof_count,
+        previous_source_memory_ids: existing.source_memory_ids ?? [],
+        previous_source_quotes: existing.source_quotes ?? {},
+        previous_tags: existing.tags ?? [],
+        previous_trend: existing.trend ?? null,
+        previous_trend_computed_at: existing.trend_computed_at?.toISOString() ?? null,
+        previous_project: existing.project ?? null,
+        previous_archived: existing.archived,
+        previous_updated_at: existing.updated_at.toISOString(),
+        edit_reason: patch.edit_reason ?? null,
+      },
+    ];
+
+    const { rows, rowCount } = await client.query<ConsolidatedObservationRow>(
+      `UPDATE consolidated_observations
+       SET content_enc = pgp_sym_encrypt($2, $13),
+           embedding = COALESCE($3::vector, embedding),
+           proof_count = $4,
+           source_memory_ids = $5::uuid[],
+           source_quotes = $6::jsonb,
+           tags = $7::jsonb,
+           history = $8::jsonb,
+           trend = $9,
+           trend_computed_at = $10,
+           project = $11,
+           archived = $12,
+           fts = to_tsvector('english', $2)
+       WHERE id = $1
+       RETURNING id,
+                 bank_id,
+                 pgp_sym_decrypt(content_enc, $13)::text AS content,
+                 proof_count,
+                 source_memory_ids,
+                 source_quotes,
+                 tags,
+                 history,
+                 trend,
+                 trend_computed_at,
+                 project,
+                 created_by,
+                 archived,
+                 created_at,
+                 updated_at`,
+      [
+        id,
+        nextContent,
+        nextEmbedding,
+        nextProofCount,
+        nextSourceMemoryIds,
+        JSON.stringify(nextSourceQuotes),
+        JSON.stringify(nextTags),
+        JSON.stringify(nextHistory),
+        patch.trend ?? existing.trend ?? null,
+        serializeConsolidatedObservationTimestamp(
+          patch.trend_computed_at !== undefined
+            ? patch.trend_computed_at
+            : existing.trend_computed_at ?? null
+        ),
+        patch.project !== undefined ? patch.project : existing.project ?? null,
+        patch.archived ?? existing.archived,
+        key,
+      ]
+    );
+
+    if (!rowCount || rowCount === 0) {
+      throw new Error(`Observation not found: ${id}`);
+    }
+
+    await client.query("COMMIT");
+    return rows[0]!;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
