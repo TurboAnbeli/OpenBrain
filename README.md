@@ -973,6 +973,22 @@ npm run typecheck     # Type check without emitting
 npm run lint          # ESLint
 ```
 
+### Markdown import CLI
+
+```bash
+npm run build
+node dist/import/markdown-cli.js --help
+node dist/import/markdown-cli.js --manifest import-report.json --skip-existing path/to/notes/
+node dist/import/markdown-cli.js --apply --manifest import-report.json --skip-existing path/to/notes/
+```
+
+Contract:
+- `stdout` always emits the JSON import report
+- `--manifest` writes the same JSON payload to disk
+- `stderr` is reserved for brief human warnings such as skipped existing or empty markdown files
+
+That split keeps the CLI safe for shell piping and JSON parsers while still surfacing important skip summaries to a human operator.
+
 ### Docker build
 
 ```bash

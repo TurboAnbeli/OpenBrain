@@ -51,7 +51,7 @@ function parseArgs(argv: string[]): CliOptions {
     else if (arg === "--skip-existing") opts.skipExisting = true;
     else if (arg === "--overlap-chars") opts.overlapChars = Number(next());
     else if (arg === "--help" || arg === "-h") {
-      console.log(`Usage: node dist/import/markdown-cli.js [--apply] [--skip-existing] [--manifest out.json] [--api URL] [--project NAME] [--source-type TYPE] <file-or-dir-or-glob>...\n\nDefault is dry-run. Use --apply to POST documents and chunks.`);
+      console.log(`Usage: node dist/import/markdown-cli.js [--apply] [--skip-existing] [--manifest out.json] [--api URL] [--project NAME] [--source-type TYPE] <file-or-dir-or-glob>...\n\nDefault is dry-run. Use --apply to POST documents and chunks.\n\nOutput contract:\n- stdout: JSON report (always machine-readable)\n- --manifest: writes the same JSON report to disk\n- stderr: one-line warnings for skipped existing/empty markdown files`);
       process.exit(0);
     } else {
       opts.files.push(arg);
