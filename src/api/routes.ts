@@ -43,6 +43,7 @@ import {
   insertMemoryLink,
   getMemoryLink,
   listMemoryLinks,
+  expandMemoryLinks,
   inferExperienceTemporalLinks,
   inferSupersedesMemoryLinks,
   inferExperienceReferenceLinks,
@@ -60,6 +61,8 @@ import {
   type MemoryLinkSourceType,
   type MemoryLinkRelationship,
   type MemoryLinkRow,
+  type MemoryLinkExpansionDirectionFilter,
+  type MemoryLinkExpansionRow,
 } from "../db/queries.js";
 import { getEmbedder } from "../embedder/index.js";
 import { hasSpecificityMarker, applyRecencyBoost, overfetchLimit } from "./recency_boost.js";
@@ -138,6 +141,8 @@ const MEMORY_LINK_RELATIONSHIPS = ["temporal_after", "temporal_before", "causal_
 const MEMORY_LINK_RELATIONSHIP_SET = new Set<string>(MEMORY_LINK_RELATIONSHIPS);
 const MEMORY_LINK_INFER_RULES = ["experience_temporal_after", "thought_supersedes", "experience_refs"] as const;
 const MEMORY_LINK_INFER_RULE_SET = new Set<string>(MEMORY_LINK_INFER_RULES);
+const MEMORY_LINK_EXPANSION_DIRECTIONS = ["incoming", "outgoing", "both"] as const;
+const MEMORY_LINK_EXPANSION_DIRECTION_SET = new Set<string>(MEMORY_LINK_EXPANSION_DIRECTIONS);
 
 function isValidTimestamp(value: string): boolean {
   return !Number.isNaN(Date.parse(value));
@@ -239,6 +244,26 @@ function serializeMemoryLink(link: MemoryLinkRow) {
     weight: link.weight,
     inferred: link.inferred,
     created_at: link.created_at.toISOString(),
+  };
+}
+
+function serializeMemoryLinkExpansion(row: MemoryLinkExpansionRow) {
+  return {
+    link: serializeMemoryLink(row),
+    seed: {
+      source_type: row.seed_type,
+      source_id: row.seed_id,
+    },
+    direction: row.direction,
+    linked_memory: {
+      source_type: row.linked_type,
+      id: row.linked_id,
+      content: row.linked_content ?? null,
+      title: row.linked_title ?? null,
+      metadata: row.linked_metadata ?? {},
+      project: row.linked_project ?? null,
+      created_at: serializeOptionalTimestamp(row.linked_created_at ?? null),
+    },
   };
 }
 
@@ -827,6 +852,70 @@ export function createApi(): Hono {
       const message = err instanceof Error ? err.message : String(err);
       console.error("[api] Memory link list failed:", message);
       return c.json({ error: "Failed to list memory links", detail: message }, 502);
+    }
+  });
+
+  app.post("/memory-links/expand", async (c) => {
+    const body = await c.req.json<{
+      bank_id?: string;
+      seeds?: Array<{ source_type?: string; source_id?: string }>;
+      direction?: string;
+      relationship?: string;
+      include_archived?: boolean;
+      limit?: number;
+    }>();
+
+    if (body.bank_id !== undefined && body.bank_id.trim().length === 0) {
+      return c.json({ error: "bank_id must not be empty" }, 400);
+    }
+    if (!Array.isArray(body.seeds) || body.seeds.length === 0) {
+      return c.json({ error: "seeds must be a non-empty array" }, 400);
+    }
+    if (body.seeds.length > 50) {
+      return c.json({ error: "seeds must contain no more than 50 entries" }, 400);
+    }
+    const seeds: Array<{ source_type: MemoryLinkSourceType; source_id: string }> = [];
+    for (const seed of body.seeds) {
+      if (!seed || typeof seed !== "object") {
+        return c.json({ error: "each seed must be an object" }, 400);
+      }
+      if (!seed.source_type || !MEMORY_LINK_SOURCE_TYPE_SET.has(seed.source_type)) {
+        return c.json({ error: `seed.source_type must be one of: ${MEMORY_LINK_SOURCE_TYPES.join(", ")}` }, 400);
+      }
+      if (!seed.source_id || !UUID_RE.test(seed.source_id)) {
+        return c.json({ error: "seed.source_id must be a valid UUID" }, 400);
+      }
+      seeds.push({ source_type: seed.source_type as MemoryLinkSourceType, source_id: seed.source_id });
+    }
+
+    const direction = body.direction ?? "both";
+    if (!MEMORY_LINK_EXPANSION_DIRECTION_SET.has(direction)) {
+      return c.json({ error: `direction must be one of: ${MEMORY_LINK_EXPANSION_DIRECTIONS.join(", ")}` }, 400);
+    }
+    if (body.relationship !== undefined && !MEMORY_LINK_RELATIONSHIP_SET.has(body.relationship)) {
+      return c.json({ error: `relationship must be one of: ${MEMORY_LINK_RELATIONSHIPS.join(", ")}` }, 400);
+    }
+    if (body.include_archived !== undefined && typeof body.include_archived !== "boolean") {
+      return c.json({ error: "include_archived must be a boolean" }, 400);
+    }
+    if (body.limit !== undefined && (typeof body.limit !== "number" || !Number.isFinite(body.limit))) {
+      return c.json({ error: "limit must be a finite number" }, 400);
+    }
+
+    try {
+      const results = await expandMemoryLinks(pool, {
+        bank_id: body.bank_id ?? "openbrain",
+        seeds,
+        direction: direction as MemoryLinkExpansionDirectionFilter,
+        relationship: body.relationship as MemoryLinkRelationship | undefined,
+        include_archived: body.include_archived ?? false,
+        limit: body.limit === undefined ? 50 : Math.max(1, Math.min(100, Math.trunc(body.limit))),
+      });
+      return c.json({ count: results.length, results: results.map(serializeMemoryLinkExpansion) });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Memory link expansion failed:", message);
+      return c.json({ error: "Failed to expand memory links", detail: message }, 502);
     }
   });
 

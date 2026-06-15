@@ -38,6 +38,7 @@ import {
   insertMemoryLink,
   getMemoryLink,
   listMemoryLinks,
+  expandMemoryLinks,
   inferExperienceTemporalLinks,
   inferSupersedesMemoryLinks,
   inferExperienceReferenceLinks,
@@ -1131,6 +1132,49 @@ describe("memory links", () => {
     expect(listSql).toContain("source_id = $");
     expect(listSql).toContain("relationship = $");
     expect(listSql).toContain("ORDER BY created_at DESC");
+  });
+
+  it("expands direct linked memories from explicit seed nodes", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          ...linkRow,
+          seed_type: "experience",
+          seed_id: linkInput.source_id,
+          direction: "outgoing",
+          linked_type: "experience",
+          linked_id: linkInput.target_id,
+          linked_content: "Earlier experience content",
+          linked_title: null,
+          linked_metadata: { event_type: "user_message" },
+          linked_project: "one-brain",
+          linked_created_at: createdAt,
+        },
+      ],
+    });
+
+    const results = await expandMemoryLinks(pool, {
+      bank_id: "openbrain",
+      seeds: [{ source_type: "experience", source_id: linkInput.source_id }],
+      direction: "outgoing",
+      relationship: "temporal_after",
+      limit: 5,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.linked_content).toBe("Earlier experience content");
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("jsonb_to_recordset");
+    expect(sql).toContain("candidate_links");
+    expect(sql).toContain("pgp_sym_decrypt(t.content_enc");
+    expect(sql).toContain("pgp_sym_decrypt(e.content_enc");
+    expect(sql).toContain("relationship = $");
+    expect(sql).toContain("ORDER BY cl.created_at DESC");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[0]).toBe("openbrain");
+    expect(JSON.parse(params[1] as string)).toEqual([{ source_type: "experience", source_id: linkInput.source_id }]);
+    expect(params).toContain("temporal_after");
   });
 
   it("infers temporal_after links between adjacent experiences in the same session", async () => {

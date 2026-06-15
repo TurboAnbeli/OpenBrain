@@ -70,6 +70,7 @@ const mockGetMemoryBankContext = vi.fn().mockResolvedValue({ id: "openbrain", na
 const mockInsertMemoryLink = vi.fn();
 const mockGetMemoryLink = vi.fn();
 const mockListMemoryLinks = vi.fn();
+const mockExpandMemoryLinks = vi.fn();
 const mockInferExperienceTemporalLinks = vi.fn();
 const mockInferSupersedesMemoryLinks = vi.fn();
 const mockInferExperienceReferenceLinks = vi.fn();
@@ -111,6 +112,7 @@ vi.mock("../../db/queries.js", () => ({
   insertMemoryLink: (...args: any[]) => mockInsertMemoryLink(...args),
   getMemoryLink: (...args: any[]) => mockGetMemoryLink(...args),
   listMemoryLinks: (...args: any[]) => mockListMemoryLinks(...args),
+  expandMemoryLinks: (...args: any[]) => mockExpandMemoryLinks(...args),
   inferExperienceTemporalLinks: (...args: any[]) => mockInferExperienceTemporalLinks(...args),
   inferSupersedesMemoryLinks: (...args: any[]) => mockInferSupersedesMemoryLinks(...args),
   inferExperienceReferenceLinks: (...args: any[]) => mockInferExperienceReferenceLinks(...args),
@@ -1131,6 +1133,74 @@ describe("REST API Routes", () => {
     const body = (await res.json()) as { count: number; results: Array<{ relationship: string }> };
     expect(body.count).toBe(1);
     expect(body.results[0]!.relationship).toBe("temporal_after");
+  });
+
+  it("POST /memory-links/expand returns directly linked memories for explicit seeds", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockExpandMemoryLinks.mockResolvedValueOnce([
+      {
+        id: "link-123",
+        bank_id: "openbrain",
+        source_type: "experience",
+        source_id: "22222222-2222-4222-8222-222222222222",
+        target_type: "experience",
+        target_id: "11111111-1111-4111-8111-111111111111",
+        relationship: "temporal_after",
+        weight: 1,
+        inferred: true,
+        created_at: createdAt,
+        seed_type: "experience",
+        seed_id: "22222222-2222-4222-8222-222222222222",
+        direction: "outgoing",
+        linked_type: "experience",
+        linked_id: "11111111-1111-4111-8111-111111111111",
+        linked_content: "Earlier experience content",
+        linked_title: null,
+        linked_metadata: { event_type: "user_message" },
+        linked_project: "one-brain",
+        linked_created_at: createdAt,
+      },
+    ]);
+
+    const res = await app.request("/memory-links/expand", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        bank_id: "openbrain",
+        seeds: [{ source_type: "experience", source_id: "22222222-2222-4222-8222-222222222222" }],
+        direction: "outgoing",
+        relationship: "temporal_after",
+        limit: 5,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockExpandMemoryLinks).toHaveBeenCalledWith(expect.anything(), {
+      bank_id: "openbrain",
+      seeds: [{ source_type: "experience", source_id: "22222222-2222-4222-8222-222222222222" }],
+      direction: "outgoing",
+      relationship: "temporal_after",
+      include_archived: false,
+      limit: 5,
+    });
+    const body = (await res.json()) as { count: number; results: Array<{ linked_memory: { content: string }; link: { relationship: string } }> };
+    expect(body.count).toBe(1);
+    expect(body.results[0]!.link.relationship).toBe("temporal_after");
+    expect(body.results[0]!.linked_memory.content).toBe("Earlier experience content");
+  });
+
+  it("POST /memory-links/expand validates seed ids and direction", async () => {
+    const res = await app.request("/memory-links/expand", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        seeds: [{ source_type: "experience", source_id: "not-a-uuid" }],
+        direction: "sideways",
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockExpandMemoryLinks).not.toHaveBeenCalled();
   });
 
   it("POST /memory-links/infer runs only requested deterministic rules", async () => {

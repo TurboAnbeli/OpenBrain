@@ -339,6 +339,36 @@ export interface MemoryLinkInferOptions {
   session_id?: string;
 }
 
+export interface MemoryLinkSeed {
+  source_type: MemoryLinkSourceType;
+  source_id: string;
+}
+
+export type MemoryLinkExpansionDirection = "incoming" | "outgoing";
+export type MemoryLinkExpansionDirectionFilter = MemoryLinkExpansionDirection | "both";
+
+export interface MemoryLinkExpandOptions {
+  bank_id?: string;
+  seeds: MemoryLinkSeed[];
+  direction?: MemoryLinkExpansionDirectionFilter;
+  relationship?: MemoryLinkRelationship;
+  include_archived?: boolean;
+  limit?: number;
+}
+
+export interface MemoryLinkExpansionRow extends MemoryLinkRow {
+  seed_type: MemoryLinkSourceType;
+  seed_id: string;
+  direction: MemoryLinkExpansionDirection;
+  linked_type: MemoryLinkSourceType;
+  linked_id: string;
+  linked_content?: string | null;
+  linked_title?: string | null;
+  linked_metadata?: Record<string, unknown> | null;
+  linked_project?: string | null;
+  linked_created_at?: Date | null;
+}
+
 // ─── Consolidation Jobs ─────────────────────────────────────────────
 
 export type ConsolidationJobType =
@@ -1937,6 +1967,149 @@ export async function listMemoryLinks(
      FROM memory_links
      ${where}
      ORDER BY created_at DESC, id DESC
+     LIMIT ${limitPlaceholder}`,
+    params
+  );
+  return rows;
+}
+
+export async function expandMemoryLinks(
+  pool: pg.Pool,
+  options: MemoryLinkExpandOptions
+): Promise<MemoryLinkExpansionRow[]> {
+  if (!options.seeds || options.seeds.length === 0) return [];
+
+  const direction = options.direction ?? "both";
+  const joinPredicates: string[] = [];
+  if (direction === "both" || direction === "outgoing") {
+    joinPredicates.push("(ml.source_type = s.source_type AND ml.source_id = s.source_id)");
+  }
+  if (direction === "both" || direction === "incoming") {
+    joinPredicates.push("(ml.target_type = s.source_type AND ml.target_id = s.source_id)");
+  }
+  if (joinPredicates.length === 0) return [];
+
+  const key = getCipherKey();
+  const params: unknown[] = [options.bank_id ?? "openbrain", JSON.stringify(options.seeds), key];
+  let relationshipFilter = "";
+  if (options.relationship !== undefined) {
+    params.push(options.relationship);
+    relationshipFilter = `AND ml.relationship = $${params.length}`;
+  }
+  params.push(options.include_archived ?? false);
+  const includeArchivedPlaceholder = `$${params.length}`;
+  params.push(boundedMemoryLinkLimit(options.limit));
+  const limitPlaceholder = `$${params.length}`;
+
+  const { rows } = await pool.query<MemoryLinkExpansionRow>(
+    `WITH seeds AS (
+       SELECT source_type, source_id
+       FROM jsonb_to_recordset($2::jsonb) AS s(source_type text, source_id uuid)
+     ),
+     candidate_links AS (
+       SELECT ml.id,
+              ml.bank_id,
+              ml.source_type,
+              ml.source_id,
+              ml.target_type,
+              ml.target_id,
+              ml.relationship,
+              ml.weight,
+              ml.inferred,
+              ml.created_at,
+              s.source_type AS seed_type,
+              s.source_id AS seed_id,
+              CASE
+                WHEN ml.source_type = s.source_type AND ml.source_id = s.source_id THEN 'outgoing'
+                ELSE 'incoming'
+              END AS direction,
+              CASE
+                WHEN ml.source_type = s.source_type AND ml.source_id = s.source_id THEN ml.target_type
+                ELSE ml.source_type
+              END AS linked_type,
+              CASE
+                WHEN ml.source_type = s.source_type AND ml.source_id = s.source_id THEN ml.target_id
+                ELSE ml.source_id
+              END AS linked_id
+       FROM memory_links ml
+       JOIN seeds s ON (${joinPredicates.join(" OR ")})
+       WHERE ml.bank_id = $1
+         ${relationshipFilter}
+     )
+     SELECT cl.id,
+            cl.bank_id,
+            cl.source_type,
+            cl.source_id,
+            cl.target_type,
+            cl.target_id,
+            cl.relationship,
+            cl.weight,
+            cl.inferred,
+            cl.created_at,
+            cl.seed_type,
+            cl.seed_id,
+            cl.direction,
+            cl.linked_type,
+            cl.linked_id,
+            COALESCE(
+              CASE WHEN cl.linked_type = 'thought' THEN pgp_sym_decrypt(t.content_enc, $3)::text END,
+              CASE WHEN cl.linked_type = 'document' THEN pgp_sym_decrypt(d.content_enc, $3)::text END,
+              CASE WHEN cl.linked_type = 'chunk' THEN pgp_sym_decrypt(dc.content_enc, $3)::text END,
+              CASE WHEN cl.linked_type = 'consolidated_observation' THEN pgp_sym_decrypt(co.content_enc, $3)::text END,
+              CASE WHEN cl.linked_type = 'experience' THEN pgp_sym_decrypt(e.content_enc, $3)::text END,
+              CASE WHEN cl.linked_type = 'mental_model' THEN pgp_sym_decrypt(mm.content_enc, $3)::text END
+            ) AS linked_content,
+            CASE
+              WHEN cl.linked_type = 'document' THEN d.title
+              WHEN cl.linked_type = 'mental_model' THEN mm.name
+              ELSE NULL
+            END AS linked_title,
+            CASE
+              WHEN cl.linked_type = 'thought' THEN t.metadata
+              WHEN cl.linked_type = 'document' THEN d.metadata
+              WHEN cl.linked_type = 'chunk' THEN dc.metadata
+              WHEN cl.linked_type = 'consolidated_observation' THEN jsonb_build_object(
+                'proof_count', co.proof_count,
+                'source_memory_ids', co.source_memory_ids,
+                'tags', co.tags,
+                'trend', co.trend
+              )
+              WHEN cl.linked_type = 'experience' THEN e.refs
+              WHEN cl.linked_type = 'mental_model' THEN mm.structured
+              ELSE NULL
+            END AS linked_metadata,
+            CASE
+              WHEN cl.linked_type = 'thought' THEN t.project
+              WHEN cl.linked_type = 'document' THEN d.project
+              WHEN cl.linked_type = 'consolidated_observation' THEN co.project
+              WHEN cl.linked_type = 'experience' THEN e.project
+              WHEN cl.linked_type = 'mental_model' THEN mm.project
+              ELSE NULL
+            END AS linked_project,
+            CASE
+              WHEN cl.linked_type = 'thought' THEN t.created_at
+              WHEN cl.linked_type = 'document' THEN d.created_at
+              WHEN cl.linked_type = 'chunk' THEN dc.created_at
+              WHEN cl.linked_type = 'consolidated_observation' THEN co.created_at
+              WHEN cl.linked_type = 'experience' THEN e.created_at
+              WHEN cl.linked_type = 'mental_model' THEN mm.created_at
+              ELSE NULL
+            END AS linked_created_at
+     FROM candidate_links cl
+     LEFT JOIN thoughts t ON cl.linked_type = 'thought' AND t.id = cl.linked_id
+     LEFT JOIN documents d ON cl.linked_type = 'document' AND d.id = cl.linked_id
+     LEFT JOIN document_chunks dc ON cl.linked_type = 'chunk' AND dc.id = cl.linked_id
+     LEFT JOIN consolidated_observations co ON cl.linked_type = 'consolidated_observation' AND co.id = cl.linked_id
+     LEFT JOIN experiences e ON cl.linked_type = 'experience' AND e.id = cl.linked_id
+     LEFT JOIN mental_models mm ON cl.linked_type = 'mental_model' AND mm.id = cl.linked_id
+     WHERE (${includeArchivedPlaceholder}::boolean
+       OR (
+         (cl.linked_type <> 'thought' OR COALESCE(t.archived, false) = false)
+         AND (cl.linked_type <> 'document' OR COALESCE(d.status, 'active') = 'active')
+         AND (cl.linked_type <> 'consolidated_observation' OR COALESCE(co.archived, false) = false)
+         AND (cl.linked_type <> 'mental_model' OR COALESCE(mm.active, true) = true)
+       ))
+     ORDER BY cl.created_at DESC, cl.id DESC
      LIMIT ${limitPlaceholder}`,
     params
   );
