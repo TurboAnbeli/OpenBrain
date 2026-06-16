@@ -132,6 +132,11 @@ vi.mock("../../db/queries.js", () => ({
   inferExperienceReferenceLinks: (...args: any[]) => mockInferExperienceReferenceLinks(...args),
 }));
 
+const mockReflectAnswer = vi.fn();
+vi.mock("../reflect.js", () => ({
+  reflectAnswer: (...args: any[]) => mockReflectAnswer(...args),
+}));
+
 vi.mock("../../jobs/consolidation.js", () => ({
   runConsolidationJob: (...args: any[]) => mockRunConsolidationJob(...args),
 }));
@@ -1009,6 +1014,92 @@ describe("REST API Routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockInsertRecallRoutingTelemetry).not.toHaveBeenCalled();
+  });
+
+  // ─── POST /reflect ─────────────────────────────────────────────────
+
+  it("POST /reflect returns 400 when query missing", async () => {
+    const res = await app.request("/reflect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bank_id: "openbrain" }),
+    });
+    expect(res.status).toBe(400);
+    expect(mockReflectAnswer).not.toHaveBeenCalled();
+  });
+
+  it("POST /reflect returns cascade + LLM answer", async () => {
+    mockSearchThoughts.mockReset();
+    mockSearchMentalModels.mockReset();
+    mockSearchConsolidatedObservations.mockReset();
+    mockSearchMentalModels.mockResolvedValue([
+      { id: "mm-1", name: "explicit-recall-lane-discipline", content: "Default recall stays opt-in.", similarity: 0.9 },
+    ]);
+    mockSearchConsolidatedObservations.mockResolvedValue([
+      { id: "co-1", content: "OpenBrain is single-user, localhost-only.", similarity: 0.8 },
+    ]);
+    mockSearchThoughts.mockResolvedValue([
+      { id: "th-1", content: "Slice S migrated 29 synthesis thoughts.", metadata: {}, similarity: 0.7, proof_count: 1, created_at: new Date() },
+    ]);
+    mockGetMemoryBankContext.mockResolvedValueOnce({
+      id: "openbrain",
+      name: "OpenBrain",
+      mission: "I am Ryan's memory bank.",
+      disposition: { skepticism: 4 },
+      directives: [
+        { id: "d-1", name: "no_pii_verbatim", rule_text: "Never store PII verbatim.", severity: "hard", priority: 100 },
+      ],
+    });
+    mockReflectAnswer.mockResolvedValueOnce("Default recall stays opt-in [mm-1]; the bank is single-user [co-1].");
+
+    const res = await app.request("/reflect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "what is OpenBrain's recall policy?" }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.query).toBe("what is OpenBrain's recall policy?");
+    expect(body.bank_id).toBe("openbrain");
+    expect(body.answer).toBe("Default recall stays opt-in [mm-1]; the bank is single-user [co-1].");
+    const cascade = body.cascade as Record<string, unknown>;
+    expect((cascade.mental_models as unknown[]).length).toBe(1);
+    expect((cascade.consolidated_observations as unknown[]).length).toBe(1);
+    expect((cascade.raw_facts as unknown[]).length).toBe(1);
+    expect(mockGetMemoryBankContext).toHaveBeenCalledWith(expect.anything(), "openbrain", "reflect");
+    expect(mockReflectAnswer).toHaveBeenCalledTimes(1);
+    expect(mockSearchMentalModels).toHaveBeenCalledTimes(1);
+    expect(mockSearchConsolidatedObservations).toHaveBeenCalledTimes(1);
+    expect(mockSearchThoughts).toHaveBeenCalledTimes(1);
+  });
+
+  it("POST /reflect returns cascade with null answer when LLM refuses", async () => {
+    mockSearchThoughts.mockReset();
+    mockSearchMentalModels.mockReset();
+    mockSearchConsolidatedObservations.mockReset();
+    mockSearchMentalModels.mockResolvedValue([]);
+    mockSearchConsolidatedObservations.mockResolvedValue([]);
+    mockSearchThoughts.mockResolvedValue([]);
+    mockGetMemoryBankContext.mockResolvedValueOnce({
+      id: "openbrain",
+      name: "OpenBrain",
+      mission: null,
+      disposition: null,
+      directives: [],
+    });
+    mockReflectAnswer.mockResolvedValueOnce(null);
+
+    const res = await app.request("/reflect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "anything" }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.answer).toBeNull();
+    expect(body.cascade).toBeDefined();
   });
 
   // ─── PUT /memories/:id ─────────────────────────────────────────────

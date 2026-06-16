@@ -89,6 +89,7 @@ import { rerankResults, shouldRerank, crossEncoderRerank, extractNegatedTerms } 
 import { applyProofCountBoost } from "./proof_count_boost.js";
 import { runConsolidationJob } from "../jobs/consolidation.js";
 import { synthesizeObservation } from "./synthesize.js";
+import { reflectAnswer, type ReflectCascadeContext } from "./reflect.js";
 import {
   shouldUseEntityRanking,
   extractQueryEntityNames,
@@ -1422,6 +1423,124 @@ export function createApi(): Hono {
       const message = err instanceof Error ? err.message : String(err);
       console.error("[api] Recall failed:", message);
       return c.json({ error: "Failed to recall memories", detail: message }, 502);
+    }
+  });
+
+  // ─── Reflect (Hindsight 3-tier cascade) ──────────────────────────
+
+  app.post("/reflect", async (c) => {
+    const body = await c.req.json<{
+      query?: string;
+      bank_id?: string;
+      project?: string;
+      created_by?: string;
+      top_k?: number;
+      threshold?: number;
+    }>();
+
+    if (!body.query || body.query.trim().length === 0) {
+      return c.json({ error: "query is required" }, 400);
+    }
+    if (body.top_k !== undefined && (!Number.isInteger(body.top_k) || body.top_k < 1 || body.top_k > 20)) {
+      return c.json({ error: "top_k must be an integer between 1 and 20" }, 400);
+    }
+    if (body.threshold !== undefined && (typeof body.threshold !== "number" || body.threshold < 0 || body.threshold > 1)) {
+      return c.json({ error: "threshold must be a number between 0 and 1" }, 400);
+    }
+
+    const bankId = body.bank_id ?? "openbrain";
+    const topK = body.top_k ?? 3;
+    const threshold = body.threshold ?? 0.3;
+    const started = Date.now();
+
+    try {
+      const pool = getPool();
+      const embedder = getEmbedder();
+      const queryEmbedding = await embedder.generateEmbedding(body.query);
+
+      const [mentalModelHits, observationHits, rawFactHits, memoryBank] = await Promise.all([
+        searchMentalModels(pool, queryEmbedding, {
+          bank_id: bankId,
+          project: body.project,
+          created_by: body.created_by,
+          limit: topK,
+          threshold,
+        }),
+        searchConsolidatedObservations(pool, queryEmbedding, {
+          bank_id: bankId,
+          project: body.project,
+          created_by: body.created_by,
+          limit: topK,
+          threshold,
+        }),
+        searchThoughts(pool, queryEmbedding, topK, threshold, {}, body.project, false, body.created_by),
+        getMemoryBankContext(pool, bankId, "reflect"),
+      ]);
+
+      const cascade: ReflectCascadeContext = {
+        mental_models: mentalModelHits.map((row) => ({
+          id: row.id,
+          label: (row as { name?: string | null }).name ?? null,
+          content: row.content,
+        })),
+        consolidated_observations: observationHits.map((row) => ({
+          id: row.id,
+          label: null,
+          content: row.content,
+        })),
+        raw_facts: rawFactHits.map((row) => ({
+          id: row.id,
+          label: null,
+          content: row.content,
+        })),
+      };
+
+      const answer = await reflectAnswer(body.query, cascade, {
+        endpoint: SYNTHESIS_ENDPOINT,
+        model: SYNTHESIS_MODEL,
+        memoryBank: memoryBank
+          ? {
+              id: memoryBank.id,
+              name: memoryBank.name,
+              mission: memoryBank.mission,
+              disposition: memoryBank.disposition,
+              directives: (memoryBank.directives ?? []).map((d) => ({
+                id: d.id,
+                name: d.name,
+                rule_text: d.rule_text,
+                severity: d.severity,
+                priority: d.priority,
+              })),
+            }
+          : undefined,
+      });
+
+      return c.json({
+        query: body.query,
+        bank_id: bankId,
+        cascade,
+        answer,
+        model: SYNTHESIS_MODEL,
+        latency_ms: Date.now() - started,
+        memory_bank: memoryBank
+          ? {
+              id: memoryBank.id,
+              name: memoryBank.name,
+              mission: memoryBank.mission,
+              disposition: memoryBank.disposition,
+              directives: (memoryBank.directives ?? []).map((d) => ({
+                id: d.id,
+                name: d.name,
+                severity: d.severity,
+                priority: d.priority,
+              })),
+            }
+          : null,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Reflect failed:", message);
+      return c.json({ error: "Failed to reflect", detail: message }, 502);
     }
   });
 
