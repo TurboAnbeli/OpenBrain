@@ -302,8 +302,7 @@ export type ExperienceEventType =
   | "user_message"
   | "assistant_message"
   | "decide"
-  | "external_inbox"
-  | "recall_routing";
+  | "external_inbox";
 
 export type ExperienceTimestampInput = string | Date;
 
@@ -2256,6 +2255,87 @@ export async function searchExperiences(
     params
   );
   return rows;
+}
+
+
+// ─── Recall Routing Telemetry ────────────────────────────────────────
+
+export type RecallRoutingTelemetrySourceRouter = "heuristic";
+export type RecallRoutingTelemetryRoute = "document_only" | "thought_only" | "balanced_mixed";
+export type RecallRoutingTelemetrySourceBalance = "score" | "balanced";
+
+export interface RecallRoutingTelemetryInput {
+  bank_id?: string;
+  source_router: RecallRoutingTelemetrySourceRouter;
+  route: RecallRoutingTelemetryRoute;
+  source_balance: RecallRoutingTelemetrySourceBalance;
+  source_types: string[];
+  confidence: number;
+  reasons: string[];
+  project?: string;
+  created_by?: string;
+  occurred_at?: ExperienceTimestampInput;
+}
+
+export interface RecallRoutingTelemetryRow {
+  id: string;
+  bank_id: string;
+  occurred_at: Date;
+  source_router: RecallRoutingTelemetrySourceRouter;
+  route: RecallRoutingTelemetryRoute;
+  source_balance: RecallRoutingTelemetrySourceBalance;
+  source_types: string[];
+  confidence: number | null;
+  reasons: string[];
+  project: string | null;
+  created_by: string | null;
+}
+
+export async function insertRecallRoutingTelemetry(
+  pool: pg.Pool,
+  telemetry: RecallRoutingTelemetryInput
+): Promise<RecallRoutingTelemetryRow> {
+  const { rows } = await pool.query<RecallRoutingTelemetryRow>(
+    `INSERT INTO recall_routing_telemetry (
+       bank_id,
+       occurred_at,
+       source_router,
+       route,
+       source_balance,
+       source_types,
+       confidence,
+       reasons,
+       project,
+       created_by
+     )
+     VALUES (
+       COALESCE($1, 'openbrain'),
+       COALESCE($2::timestamptz, now()),
+       $3,
+       $4,
+       $5,
+       $6::jsonb,
+       $7,
+       $8::jsonb,
+       $9,
+       $10
+     )
+     RETURNING id, bank_id, occurred_at, source_router, route, source_balance,
+               source_types, confidence, reasons, project, created_by`,
+    [
+      telemetry.bank_id ?? null,
+      telemetry.occurred_at ?? null,
+      telemetry.source_router,
+      telemetry.route,
+      telemetry.source_balance,
+      JSON.stringify(telemetry.source_types),
+      telemetry.confidence,
+      JSON.stringify(telemetry.reasons),
+      telemetry.project ?? null,
+      telemetry.created_by ?? null,
+    ]
+  );
+  return rows[0]!;
 }
 
 

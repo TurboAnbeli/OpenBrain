@@ -71,6 +71,7 @@ const mockInsertExperience = vi.fn();
 const mockGetExperience = vi.fn();
 const mockListExperiences = vi.fn();
 const mockSearchExperiences = vi.fn();
+const mockInsertRecallRoutingTelemetry = vi.fn();
 const mockGetMemoryBankContext = vi.fn().mockResolvedValue({ id: "openbrain", name: "OpenBrain", mission: null, disposition: {}, directives: [] });
 const mockInsertMemoryLink = vi.fn();
 const mockGetMemoryLink = vi.fn();
@@ -119,6 +120,7 @@ vi.mock("../../db/queries.js", () => ({
   getExperience: (...args: any[]) => mockGetExperience(...args),
   listExperiences: (...args: any[]) => mockListExperiences(...args),
   searchExperiences: (...args: any[]) => mockSearchExperiences(...args),
+  insertRecallRoutingTelemetry: (...args: any[]) => mockInsertRecallRoutingTelemetry(...args),
   getMemoryBankContext: (...args: any[]) => mockGetMemoryBankContext(...args),
   insertMemoryLink: (...args: any[]) => mockInsertMemoryLink(...args),
   getMemoryLink: (...args: any[]) => mockGetMemoryLink(...args),
@@ -141,7 +143,19 @@ describe("REST API Routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockInsertExperience.mockResolvedValue({ id: "exp-telemetry-123", created_at: new Date() });
+    mockInsertRecallRoutingTelemetry.mockResolvedValue({
+      id: "tel-123",
+      bank_id: "openbrain",
+      occurred_at: new Date(),
+      source_router: "heuristic",
+      route: "document_only",
+      source_balance: "score",
+      source_types: ["document_chunk"],
+      confidence: 0.85,
+      reasons: [],
+      project: null,
+      created_by: null,
+    });
   });
 
   // ─── Health ────────────────────────────────────────────────────────
@@ -949,7 +963,7 @@ describe("REST API Routes", () => {
     expect(mockSearchThoughts).not.toHaveBeenCalled();
   });
 
-  it("POST /recall records privacy-safe telemetry when source_router is used", async () => {
+  it("POST /recall records route telemetry when source_router is used", async () => {
     mockSearchThoughts.mockResolvedValueOnce([]);
     mockBm25SearchThoughts.mockResolvedValueOnce([]);
     mockSearchDocumentChunks.mockResolvedValueOnce([]);
@@ -967,19 +981,19 @@ describe("REST API Routes", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(mockInsertExperience).toHaveBeenCalledTimes(1);
-    const call = mockInsertExperience.mock.calls[0]![1] as {
-      content: string;
-      refs: { metadata: Record<string, unknown> };
-    };
-    expect(call.content).not.toContain("OAuth");
-    expect(call.content).not.toContain("Claude");
-    expect(call.content).toContain("recall route decision");
-    expect(call.refs.metadata.event_type).toBe("recall_routing");
-    expect(call.refs.metadata.route).toBe("document_only");
-    expect(call.refs.metadata.source_router).toBe("heuristic");
-    expect(call.refs.metadata).not.toHaveProperty("query");
-    expect(call.refs.metadata).not.toHaveProperty("raw_query");
+    expect(mockInsertRecallRoutingTelemetry).toHaveBeenCalledTimes(1);
+    const input = mockInsertRecallRoutingTelemetry.mock.calls[0]![1] as Record<string, unknown>;
+    expect(input.source_router).toBe("heuristic");
+    expect(input.route).toBe("document_only");
+    expect(input.source_balance).toBe("score");
+    expect(Array.isArray(input.source_types)).toBe(true);
+    expect(typeof input.confidence).toBe("number");
+    expect(Array.isArray(input.reasons)).toBe(true);
+    // Structural privacy guarantee: telemetry input has no query/content field.
+    expect(input).not.toHaveProperty("query");
+    expect(input).not.toHaveProperty("content");
+    expect(JSON.stringify(input)).not.toContain("OAuth");
+    expect(mockInsertExperience).not.toHaveBeenCalled();
   });
 
   it("POST /recall omits telemetry when source_router is off", async () => {
@@ -994,7 +1008,7 @@ describe("REST API Routes", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(mockInsertExperience).not.toHaveBeenCalled();
+    expect(mockInsertRecallRoutingTelemetry).not.toHaveBeenCalled();
   });
 
   // ─── PUT /memories/:id ─────────────────────────────────────────────
