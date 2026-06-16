@@ -701,6 +701,159 @@ describe("REST API Routes", () => {
     ]);
   });
 
+  it("POST /recall can route title-like queries to document-only recall when source_router is heuristic", async () => {
+    const createdAt = new Date("2026-06-16T00:00:00Z");
+    mockSearchDocumentChunks.mockResolvedValueOnce([
+      {
+        id: "33333333-3333-4333-8333-333333333335",
+        document_id: "44444444-4444-4444-8444-444444444445",
+        document_title: "Claude AI OAuth Connector Failure Root Cause",
+        document_source_type: "agent-note",
+        document_source_uri: "file:///claude-oauth-root-cause.md",
+        project: null,
+        chunk_index: 0,
+        content: "Document routed result",
+        metadata: {},
+        similarity: 0.74,
+        fts_rank: 0.4,
+        score: 0.66,
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+    ]);
+
+    const res = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "claude ai oauth connector failure root cause",
+        source_router: "heuristic",
+        limit: 5,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockSearchDocumentChunks).toHaveBeenCalledWith(expect.anything(), [0.1, 0.2, 0.3], expect.objectContaining({ mode: "hybrid", limit: 5 }));
+    expect(mockSearchThoughts).not.toHaveBeenCalled();
+    expect(mockBm25SearchThoughts).not.toHaveBeenCalled();
+    expect(mockSearchConsolidatedObservations).not.toHaveBeenCalled();
+    expect(mockSearchExperiences).not.toHaveBeenCalled();
+    expect(mockSearchMentalModels).not.toHaveBeenCalled();
+
+    const body = (await res.json()) as {
+      lanes: { source_router: string; source_router_decision: { route: string; source_types: string[]; source_balance: string }; source_types: string[] | null; source_balance: string };
+      results: Array<{ source_type: string }>;
+    };
+    expect(body.lanes.source_router).toBe("heuristic");
+    expect(body.lanes.source_router_decision).toMatchObject({
+      route: "document_only",
+      source_types: ["document_chunk"],
+      source_balance: "score",
+    });
+    expect(body.lanes.source_types).toEqual(["document_chunk"]);
+    expect(body.lanes.source_balance).toBe("score");
+    expect(body.results.map((result) => result.source_type)).toEqual(["document_chunk"]);
+  });
+
+  it("POST /recall can route memory-style queries to thought-only recall when source_router is heuristic", async () => {
+    const createdAt = new Date("2026-06-16T00:00:00Z");
+    mockSearchThoughts.mockResolvedValueOnce([
+      {
+        id: "11111111-1111-4111-8111-111111111118",
+        content: "We decided to keep OAuth connector retries explicit.",
+        metadata: { type: "decision" },
+        project: null,
+        proof_count: 1,
+        similarity: 0.91,
+        created_at: createdAt,
+      },
+    ]);
+    mockBm25SearchThoughts.mockResolvedValueOnce([]);
+
+    const res = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "what did I decide about oauth connector retries",
+        source_router: "heuristic",
+        limit: 5,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockSearchThoughts).toHaveBeenCalled();
+    expect(mockBm25SearchThoughts).toHaveBeenCalled();
+    expect(mockSearchDocumentChunks).not.toHaveBeenCalled();
+    expect(mockSearchConsolidatedObservations).not.toHaveBeenCalled();
+    expect(mockSearchExperiences).not.toHaveBeenCalled();
+    expect(mockSearchMentalModels).not.toHaveBeenCalled();
+
+    const body = (await res.json()) as {
+      lanes: { source_router: string; source_router_decision: { route: string; source_types: string[]; source_balance: string }; source_types: string[] | null; source_balance: string };
+      results: Array<{ source_type: string }>;
+    };
+    expect(body.lanes.source_router).toBe("heuristic");
+    expect(body.lanes.source_router_decision).toMatchObject({
+      route: "thought_only",
+      source_types: ["thought"],
+      source_balance: "score",
+    });
+    expect(body.lanes.source_types).toEqual(["thought"]);
+    expect(body.results.map((result) => result.source_type)).toEqual(["thought"]);
+  });
+
+  it("POST /recall lets explicit source controls override the heuristic router", async () => {
+    const createdAt = new Date("2026-06-16T00:00:00Z");
+    mockSearchThoughts.mockResolvedValueOnce([
+      {
+        id: "11111111-1111-4111-8111-111111111119",
+        content: "Explicit thought override",
+        metadata: {},
+        project: null,
+        proof_count: 1,
+        similarity: 0.9,
+        created_at: createdAt,
+      },
+    ]);
+    mockBm25SearchThoughts.mockResolvedValueOnce([]);
+
+    const res = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "claude ai oauth connector failure root cause",
+        source_router: "heuristic",
+        source_types: ["thought"],
+        source_balance: "balanced",
+        limit: 5,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockSearchThoughts).toHaveBeenCalled();
+    expect(mockSearchDocumentChunks).not.toHaveBeenCalled();
+
+    const body = (await res.json()) as {
+      lanes: { source_router: string; source_router_decision: { route: string }; source_types: string[] | null; source_balance: string };
+      results: Array<{ source_type: string }>;
+    };
+    expect(body.lanes.source_router).toBe("heuristic");
+    expect(body.lanes.source_router_decision.route).toBe("document_only");
+    expect(body.lanes.source_types).toEqual(["thought"]);
+    expect(body.lanes.source_balance).toBe("balanced");
+    expect(body.results.map((result) => result.source_type)).toEqual(["thought"]);
+  });
+
+  it("POST /recall validates source_router", async () => {
+    const invalidRouter = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "bad router", source_router: "always-on" }),
+    });
+    expect(invalidRouter.status).toBe(400);
+    expect(mockSearchThoughts).not.toHaveBeenCalled();
+  });
+
   it("POST /recall validates source_types and source_balance", async () => {
     const invalidSourceType = await app.request("/recall", {
       method: "POST",

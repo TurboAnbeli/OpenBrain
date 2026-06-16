@@ -317,6 +317,16 @@ function serializeMemoryLinkExpansion(row: MemoryLinkExpansionRow) {
 type RecallPrimarySourceType = "thought" | "document_chunk" | "consolidated_observation" | "experience" | "mental_model";
 type RecallSourceType = RecallPrimarySourceType | MemoryLinkSourceType;
 type RecallSourceBalance = "score" | "balanced";
+type RecallSourceRouter = "off" | "heuristic";
+type RecallSourceRouterRoute = "document_only" | "thought_only" | "balanced_mixed";
+
+interface RecallSourceRouterDecision {
+  route: RecallSourceRouterRoute;
+  source_types: RecallPrimarySourceType[] | null;
+  source_balance: RecallSourceBalance;
+  confidence: number;
+  reasons: string[];
+}
 
 const RECALL_PRIMARY_SOURCE_TYPES: RecallPrimarySourceType[] = [
   "thought",
@@ -328,6 +338,8 @@ const RECALL_PRIMARY_SOURCE_TYPES: RecallPrimarySourceType[] = [
 const RECALL_PRIMARY_SOURCE_TYPE_SET = new Set<string>(RECALL_PRIMARY_SOURCE_TYPES);
 const RECALL_SOURCE_BALANCE_MODES: RecallSourceBalance[] = ["score", "balanced"];
 const RECALL_SOURCE_BALANCE_SET = new Set<string>(RECALL_SOURCE_BALANCE_MODES);
+const RECALL_SOURCE_ROUTERS: RecallSourceRouter[] = ["off", "heuristic"];
+const RECALL_SOURCE_ROUTER_SET = new Set<string>(RECALL_SOURCE_ROUTERS);
 
 type RecallTemporalLaneStatus = "stub" | "active";
 
@@ -445,6 +457,106 @@ function filterRecallResultsBySourceTypes(
 ): RecallApiResult[] {
   if (!sourceTypes) return results;
   return results.filter((result) => sourceTypes.has(result.source_type as RecallPrimarySourceType));
+}
+
+function normalizedQueryTokens(query: string): string[] {
+  return query
+    .toLowerCase()
+    .replace(/[’']/g, " ")
+    .split(/[^a-z0-9.]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+function matchesAnyPattern(query: string, patterns: RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(query));
+}
+
+const RECALL_THOUGHT_QUERY_PATTERNS = [
+  /\bwhat\s+did\s+(i|we)\b/,
+  /\bremember\b/,
+  /\bmemories?\b/,
+  /\bthoughts?\b/,
+  /\bi\s+(said|told|asked|mentioned)\b/,
+  /\bwe\s+(decided|chose|agreed)\b/,
+  /\bdecid(?:e|ed|ing|es)\b/,
+  /\bmy\s+(preference|profile|memory)\b/,
+];
+
+const RECALL_DOCUMENT_QUERY_PATTERNS = [
+  /\b(?:doc|docs|document|documents)\b/,
+  /\b(?:file|files|source|sources)\b/,
+  /\b(?:wiki|page|pages|markdown)\b/,
+  /\b(?:note|notes|handoff|reference|references)\b/,
+  /\b(?:artifact|artifacts|report|transcript)\b/,
+];
+
+const RECALL_MIXED_QUERY_PATTERNS = [
+  /\bwhat\s+do\s+we\s+know\b/,
+  /\bwhat\s+is\s+the\s+state\b/,
+  /\bwhere\s+are\s+we\b/,
+  /\bknowledge\s+stores?\b/,
+];
+
+function isTitleLikeDocumentQuery(query: string, tokens: string[]): boolean {
+  if (query.includes("?") || tokens.length < 3 || tokens.length > 12) return false;
+  if (matchesAnyPattern(query, RECALL_THOUGHT_QUERY_PATTERNS)) return false;
+  if (matchesAnyPattern(query, RECALL_MIXED_QUERY_PATTERNS)) return false;
+  if (/^(what|how|why|where|when|who|which|can|could|should|did|do|does|is|are)\b/.test(query)) return false;
+  const nonNumericTokens = tokens.filter((token) => !/^\d+(?:\.\d+)?$/.test(token));
+  return nonNumericTokens.length >= 3;
+}
+
+function routeRecallSourcesHeuristically(query: string): RecallSourceRouterDecision {
+  const normalized = query.trim().toLowerCase().replace(/\s+/g, " ");
+  const tokens = normalizedQueryTokens(normalized);
+  const reasons: string[] = [];
+
+  if (matchesAnyPattern(normalized, RECALL_THOUGHT_QUERY_PATTERNS)) {
+    reasons.push("thought_memory_cue");
+    return {
+      route: "thought_only",
+      source_types: ["thought"],
+      source_balance: "score",
+      confidence: 0.85,
+      reasons,
+    };
+  }
+
+  if (matchesAnyPattern(normalized, RECALL_DOCUMENT_QUERY_PATTERNS)) {
+    reasons.push("document_source_cue");
+    return {
+      route: "document_only",
+      source_types: ["document_chunk"],
+      source_balance: "score",
+      confidence: 0.82,
+      reasons,
+    };
+  }
+
+  if (isTitleLikeDocumentQuery(normalized, tokens)) {
+    reasons.push("title_like_query");
+    return {
+      route: "document_only",
+      source_types: ["document_chunk"],
+      source_balance: "score",
+      confidence: 0.74,
+      reasons,
+    };
+  }
+
+  reasons.push(matchesAnyPattern(normalized, RECALL_MIXED_QUERY_PATTERNS) ? "mixed_query_cue" : "fallback_mixed_visibility");
+  return {
+    route: "balanced_mixed",
+    source_types: null,
+    source_balance: "balanced",
+    confidence: 0.55,
+    reasons,
+  };
+}
+
+function recallSourceTypeSet(sourceTypes: RecallPrimarySourceType[] | null): Set<RecallPrimarySourceType> | null {
+  return sourceTypes ? new Set<RecallPrimarySourceType>(sourceTypes) : null;
 }
 
 function recallFromThought(row: SearchResult, lane: "semantic" | "bm25"): RecallApiResult {
@@ -1017,6 +1129,7 @@ export function createApi(): Hono {
       include_mental_models?: boolean;
       source_types?: unknown;
       source_balance?: string;
+      source_router?: string;
       expand_from_seeds?: Array<{ source_type?: string; source_id?: string }>;
       link_direction?: string;
       link_relationship?: string;
@@ -1047,6 +1160,10 @@ export function createApi(): Hono {
     if (body.include_mental_models !== undefined && typeof body.include_mental_models !== "boolean") {
       return c.json({ error: "include_mental_models must be a boolean" }, 400);
     }
+    const sourceRouter = body.source_router ?? "off";
+    if (!RECALL_SOURCE_ROUTER_SET.has(sourceRouter)) {
+      return c.json({ error: `source_router must be one of: ${RECALL_SOURCE_ROUTERS.join(", ")}` }, 400);
+    }
     let requestedSourceTypes: Set<RecallPrimarySourceType> | null = null;
     if (body.source_types !== undefined) {
       if (!Array.isArray(body.source_types) || body.source_types.length === 0) {
@@ -1063,7 +1180,13 @@ export function createApi(): Hono {
         requestedSourceTypes.add(sourceType as RecallPrimarySourceType);
       }
     }
-    const sourceBalance = body.source_balance ?? "score";
+    const sourceRouterDecision = sourceRouter === "heuristic"
+      ? routeRecallSourcesHeuristically(body.query)
+      : null;
+    if (requestedSourceTypes === null && sourceRouterDecision?.source_types) {
+      requestedSourceTypes = recallSourceTypeSet(sourceRouterDecision.source_types);
+    }
+    const sourceBalance = body.source_balance ?? sourceRouterDecision?.source_balance ?? "score";
     if (!RECALL_SOURCE_BALANCE_SET.has(sourceBalance)) {
       return c.json({ error: `source_balance must be one of: ${RECALL_SOURCE_BALANCE_MODES.join(", ")}` }, 400);
     }
@@ -1234,6 +1357,8 @@ export function createApi(): Hono {
           mental_models: includeMentalModels,
           source_types: requestedSourceTypes ? [...requestedSourceTypes] : null,
           source_balance: sourceBalance,
+          source_router: sourceRouter,
+          source_router_decision: sourceRouterDecision,
           link_expansion: seeds.length > 0,
           temporal: (temporalEnabled ? "active" : "stub") as RecallTemporalLaneStatus,
         },
