@@ -32,7 +32,8 @@
     "import:markdown": "node dist/import/markdown-cli.js",
     "import:parity": "node dist/import/parity-cli.js",
     "ryel:semantic-json": "python3 scripts/ryel_semantic_json.py",
-    "seed:mental-models": "tsx src/seed/mental-models-cli.ts"
+    "seed:mental-models": "tsx src/seed/mental-models-cli.ts",
+    "refresh:mental-model": "tsx src/jobs/mental-model-refresh-cli.ts"
   },
   "engines": {
     "node": ">=22.0.0"

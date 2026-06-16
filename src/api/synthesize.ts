@@ -64,10 +64,7 @@ export interface SynthesisOptions {
   memoryBank?: SynthesisMemoryBankContext;
 }
 
-export async function synthesizeObservation(
-  contents: string[],
-  opts: SynthesisOptions
-): Promise<string | null> {
+async function generateSynthesis(prompt: string, opts: SynthesisOptions, numPredict = 300): Promise<string | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 30000);
   try {
@@ -76,10 +73,10 @@ export async function synthesizeObservation(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: opts.model,
-        prompt: SYNTHESIS_PROMPT(contents, opts.memoryBank),
+        prompt,
         stream: false,
         think: false,
-        options: { num_predict: 300, temperature: 0.2, seed: 42 },
+        options: { num_predict: numPredict, temperature: 0.2, seed: 42 },
       }),
       signal: controller.signal,
     });
@@ -92,4 +89,54 @@ export async function synthesizeObservation(
   } finally {
     clearTimeout(timer);
   }
+}
+
+export async function synthesizeObservation(
+  contents: string[],
+  opts: SynthesisOptions
+): Promise<string | null> {
+  return generateSynthesis(SYNTHESIS_PROMPT(contents, opts.memoryBank), opts, 300);
+}
+
+export interface MentalModelRefreshTarget {
+  name: string;
+  query: string;
+  content: string;
+}
+
+export interface MentalModelRefreshObservation {
+  id: string;
+  content: string;
+  proof_count: number;
+  tags?: unknown[];
+}
+
+const MENTAL_MODEL_REFRESH_PROMPT = (
+  model: MentalModelRefreshTarget,
+  observations: MentalModelRefreshObservation[],
+  memoryBank?: SynthesisMemoryBankContext
+): string => {
+  const evidence = observations
+    .map((observation, index) => `${index + 1}. [${observation.id}; proof_count=${observation.proof_count}] ${observation.content}`)
+    .join("\n");
+  return (
+    `You are refreshing an explicit mental model in a personal memory system. ` +
+    `Use only the evidence observations below plus the current model. Preserve the model's scope. ` +
+    `Do not invent facts, do not include patient/person identifiers verbatim, and do not average conflicting facts. ` +
+    `Output only the revised mental model content as one concise paragraph.\n\n` +
+    renderMemoryBankContext(memoryBank) +
+    `Mental model name: ${model.name}\n` +
+    `Retrieval query: ${model.query}\n` +
+    `Current content: ${model.content}\n\n` +
+    `Evidence observations:\n${evidence}\n\n` +
+    `Revised mental model:`
+  );
+};
+
+export async function synthesizeMentalModelRefresh(
+  model: MentalModelRefreshTarget,
+  observations: MentalModelRefreshObservation[],
+  opts: SynthesisOptions
+): Promise<string | null> {
+  return generateSynthesis(MENTAL_MODEL_REFRESH_PROMPT(model, observations, opts.memoryBank), opts, 350);
 }
