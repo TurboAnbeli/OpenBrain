@@ -541,6 +541,190 @@ describe("REST API Routes", () => {
     expect(mockExpandMemoryLinks).not.toHaveBeenCalled();
   });
 
+  it("POST /recall accepts explicit source_types to run document-only recall", async () => {
+    const createdAt = new Date("2026-06-16T00:00:00Z");
+    mockSearchDocumentChunks.mockResolvedValueOnce([
+      {
+        id: "33333333-3333-4333-8333-333333333333",
+        document_id: "44444444-4444-4444-8444-444444444444",
+        document_title: "Source-filtered document",
+        document_source_type: "agent-note",
+        document_source_uri: "file:///source-filtered.md",
+        project: "one-brain",
+        chunk_index: 0,
+        content: "Document-only recall result",
+        metadata: {},
+        similarity: 0.73,
+        fts_rank: 0.3,
+        score: 0.62,
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+    ]);
+
+    const res = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "document source filter",
+        source_types: ["document_chunk"],
+        limit: 5,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockSearchThoughts).not.toHaveBeenCalled();
+    expect(mockBm25SearchThoughts).not.toHaveBeenCalled();
+    expect(mockSearchConsolidatedObservations).not.toHaveBeenCalled();
+    expect(mockSearchExperiences).not.toHaveBeenCalled();
+    expect(mockSearchMentalModels).not.toHaveBeenCalled();
+    expect(mockSearchDocumentChunks).toHaveBeenCalledWith(expect.anything(), [0.1, 0.2, 0.3], expect.objectContaining({ mode: "hybrid", limit: 5 }));
+
+    const body = (await res.json()) as {
+      count: number;
+      lanes: { semantic: boolean; bm25: boolean; documents: boolean; observations: boolean; experiences: boolean; mental_models: boolean; source_types: string[] | null };
+      results: Array<{ source_type: string; id: string }>;
+    };
+    expect(body.count).toBe(1);
+    expect(body.lanes).toMatchObject({
+      semantic: false,
+      bm25: false,
+      documents: true,
+      observations: false,
+      experiences: false,
+      mental_models: false,
+      source_types: ["document_chunk"],
+    });
+    expect(body.results).toEqual([
+      expect.objectContaining({ source_type: "document_chunk", id: "33333333-3333-4333-8333-333333333333" }),
+    ]);
+  });
+
+  it("POST /recall can balance final results across source types", async () => {
+    const createdAt = new Date("2026-06-16T00:00:00Z");
+    mockSearchThoughts.mockResolvedValueOnce([
+      {
+        id: "11111111-1111-4111-8111-111111111111",
+        content: "Thought one",
+        metadata: {},
+        project: null,
+        proof_count: 1,
+        similarity: 0.99,
+        created_at: createdAt,
+      },
+      {
+        id: "11111111-1111-4111-8111-111111111112",
+        content: "Thought two",
+        metadata: {},
+        project: null,
+        proof_count: 1,
+        similarity: 0.98,
+        created_at: createdAt,
+      },
+      {
+        id: "11111111-1111-4111-8111-111111111113",
+        content: "Thought three",
+        metadata: {},
+        project: null,
+        proof_count: 1,
+        similarity: 0.97,
+        created_at: createdAt,
+      },
+      {
+        id: "11111111-1111-4111-8111-111111111114",
+        content: "Thought four",
+        metadata: {},
+        project: null,
+        proof_count: 1,
+        similarity: 0.96,
+        created_at: createdAt,
+      },
+    ]);
+    mockBm25SearchThoughts.mockResolvedValueOnce([]);
+    mockSearchDocumentChunks.mockResolvedValueOnce([
+      {
+        id: "33333333-3333-4333-8333-333333333331",
+        document_id: "44444444-4444-4444-8444-444444444441",
+        document_title: "Document one",
+        document_source_type: "agent-note",
+        document_source_uri: "file:///doc-one.md",
+        project: null,
+        chunk_index: 0,
+        content: "Balanced document one",
+        metadata: {},
+        similarity: 0.65,
+        fts_rank: 0.2,
+        score: 0.55,
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+      {
+        id: "33333333-3333-4333-8333-333333333332",
+        document_id: "44444444-4444-4444-8444-444444444442",
+        document_title: "Document two",
+        document_source_type: "agent-note",
+        document_source_uri: "file:///doc-two.md",
+        project: null,
+        chunk_index: 0,
+        content: "Balanced document two",
+        metadata: {},
+        similarity: 0.64,
+        fts_rank: 0.1,
+        score: 0.54,
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+    ]);
+    const res = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "global recall should not crowd documents",
+        source_balance: "balanced",
+        include_observations: false,
+        include_experiences: false,
+        limit: 4,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      lanes: { source_balance: string };
+      results: Array<{ source_type: string; id: string }>;
+    };
+    expect(body.lanes.source_balance).toBe("balanced");
+    expect(body.results.map((result) => result.source_type)).toEqual([
+      "thought",
+      "document_chunk",
+      "thought",
+      "document_chunk",
+    ]);
+  });
+
+  it("POST /recall validates source_types and source_balance", async () => {
+    const invalidSourceType = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "bad source", source_types: ["graph"] }),
+    });
+    expect(invalidSourceType.status).toBe(400);
+
+    const emptySourceTypes = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "bad source", source_types: [] }),
+    });
+    expect(emptySourceTypes.status).toBe(400);
+
+    const invalidBalance = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "bad balance", source_balance: "graph" }),
+    });
+    expect(invalidBalance.status).toBe(400);
+    expect(mockSearchThoughts).not.toHaveBeenCalled();
+  });
+
   // ─── PUT /memories/:id ─────────────────────────────────────────────
 
   it("PUT /memories/:id returns updated thought", async () => {

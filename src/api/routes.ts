@@ -314,7 +314,20 @@ function serializeMemoryLinkExpansion(row: MemoryLinkExpansionRow) {
   };
 }
 
-type RecallSourceType = "thought" | "document_chunk" | "consolidated_observation" | "experience" | MemoryLinkSourceType;
+type RecallPrimarySourceType = "thought" | "document_chunk" | "consolidated_observation" | "experience" | "mental_model";
+type RecallSourceType = RecallPrimarySourceType | MemoryLinkSourceType;
+type RecallSourceBalance = "score" | "balanced";
+
+const RECALL_PRIMARY_SOURCE_TYPES: RecallPrimarySourceType[] = [
+  "thought",
+  "document_chunk",
+  "consolidated_observation",
+  "experience",
+  "mental_model",
+];
+const RECALL_PRIMARY_SOURCE_TYPE_SET = new Set<string>(RECALL_PRIMARY_SOURCE_TYPES);
+const RECALL_SOURCE_BALANCE_MODES: RecallSourceBalance[] = ["score", "balanced"];
+const RECALL_SOURCE_BALANCE_SET = new Set<string>(RECALL_SOURCE_BALANCE_MODES);
 
 type RecallTemporalLaneStatus = "stub" | "active";
 
@@ -381,6 +394,57 @@ function sortRecallResults(results: RecallApiResult[]): RecallApiResult[] {
     const bTime = b.created_at ? Date.parse(b.created_at) : 0;
     return bTime - aTime;
   });
+}
+
+function balanceRecallResults(results: RecallApiResult[]): RecallApiResult[] {
+  const sorted = sortRecallResults([...results]);
+  const buckets = new Map<RecallSourceType, RecallApiResult[]>();
+  for (const result of sorted) {
+    const bucket = buckets.get(result.source_type) ?? [];
+    bucket.push(result);
+    buckets.set(result.source_type, bucket);
+  }
+
+  const sourceOrder = [...buckets.entries()]
+    .sort(([, a], [, b]) => {
+      const aTop = a[0];
+      const bTop = b[0];
+      if (!aTop || !bTop) return 0;
+      if (bTop.score !== aTop.score) return bTop.score - aTop.score;
+      const aTime = aTop.created_at ? Date.parse(aTop.created_at) : 0;
+      const bTime = bTop.created_at ? Date.parse(bTop.created_at) : 0;
+      return bTime - aTime;
+    })
+    .map(([sourceType]) => sourceType);
+
+  const balanced: RecallApiResult[] = [];
+  let appended = true;
+  while (appended) {
+    appended = false;
+    for (const sourceType of sourceOrder) {
+      const next = buckets.get(sourceType)?.shift();
+      if (next) {
+        balanced.push(next);
+        appended = true;
+      }
+    }
+  }
+  return balanced;
+}
+
+function rankRecallResults(results: RecallApiResult[], sourceBalance: RecallSourceBalance): RecallApiResult[] {
+  if (sourceBalance === "balanced") {
+    return balanceRecallResults(results);
+  }
+  return sortRecallResults(results);
+}
+
+function filterRecallResultsBySourceTypes(
+  results: RecallApiResult[],
+  sourceTypes: Set<RecallPrimarySourceType> | null
+): RecallApiResult[] {
+  if (!sourceTypes) return results;
+  return results.filter((result) => sourceTypes.has(result.source_type as RecallPrimarySourceType));
 }
 
 function recallFromThought(row: SearchResult, lane: "semantic" | "bm25"): RecallApiResult {
@@ -951,6 +1015,8 @@ export function createApi(): Hono {
       include_observations?: boolean;
       include_experiences?: boolean;
       include_mental_models?: boolean;
+      source_types?: unknown;
+      source_balance?: string;
       expand_from_seeds?: Array<{ source_type?: string; source_id?: string }>;
       link_direction?: string;
       link_relationship?: string;
@@ -980,6 +1046,26 @@ export function createApi(): Hono {
     }
     if (body.include_mental_models !== undefined && typeof body.include_mental_models !== "boolean") {
       return c.json({ error: "include_mental_models must be a boolean" }, 400);
+    }
+    let requestedSourceTypes: Set<RecallPrimarySourceType> | null = null;
+    if (body.source_types !== undefined) {
+      if (!Array.isArray(body.source_types) || body.source_types.length === 0) {
+        return c.json({ error: "source_types must be a non-empty array when provided" }, 400);
+      }
+      if (body.source_types.length > RECALL_PRIMARY_SOURCE_TYPES.length) {
+        return c.json({ error: `source_types must contain no more than ${RECALL_PRIMARY_SOURCE_TYPES.length} entries` }, 400);
+      }
+      requestedSourceTypes = new Set<RecallPrimarySourceType>();
+      for (const sourceType of body.source_types) {
+        if (typeof sourceType !== "string" || !RECALL_PRIMARY_SOURCE_TYPE_SET.has(sourceType)) {
+          return c.json({ error: `source_types entries must be one of: ${RECALL_PRIMARY_SOURCE_TYPES.join(", ")}` }, 400);
+        }
+        requestedSourceTypes.add(sourceType as RecallPrimarySourceType);
+      }
+    }
+    const sourceBalance = body.source_balance ?? "score";
+    if (!RECALL_SOURCE_BALANCE_SET.has(sourceBalance)) {
+      return c.json({ error: `source_balance must be one of: ${RECALL_SOURCE_BALANCE_MODES.join(", ")}` }, 400);
     }
     if (body.limit !== undefined && (typeof body.limit !== "number" || !Number.isFinite(body.limit))) {
       return c.json({ error: "limit must be a finite number" }, 400);
@@ -1034,10 +1120,15 @@ export function createApi(): Hono {
     const bankId = body.bank_id ?? "openbrain";
     const limit = parseBodyLimit(body.limit, 10, 50);
     const threshold = body.threshold ?? parseFloat(process.env.OPENBRAIN_SEARCH_THRESHOLD ?? "0.3");
-    const includeDocuments = body.include_documents ?? true;
-    const includeObservations = body.include_observations ?? true;
-    const includeExperiences = body.include_experiences ?? true;
-    const includeMentalModels = body.include_mental_models ?? false;
+    const sourceTypeAllows = (sourceType: RecallPrimarySourceType): boolean =>
+      requestedSourceTypes === null || requestedSourceTypes.has(sourceType);
+    const includeThoughts = sourceTypeAllows("thought");
+    const includeDocuments = sourceTypeAllows("document_chunk") && (body.include_documents ?? true);
+    const includeObservations = sourceTypeAllows("consolidated_observation") && (body.include_observations ?? true);
+    const includeExperiences = sourceTypeAllows("experience") && (body.include_experiences ?? true);
+    const includeMentalModels = sourceTypeAllows("mental_model") && (
+      body.include_mental_models ?? (requestedSourceTypes?.has("mental_model") ?? false)
+    );
     const temporalEnabled = body.time_start !== undefined || body.time_end !== undefined;
     const filter: Record<string, unknown> = {};
     if (body.type) filter.type = body.type;
@@ -1046,14 +1137,18 @@ export function createApi(): Hono {
     try {
       const queryEmbedding = await embedder.generateEmbedding(body.query);
       const [semanticResults, bm25Results, documentResults, observationResults, experienceResults, mentalModelResults, linkResults, temporalResults] = await Promise.all([
-        searchThoughts(
-          pool, queryEmbedding, limit, threshold, filter,
-          body.project, body.include_archived, body.created_by
-        ),
-        bm25SearchThoughts(
-          pool, body.query, limit, filter,
-          body.project, body.include_archived, body.created_by
-        ),
+        includeThoughts
+          ? searchThoughts(
+              pool, queryEmbedding, limit, threshold, filter,
+              body.project, body.include_archived, body.created_by
+            )
+          : Promise.resolve([]),
+        includeThoughts
+          ? bm25SearchThoughts(
+              pool, body.query, limit, filter,
+              body.project, body.include_archived, body.created_by
+            )
+          : Promise.resolve([]),
         includeDocuments
           ? searchDocumentChunks(pool, queryEmbedding, {
               query: body.query,
@@ -1124,18 +1219,21 @@ export function createApi(): Hono {
       linkResults.forEach((row) => upsertRecallResult(recallResults, recallFromMemoryLink(row)));
       temporalResults.forEach((row) => upsertRecallResult(recallResults, recallFromTemporal(row)));
 
-      const results = sortRecallResults([...recallResults.values()]).slice(0, limit);
+      const filteredResults = filterRecallResultsBySourceTypes([...recallResults.values()], requestedSourceTypes);
+      const results = rankRecallResults(filteredResults, sourceBalance as RecallSourceBalance).slice(0, limit);
       return c.json({
         query: body.query,
         bank_id: bankId,
         count: results.length,
         lanes: {
-          semantic: true,
-          bm25: true,
+          semantic: includeThoughts,
+          bm25: includeThoughts,
           documents: includeDocuments,
           observations: includeObservations,
           experiences: includeExperiences,
           mental_models: includeMentalModels,
+          source_types: requestedSourceTypes ? [...requestedSourceTypes] : null,
+          source_balance: sourceBalance,
           link_expansion: seeds.length > 0,
           temporal: (temporalEnabled ? "active" : "stub") as RecallTemporalLaneStatus,
         },
