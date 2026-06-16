@@ -33,7 +33,8 @@
     "import:parity": "node dist/import/parity-cli.js",
     "ryel:semantic-json": "python3 scripts/ryel_semantic_json.py",
     "seed:mental-models": "tsx src/seed/mental-models-cli.ts",
-    "refresh:mental-model": "tsx src/jobs/mental-model-refresh-cli.ts"
+    "refresh:mental-model": "tsx src/jobs/mental-model-refresh-cli.ts",
+    "backfill:chunk-entities": "tsx src/seed/chunk-entities-backfill-cli.ts"
   },
   "engines": {
     "node": ">=22.0.0"

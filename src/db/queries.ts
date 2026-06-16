@@ -1121,6 +1121,41 @@ export async function extractAndLinkEntities(
   }
 }
 
+export async function extractAndLinkChunkEntities(
+  pool: pg.Pool,
+  chunkId: string,
+  entities: Array<{ name: string; type: string; aliases?: string[] }>
+): Promise<void> {
+  if (entities.length === 0) return;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const e of entities) {
+      const row = await client.query<EntityRow>(
+        `INSERT INTO entities (name, type, aliases)
+         VALUES ($1, $2, $3::jsonb)
+         ON CONFLICT (name, type) DO UPDATE SET
+           aliases = EXCLUDED.aliases
+         RETURNING id, name, type, aliases`,
+        [e.name, e.type, JSON.stringify(e.aliases ?? [])]
+      );
+      const entityId = row.rows[0]!.id;
+      await client.query(
+        `INSERT INTO chunk_entities (chunk_id, entity_id, weight)
+         VALUES ($1, $2, 1.0)
+         ON CONFLICT (chunk_id, entity_id) DO NOTHING`,
+        [chunkId, entityId]
+      );
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export interface EntitySearchResult extends ThoughtRow {
   overlap_count: number;
 }

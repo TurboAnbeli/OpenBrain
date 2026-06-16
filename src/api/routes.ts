@@ -2926,6 +2926,14 @@ export function createApi(): Hono {
       );
       const results = await replaceDocumentChunks(pool, id, chunkInputs);
 
+      const { extractAndLinkChunkEntities } = await import("../db/queries.js");
+      for (const chunk of results) {
+        const entities = extractEntities(chunk.content, chunk.metadata as { people?: string[]; topics?: string[] } | undefined);
+        if (entities.length > 0) {
+          await extractAndLinkChunkEntities(pool, chunk.id, entities);
+        }
+      }
+
       return c.json({
         document_id: id,
         count: results.length,
