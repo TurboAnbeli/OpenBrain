@@ -726,7 +726,7 @@ describe("REST API Routes", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        query: "claude ai oauth connector failure root cause",
+        query: "Claude AI OAuth Connector Failure Root Cause",
         source_router: "heuristic",
         limit: 5,
       }),
@@ -753,6 +753,76 @@ describe("REST API Routes", () => {
     expect(body.lanes.source_types).toEqual(["document_chunk"]);
     expect(body.lanes.source_balance).toBe("score");
     expect(body.results.map((result) => result.source_type)).toEqual(["document_chunk"]);
+  });
+
+  it("POST /recall does not route first-person summary queries to document-only recall", async () => {
+    mockSearchThoughts.mockResolvedValueOnce([]);
+    mockBm25SearchThoughts.mockResolvedValueOnce([]);
+    mockSearchDocumentChunks.mockResolvedValueOnce([]);
+    mockSearchConsolidatedObservations.mockResolvedValueOnce([]);
+    mockSearchExperiences.mockResolvedValueOnce([]);
+
+    const res = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "summarize my views on options trading",
+        source_router: "heuristic",
+        limit: 5,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockSearchThoughts).toHaveBeenCalled();
+    expect(mockBm25SearchThoughts).toHaveBeenCalled();
+    expect(mockSearchDocumentChunks).toHaveBeenCalled();
+    expect(mockSearchConsolidatedObservations).toHaveBeenCalled();
+    expect(mockSearchExperiences).toHaveBeenCalled();
+
+    const body = (await res.json()) as {
+      lanes: { source_router_decision: { route: string; source_types: string[] | null; source_balance: string; reasons: string[] }; source_types: string[] | null; source_balance: string };
+    };
+    expect(body.lanes.source_router_decision).toMatchObject({
+      route: "balanced_mixed",
+      source_types: null,
+      source_balance: "balanced",
+    });
+    expect(body.lanes.source_router_decision.reasons).toContain("fallback_mixed_visibility");
+    expect(body.lanes.source_types).toBeNull();
+    expect(body.lanes.source_balance).toBe("balanced");
+  });
+
+  it("POST /recall does not treat lowercase keyword memory queries as document titles", async () => {
+    mockSearchThoughts.mockResolvedValueOnce([]);
+    mockBm25SearchThoughts.mockResolvedValueOnce([]);
+    mockSearchDocumentChunks.mockResolvedValueOnce([]);
+    mockSearchConsolidatedObservations.mockResolvedValueOnce([]);
+    mockSearchExperiences.mockResolvedValueOnce([]);
+
+    const res = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "current Hermes orchestrator model production",
+        source_router: "heuristic",
+        limit: 5,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockSearchThoughts).toHaveBeenCalled();
+    expect(mockSearchDocumentChunks).toHaveBeenCalled();
+
+    const body = (await res.json()) as {
+      lanes: { source_router_decision: { route: string; source_types: string[] | null; source_balance: string; reasons: string[] }; source_types: string[] | null; source_balance: string };
+    };
+    expect(body.lanes.source_router_decision).toMatchObject({
+      route: "balanced_mixed",
+      source_types: null,
+      source_balance: "balanced",
+    });
+    expect(body.lanes.source_router_decision.reasons).toContain("fallback_mixed_visibility");
+    expect(body.lanes.source_types).toBeNull();
   });
 
   it("POST /recall can route memory-style queries to thought-only recall when source_router is heuristic", async () => {
@@ -821,7 +891,7 @@ describe("REST API Routes", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        query: "claude ai oauth connector failure root cause",
+        query: "Claude AI OAuth Connector Failure Root Cause",
         source_router: "heuristic",
         source_types: ["thought"],
         source_balance: "balanced",

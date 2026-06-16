@@ -483,13 +483,11 @@ const RECALL_THOUGHT_QUERY_PATTERNS = [
   /\bmy\s+(preference|profile|memory)\b/,
 ];
 
-const RECALL_DOCUMENT_QUERY_PATTERNS = [
-  /\b(?:doc|docs|document|documents)\b/,
-  /\b(?:file|files|source|sources)\b/,
-  /\b(?:wiki|page|pages|markdown)\b/,
-  /\b(?:note|notes|handoff|reference|references)\b/,
-  /\b(?:artifact|artifacts|report|transcript)\b/,
-];
+const RECALL_DOCUMENT_REQUEST_PATTERN =
+  /\b(?:find|show|open|search|list|which|what)\b.*\b(?:doc|docs|document|documents|file|files|source|sources|wiki|page|pages|markdown|note|notes|handoff|reference|references|artifact|artifacts|report|transcript)\b|\b(?:doc|docs|document|documents|file|files|source|sources|wiki|page|pages|markdown|note|notes|handoff|reference|references|artifact|artifacts|report|transcript)\b.*\b(?:titled|called|named)\b/;
+
+const RECALL_FIRST_PERSON_PATTERN = /\b(?:i|me|my|mine|we|our|ours)\b/;
+const RECALL_SUMMARY_ACTION_PATTERN = /^(?:summarize|explain|compare|show|find|recall)\b/;
 
 const RECALL_MIXED_QUERY_PATTERNS = [
   /\bwhat\s+do\s+we\s+know\b/,
@@ -498,18 +496,29 @@ const RECALL_MIXED_QUERY_PATTERNS = [
   /\bknowledge\s+stores?\b/,
 ];
 
-function isTitleLikeDocumentQuery(query: string, tokens: string[]): boolean {
-  if (query.includes("?") || tokens.length < 3 || tokens.length > 12) return false;
-  if (matchesAnyPattern(query, RECALL_THOUGHT_QUERY_PATTERNS)) return false;
-  if (matchesAnyPattern(query, RECALL_MIXED_QUERY_PATTERNS)) return false;
-  if (/^(what|how|why|where|when|who|which|can|could|should|did|do|does|is|are)\b/.test(query)) return false;
-  const nonNumericTokens = tokens.filter((token) => !/^\d+(?:\.\d+)?$/.test(token));
-  return nonNumericTokens.length >= 3;
+function isTitleLikeDocumentQuery(query: string, normalized: string): boolean {
+  const rawTokens = normalizedQueryTokens(query);
+  if (query.includes("?") || rawTokens.length < 2 || rawTokens.length > 18) return false;
+  if (matchesAnyPattern(normalized, RECALL_THOUGHT_QUERY_PATTERNS)) return false;
+  if (matchesAnyPattern(normalized, RECALL_MIXED_QUERY_PATTERNS)) return false;
+  if (/^(what|how|why|where|when|who|which|can|could|should|did|do|does|is|are)\b/.test(normalized)) return false;
+  if (RECALL_FIRST_PERSON_PATTERN.test(normalized)) return false;
+  if (RECALL_SUMMARY_ACTION_PATTERN.test(normalized)) return false;
+
+  const titleishTokens = query.match(/[A-Za-z0-9]+/g) ?? [];
+  const meaningfulTitleishTokens = titleishTokens.filter((token) => token.length > 1);
+  const titleCaseTokenCount = meaningfulTitleishTokens.filter((token) => /^[A-Z]/.test(token)).length;
+  const titleCaseRatio = titleCaseTokenCount / Math.max(meaningfulTitleishTokens.length, 1);
+  const hasTitlePunctuation = /[—–:()]/.test(query);
+
+  if (hasTitlePunctuation && titleCaseTokenCount >= 2) return true;
+  if (meaningfulTitleishTokens.length === 2 && titleCaseTokenCount === 2) return true;
+  return meaningfulTitleishTokens.length >= 3 && titleCaseTokenCount >= 2 && titleCaseRatio >= 0.5;
 }
 
 function routeRecallSourcesHeuristically(query: string): RecallSourceRouterDecision {
-  const normalized = query.trim().toLowerCase().replace(/\s+/g, " ");
-  const tokens = normalizedQueryTokens(normalized);
+  const rawQuery = query.trim().replace(/\s+/g, " ");
+  const normalized = rawQuery.toLowerCase();
   const reasons: string[] = [];
 
   if (matchesAnyPattern(normalized, RECALL_THOUGHT_QUERY_PATTERNS)) {
@@ -523,7 +532,7 @@ function routeRecallSourcesHeuristically(query: string): RecallSourceRouterDecis
     };
   }
 
-  if (matchesAnyPattern(normalized, RECALL_DOCUMENT_QUERY_PATTERNS)) {
+  if (RECALL_DOCUMENT_REQUEST_PATTERN.test(normalized)) {
     reasons.push("document_source_cue");
     return {
       route: "document_only",
@@ -534,7 +543,7 @@ function routeRecallSourcesHeuristically(query: string): RecallSourceRouterDecis
     };
   }
 
-  if (isTitleLikeDocumentQuery(normalized, tokens)) {
+  if (isTitleLikeDocumentQuery(rawQuery, normalized)) {
     reasons.push("title_like_query");
     return {
       route: "document_only",
