@@ -223,6 +223,78 @@ export interface ConsolidatedObservationUpdateInput {
   edit_reason?: string;
 }
 
+
+// ─── Mental Models ────────────────────────────────────────────────────
+
+export interface MentalModelInput {
+  name: string;
+  query: string;
+  content: string;
+  embedding: number[];
+  bank_id?: string;
+  structured?: Record<string, unknown>;
+  tags?: unknown[];
+  trigger_tags?: unknown[];
+  priority?: number;
+  refresh_meta?: Record<string, unknown>;
+  history?: unknown[];
+  active?: boolean;
+  project?: string;
+  created_by?: string;
+}
+
+export interface MentalModelRow {
+  id: string;
+  bank_id: string;
+  name: string;
+  query: string;
+  content: string;
+  structured: Record<string, unknown>;
+  tags: unknown[];
+  trigger_tags: unknown[];
+  priority: number;
+  refresh_meta: Record<string, unknown>;
+  history: unknown[];
+  active: boolean;
+  project?: string | null;
+  created_by?: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface MentalModelListOptions {
+  bank_id?: string;
+  project?: string;
+  created_by?: string;
+  trigger_tag?: string;
+  include_inactive?: boolean;
+  limit?: number;
+}
+
+export interface MentalModelSearchOptions extends MentalModelListOptions {
+  threshold?: number;
+}
+
+export interface MentalModelSearchResult extends MentalModelRow {
+  similarity: number;
+}
+
+export interface MentalModelUpdateInput {
+  name?: string;
+  query?: string;
+  content?: string;
+  embedding?: number[];
+  structured?: Record<string, unknown>;
+  tags?: unknown[];
+  trigger_tags?: unknown[];
+  priority?: number;
+  refresh_meta?: Record<string, unknown>;
+  history?: unknown[];
+  active?: boolean;
+  project?: string | null;
+  created_by?: string | null;
+}
+
 // ─── Experiences ─────────────────────────────────────────────────────
 
 export type ExperienceEventType =
@@ -1712,6 +1784,286 @@ export async function updateConsolidatedObservation(
   } finally {
     client.release();
   }
+}
+
+
+// ─── Mental Model Queries ──────────────────────────────────────────────
+
+function boundedMentalModelLimit(limit?: number): number {
+  if (!Number.isFinite(limit ?? 50)) return 50;
+  return Math.max(1, Math.min(100, Math.trunc(limit ?? 50)));
+}
+
+function buildMentalModelFilters(
+  options: MentalModelListOptions,
+  params: unknown[],
+  startClause = "WHERE"
+): string {
+  const clauses: string[] = [];
+  const add = (value: unknown): string => {
+    params.push(value);
+    return `$${params.length}`;
+  };
+
+  clauses.push(`bank_id = ${add(options.bank_id ?? "openbrain")}`);
+  if (options.project !== undefined) clauses.push(`project = ${add(options.project)}`);
+  if (options.created_by !== undefined) clauses.push(`created_by = ${add(options.created_by)}`);
+  if (options.trigger_tag !== undefined) clauses.push(`trigger_tags ? ${add(options.trigger_tag)}`);
+  if (!options.include_inactive) clauses.push("active = true");
+
+  return `${startClause} ${clauses.join(" AND ")}`;
+}
+
+export async function insertMentalModel(
+  pool: pg.Pool,
+  model: MentalModelInput
+): Promise<MentalModelRow> {
+  const key = getCipherKey();
+  const embeddingStr = `[${model.embedding.join(",")}]`;
+  const { rows } = await pool.query<MentalModelRow>(
+    `INSERT INTO mental_models (
+       bank_id,
+       name,
+       query,
+       content_enc,
+       embedding,
+       fts,
+       structured,
+       tags,
+       trigger_tags,
+       priority,
+       refresh_meta,
+       history,
+       active,
+       project,
+       created_by
+     )
+     VALUES (
+       COALESCE($1, 'openbrain'),
+       $2,
+       $3,
+       pgp_sym_encrypt($4, $15),
+       $5::vector,
+       to_tsvector('english', $2 || ' ' || $3 || ' ' || $4),
+       $6::jsonb,
+       $7::jsonb,
+       $8::jsonb,
+       COALESCE($9, 0),
+       $10::jsonb,
+       $11::jsonb,
+       COALESCE($12, true),
+       $13,
+       $14
+     )
+     RETURNING id,
+               bank_id,
+               name,
+               query,
+               pgp_sym_decrypt(content_enc, $15)::text AS content,
+               structured,
+               tags,
+               trigger_tags,
+               priority,
+               refresh_meta,
+               history,
+               active,
+               project,
+               created_by,
+               created_at,
+               updated_at`,
+    [
+      model.bank_id ?? null,
+      model.name,
+      model.query,
+      model.content,
+      embeddingStr,
+      JSON.stringify(model.structured ?? {}),
+      JSON.stringify(model.tags ?? []),
+      JSON.stringify(model.trigger_tags ?? []),
+      model.priority ?? 0,
+      JSON.stringify(model.refresh_meta ?? {}),
+      JSON.stringify(model.history ?? []),
+      model.active ?? true,
+      model.project ?? null,
+      model.created_by ?? null,
+      key,
+    ]
+  );
+  return rows[0]!;
+}
+
+export async function getMentalModel(
+  pool: pg.Pool,
+  id: string
+): Promise<MentalModelRow | null> {
+  const key = getCipherKey();
+  const { rows } = await pool.query<MentalModelRow>(
+    `SELECT id,
+            bank_id,
+            name,
+            query,
+            pgp_sym_decrypt(content_enc, $2)::text AS content,
+            structured,
+            tags,
+            trigger_tags,
+            priority,
+            refresh_meta,
+            history,
+            active,
+            project,
+            created_by,
+            created_at,
+            updated_at
+     FROM mental_models
+     WHERE id = $1`,
+    [id, key]
+  );
+  return rows[0] ?? null;
+}
+
+export async function listMentalModels(
+  pool: pg.Pool,
+  options: MentalModelListOptions = {}
+): Promise<MentalModelRow[]> {
+  const key = getCipherKey();
+  const params: unknown[] = [key];
+  const where = buildMentalModelFilters(options, params);
+  params.push(boundedMentalModelLimit(options.limit));
+  const limitPlaceholder = `$${params.length}`;
+  const { rows } = await pool.query<MentalModelRow>(
+    `SELECT id,
+            bank_id,
+            name,
+            query,
+            pgp_sym_decrypt(content_enc, $1)::text AS content,
+            structured,
+            tags,
+            trigger_tags,
+            priority,
+            refresh_meta,
+            history,
+            active,
+            project,
+            created_by,
+            created_at,
+            updated_at
+     FROM mental_models
+     ${where}
+     ORDER BY priority DESC, updated_at DESC, id DESC
+     LIMIT ${limitPlaceholder}`,
+    params
+  );
+  return rows;
+}
+
+export async function searchMentalModels(
+  pool: pg.Pool,
+  queryEmbedding: number[],
+  options: MentalModelSearchOptions = {}
+): Promise<MentalModelSearchResult[]> {
+  const embeddingStr = `[${queryEmbedding.join(",")}]`;
+  const key = getCipherKey();
+  const params: unknown[] = [embeddingStr, key];
+  const where = buildMentalModelFilters(options, params);
+  params.push(options.threshold ?? 0.3);
+  const thresholdPlaceholder = `$${params.length}`;
+  params.push(boundedMentalModelLimit(options.limit));
+  const limitPlaceholder = `$${params.length}`;
+
+  const { rows } = await pool.query<MentalModelSearchResult>(
+    `SELECT id,
+            bank_id,
+            name,
+            query,
+            pgp_sym_decrypt(content_enc, $2)::text AS content,
+            structured,
+            tags,
+            trigger_tags,
+            priority,
+            refresh_meta,
+            history,
+            active,
+            project,
+            created_by,
+            1 - (embedding <=> $1::vector) AS similarity,
+            created_at,
+            updated_at
+     FROM mental_models
+     ${where}
+       AND embedding IS NOT NULL
+       AND 1 - (embedding <=> $1::vector) >= ${thresholdPlaceholder}
+     ORDER BY embedding <=> $1::vector ASC, priority DESC, updated_at DESC
+     LIMIT ${limitPlaceholder}`,
+    params
+  );
+  return rows;
+}
+
+export async function updateMentalModel(
+  pool: pg.Pool,
+  id: string,
+  patch: MentalModelUpdateInput
+): Promise<MentalModelRow> {
+  const key = getCipherKey();
+  const embeddingStr = patch.embedding ? `[${patch.embedding.join(",")}]` : null;
+  const { rows, rowCount } = await pool.query<MentalModelRow>(
+    `UPDATE mental_models
+     SET name = COALESCE($2, name),
+         query = COALESCE($3, query),
+         content_enc = pgp_sym_encrypt(COALESCE($4, pgp_sym_decrypt(content_enc, $15)::text), $15),
+         embedding = COALESCE($5::vector, embedding),
+         structured = COALESCE($6::jsonb, structured),
+         tags = COALESCE($7::jsonb, tags),
+         trigger_tags = COALESCE($8::jsonb, trigger_tags),
+         priority = COALESCE($9, priority),
+         refresh_meta = COALESCE($10::jsonb, refresh_meta),
+         history = COALESCE($11::jsonb, history),
+         active = COALESCE($12::boolean, active),
+         project = COALESCE($13::text, project),
+         created_by = COALESCE($14::text, created_by),
+         fts = to_tsvector(
+           'english',
+           COALESCE($2, name) || ' ' || COALESCE($3, query) || ' ' || COALESCE($4, pgp_sym_decrypt(content_enc, $15)::text)
+         ),
+         updated_at = now()
+     WHERE id = $1
+     RETURNING id, bank_id, name, query,
+               pgp_sym_decrypt(content_enc, $15)::text AS content,
+               structured,
+               tags,
+               trigger_tags,
+               priority,
+               refresh_meta,
+               history,
+               active,
+               project,
+               created_by,
+               created_at,
+               updated_at`,
+    [
+      id,
+      patch.name ?? null,
+      patch.query ?? null,
+      patch.content ?? null,
+      embeddingStr,
+      patch.structured !== undefined ? JSON.stringify(patch.structured) : null,
+      patch.tags !== undefined ? JSON.stringify(patch.tags) : null,
+      patch.trigger_tags !== undefined ? JSON.stringify(patch.trigger_tags) : null,
+      patch.priority ?? null,
+      patch.refresh_meta !== undefined ? JSON.stringify(patch.refresh_meta) : null,
+      patch.history !== undefined ? JSON.stringify(patch.history) : null,
+      patch.active ?? null,
+      patch.project ?? null,
+      patch.created_by ?? null,
+      key,
+    ]
+  );
+
+  if (!rowCount || rowCount === 0) {
+    throw new Error(`Mental model not found: ${id}`);
+  }
+
+  return rows[0]!;
 }
 
 

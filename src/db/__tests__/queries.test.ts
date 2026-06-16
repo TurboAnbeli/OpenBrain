@@ -25,6 +25,11 @@ import {
   getConsolidatedObservation,
   searchConsolidatedObservations,
   updateConsolidatedObservation,
+  insertMentalModel,
+  getMentalModel,
+  listMentalModels,
+  searchMentalModels,
+  updateMentalModel,
   enqueueConsolidationJob,
   getConsolidationJob,
   startConsolidationJob,
@@ -49,6 +54,7 @@ import {
   type DocumentInput,
   type DocumentChunkInput,
   type ConsolidatedObservationInput,
+  type MentalModelInput,
 } from "../queries.js";
 
 // ─── Mock Pool Factory ──────────────────────────────────────────────
@@ -962,6 +968,125 @@ describe("consolidated observations", () => {
     expect(updateParams[4]).toEqual(updated.source_memory_ids);
     expect(updateParams[5]).toEqual(JSON.stringify(updated.source_quotes));
     expect(result.source_quotes).toEqual(updated.source_quotes);
+  });
+});
+
+
+// ─── Mental Models ────────────────────────────────────────────────────
+
+describe("mental models", () => {
+  const createdAt = new Date("2026-06-15T00:00:00Z");
+  const mentalModelInput: MentalModelInput = {
+    bank_id: "openbrain",
+    name: "One Brain direction",
+    query: "What is the one-brain architecture direction?",
+    content: "OpenBrain is canonical; Markdown is transitional UI/archive.",
+    embedding: [0.1, 0.2, 0.3],
+    structured: { stance: "database-first" },
+    tags: ["one-brain"],
+    trigger_tags: ["architecture"],
+    priority: 7,
+    refresh_meta: { source: "manual" },
+    history: [{ reason: "seed" }],
+    active: true,
+    project: "one-brain",
+    created_by: "hermes",
+  };
+  const mentalModelRow = {
+    id: "model-123",
+    ...mentalModelInput,
+    created_at: createdAt,
+    updated_at: createdAt,
+  };
+
+  it("inserts encrypted mental models with canonical query and trigger metadata", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [mentalModelRow] });
+
+    const result = await insertMentalModel(pool, mentalModelInput);
+
+    expect(result.id).toBe("model-123");
+    expect(result.content).toBe(mentalModelInput.content);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("INSERT INTO mental_models");
+    expect(sql).toContain("pgp_sym_encrypt($4, $15)");
+    expect(sql).toContain("pgp_sym_decrypt(content_enc, $15)");
+    expect(sql).toContain("to_tsvector('english', $2 || ' ' || $3 || ' ' || $4)");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[0]).toBe("openbrain");
+    expect(params[1]).toBe(mentalModelInput.name);
+    expect(params[2]).toBe(mentalModelInput.query);
+    expect(params[3]).toBe(mentalModelInput.content);
+    expect(params[4]).toBe("[0.1,0.2,0.3]");
+    expect(JSON.parse(params[5] as string)).toEqual(mentalModelInput.structured);
+    expect(JSON.parse(params[7] as string)).toEqual(mentalModelInput.trigger_tags);
+    expect(params).toHaveLength(15);
+  });
+
+  it("fetches and lists mental models while filtering inactive rows by default", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [mentalModelRow] });
+    mockQuery.mockResolvedValueOnce({ rows: [mentalModelRow] });
+
+    const byId = await getMentalModel(pool, "a1b2c3d4-1234-5678-9abc-def012345678");
+    const listed = await listMentalModels(pool, {
+      bank_id: "openbrain",
+      project: "one-brain",
+      trigger_tag: "architecture",
+      limit: 5,
+    });
+
+    expect(byId?.content).toBe(mentalModelInput.content);
+    expect(listed).toHaveLength(1);
+    const getSql = mockQuery.mock.calls[0]![0] as string;
+    const listSql = mockQuery.mock.calls[1]![0] as string;
+    expect(getSql).toContain("FROM mental_models");
+    expect(getSql).toContain("pgp_sym_decrypt(content_enc");
+    expect(listSql).toContain("active = true");
+    expect(listSql).toContain("trigger_tags ? $");
+    expect(listSql).toContain("ORDER BY priority DESC, updated_at DESC");
+  });
+
+  it("searches active mental models by vector with project and threshold filters", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [{ ...mentalModelRow, similarity: 0.88 }] });
+
+    const results = await searchMentalModels(pool, [0.1, 0.2, 0.3], {
+      bank_id: "openbrain",
+      project: "one-brain",
+      threshold: 0.3,
+      limit: 3,
+    });
+
+    expect(results[0]!.similarity).toBe(0.88);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("1 - (embedding <=> $1::vector) AS similarity");
+    expect(sql).toContain("active = true");
+    expect(sql).toContain("ORDER BY embedding <=> $1::vector ASC, priority DESC");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[0]).toBe("[0.1,0.2,0.3]");
+    expect(params).toContain("openbrain");
+    expect(params).toContain("one-brain");
+  });
+
+  it("updates mental model content and can deactivate rows for cleanup", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [{ ...mentalModelRow, content: "Updated model", active: false }], rowCount: 1 });
+
+    const result = await updateMentalModel(pool, "a1b2c3d4-1234-5678-9abc-def012345678", {
+      content: "Updated model",
+      embedding: [0.9, 0.8, 0.7],
+      active: false,
+      refresh_meta: { refreshed_by: "smoke" },
+    });
+
+    expect(result.content).toBe("Updated model");
+    expect(result.active).toBe(false);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("UPDATE mental_models");
+    expect(sql).toContain("content_enc = pgp_sym_encrypt");
+    expect(sql).toContain("active = COALESCE($12::boolean, active)");
+    expect(sql).toContain("RETURNING id, bank_id, name, query");
   });
 });
 

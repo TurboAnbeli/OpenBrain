@@ -34,6 +34,11 @@ import {
   getConsolidatedObservation,
   searchConsolidatedObservations,
   updateConsolidatedObservation,
+  insertMentalModel,
+  getMentalModel,
+  listMentalModels,
+  searchMentalModels,
+  updateMentalModel,
   enqueueConsolidationJob,
   getConsolidationJob,
   insertExperience,
@@ -58,6 +63,8 @@ import {
   type DocumentChunkSearchResult,
   type ConsolidatedObservationRow,
   type ConsolidatedObservationSearchResult,
+  type MentalModelRow,
+  type MentalModelSearchResult,
   type ConsolidationJobRow,
   type ExperienceEventType,
   type ExperienceRow,
@@ -218,6 +225,41 @@ function serializeConsolidatedObservation(observation: ConsolidatedObservationRo
     updated_at: observation.updated_at.toISOString(),
     ...(typeof observation.similarity === "number" ? { similarity: observation.similarity } : {}),
   };
+}
+
+
+function serializeMentalModel(model: MentalModelRow & { similarity?: number }) {
+  return {
+    id: model.id,
+    bank_id: model.bank_id,
+    name: model.name,
+    query: model.query,
+    content: model.content,
+    structured: model.structured ?? {},
+    tags: model.tags ?? [],
+    trigger_tags: model.trigger_tags ?? [],
+    priority: model.priority,
+    refresh_meta: model.refresh_meta ?? {},
+    history: model.history ?? [],
+    active: model.active,
+    project: model.project ?? null,
+    created_by: model.created_by ?? null,
+    created_at: model.created_at.toISOString(),
+    updated_at: model.updated_at.toISOString(),
+    ...(typeof model.similarity === "number" ? { similarity: model.similarity } : {}),
+  };
+}
+
+function mentalModelEmbeddingText(name: string, query: string, content: string): string {
+  return `${name}\n${query}\n${content}`;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isArrayValue(value: unknown): value is unknown[] {
+  return Array.isArray(value);
 }
 
 function serializeExperience(experience: ExperienceRow & { similarity?: number }) {
@@ -396,6 +438,33 @@ function recallFromObservation(row: ConsolidatedObservationSearchResult): Recall
       source_quotes: row.source_quotes ?? {},
       tags: row.tags ?? [],
       trend: row.trend ?? null,
+    },
+    project: row.project ?? null,
+    created_at: serializeOptionalTimestamp(row.created_at),
+    score,
+    semantic_score: score,
+    bm25_score: 0,
+    temporal_score: 0,
+    link_score: 0,
+  };
+}
+
+
+function recallFromMentalModel(row: MentalModelSearchResult): RecallApiResult {
+  const score = scoreValue(row.similarity);
+  return {
+    source_type: "mental_model",
+    id: row.id,
+    content: row.content,
+    title: row.name,
+    metadata: {
+      ...asRecord(row.structured),
+      query: row.query,
+      tags: row.tags ?? [],
+      trigger_tags: row.trigger_tags ?? [],
+      priority: row.priority,
+      refresh_meta: row.refresh_meta ?? {},
+      active: row.active,
     },
     project: row.project ?? null,
     created_at: serializeOptionalTimestamp(row.created_at),
@@ -881,6 +950,7 @@ export function createApi(): Hono {
       include_documents?: boolean;
       include_observations?: boolean;
       include_experiences?: boolean;
+      include_mental_models?: boolean;
       expand_from_seeds?: Array<{ source_type?: string; source_id?: string }>;
       link_direction?: string;
       link_relationship?: string;
@@ -907,6 +977,9 @@ export function createApi(): Hono {
     }
     if (body.include_experiences !== undefined && typeof body.include_experiences !== "boolean") {
       return c.json({ error: "include_experiences must be a boolean" }, 400);
+    }
+    if (body.include_mental_models !== undefined && typeof body.include_mental_models !== "boolean") {
+      return c.json({ error: "include_mental_models must be a boolean" }, 400);
     }
     if (body.limit !== undefined && (typeof body.limit !== "number" || !Number.isFinite(body.limit))) {
       return c.json({ error: "limit must be a finite number" }, 400);
@@ -964,6 +1037,7 @@ export function createApi(): Hono {
     const includeDocuments = body.include_documents ?? true;
     const includeObservations = body.include_observations ?? true;
     const includeExperiences = body.include_experiences ?? true;
+    const includeMentalModels = body.include_mental_models ?? false;
     const temporalEnabled = body.time_start !== undefined || body.time_end !== undefined;
     const filter: Record<string, unknown> = {};
     if (body.type) filter.type = body.type;
@@ -971,7 +1045,7 @@ export function createApi(): Hono {
 
     try {
       const queryEmbedding = await embedder.generateEmbedding(body.query);
-      const [semanticResults, bm25Results, documentResults, observationResults, experienceResults, linkResults, temporalResults] = await Promise.all([
+      const [semanticResults, bm25Results, documentResults, observationResults, experienceResults, mentalModelResults, linkResults, temporalResults] = await Promise.all([
         searchThoughts(
           pool, queryEmbedding, limit, threshold, filter,
           body.project, body.include_archived, body.created_by
@@ -1008,6 +1082,15 @@ export function createApi(): Hono {
               threshold,
             })
           : Promise.resolve([]),
+        includeMentalModels
+          ? searchMentalModels(pool, queryEmbedding, {
+              bank_id: bankId,
+              project: body.project,
+              created_by: body.created_by,
+              limit,
+              threshold,
+            })
+          : Promise.resolve([]),
         seeds.length > 0
           ? expandMemoryLinks(pool, {
               bank_id: bankId,
@@ -1037,6 +1120,7 @@ export function createApi(): Hono {
       documentResults.forEach((row) => upsertRecallResult(recallResults, recallFromDocumentChunk(row)));
       observationResults.forEach((row) => upsertRecallResult(recallResults, recallFromObservation(row)));
       experienceResults.forEach((row) => upsertRecallResult(recallResults, recallFromExperience(row)));
+      mentalModelResults.forEach((row) => upsertRecallResult(recallResults, recallFromMentalModel(row)));
       linkResults.forEach((row) => upsertRecallResult(recallResults, recallFromMemoryLink(row)));
       temporalResults.forEach((row) => upsertRecallResult(recallResults, recallFromTemporal(row)));
 
@@ -1051,6 +1135,7 @@ export function createApi(): Hono {
           documents: includeDocuments,
           observations: includeObservations,
           experiences: includeExperiences,
+          mental_models: includeMentalModels,
           link_expansion: seeds.length > 0,
           temporal: (temporalEnabled ? "active" : "stub") as RecallTemporalLaneStatus,
         },
@@ -1391,6 +1476,213 @@ export function createApi(): Hono {
       const message = err instanceof Error ? err.message : String(err);
       console.error("[api] Memory link fetch failed:", message);
       return c.json({ error: "Failed to fetch memory link", detail: message }, 502);
+    }
+  });
+
+
+  // ─── Mental Models ────────────────────────────────────────────────────
+
+  app.post("/mental-models/search", async (c) => {
+    const body = await c.req.json<{
+      query?: string;
+      bank_id?: string;
+      project?: string;
+      created_by?: string;
+      trigger_tag?: string;
+      include_inactive?: boolean;
+      limit?: number;
+      threshold?: number;
+    }>();
+
+    if (!body.query || body.query.trim().length === 0) {
+      return c.json({ error: "query is required" }, 400);
+    }
+    if (body.bank_id !== undefined && body.bank_id.trim().length === 0) {
+      return c.json({ error: "bank_id must not be empty" }, 400);
+    }
+    if (body.include_inactive !== undefined && typeof body.include_inactive !== "boolean") {
+      return c.json({ error: "include_inactive must be a boolean" }, 400);
+    }
+    if (body.limit !== undefined && (typeof body.limit !== "number" || !Number.isFinite(body.limit))) {
+      return c.json({ error: "limit must be a finite number" }, 400);
+    }
+    if (body.threshold !== undefined && (typeof body.threshold !== "number" || !Number.isFinite(body.threshold))) {
+      return c.json({ error: "threshold must be a finite number" }, 400);
+    }
+
+    try {
+      const embedding = await embedder.generateEmbedding(body.query);
+      const results = await searchMentalModels(pool, embedding, {
+        bank_id: body.bank_id ?? "openbrain",
+        project: body.project,
+        created_by: body.created_by,
+        trigger_tag: body.trigger_tag,
+        include_inactive: body.include_inactive ?? false,
+        limit: parseBodyLimit(body.limit, 10, 100),
+        threshold: body.threshold ?? parseFloat(process.env.OPENBRAIN_SEARCH_THRESHOLD ?? "0.3"),
+      });
+      return c.json({ count: results.length, results: results.map(serializeMentalModel) });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Mental model search failed:", message);
+      return c.json({ error: "Failed to search mental models", detail: message }, 502);
+    }
+  });
+
+  app.post("/mental-models", async (c) => {
+    const body = await c.req.json<{
+      bank_id?: string;
+      name?: string;
+      query?: string;
+      content?: string;
+      structured?: Record<string, unknown>;
+      tags?: unknown[];
+      trigger_tags?: unknown[];
+      priority?: number;
+      refresh_meta?: Record<string, unknown>;
+      history?: unknown[];
+      active?: boolean;
+      project?: string;
+      created_by?: string;
+    }>();
+
+    if (!body.name || body.name.trim().length === 0) return c.json({ error: "name is required" }, 400);
+    if (!body.query || body.query.trim().length === 0) return c.json({ error: "query is required" }, 400);
+    if (!body.content || body.content.trim().length === 0) return c.json({ error: "content is required" }, 400);
+    if (body.bank_id !== undefined && body.bank_id.trim().length === 0) return c.json({ error: "bank_id must not be empty" }, 400);
+    if (body.structured !== undefined && !isPlainRecord(body.structured)) return c.json({ error: "structured must be an object" }, 400);
+    if (body.refresh_meta !== undefined && !isPlainRecord(body.refresh_meta)) return c.json({ error: "refresh_meta must be an object" }, 400);
+    if (body.tags !== undefined && !isArrayValue(body.tags)) return c.json({ error: "tags must be an array" }, 400);
+    if (body.trigger_tags !== undefined && !isArrayValue(body.trigger_tags)) return c.json({ error: "trigger_tags must be an array" }, 400);
+    if (body.history !== undefined && !isArrayValue(body.history)) return c.json({ error: "history must be an array" }, 400);
+    if (body.priority !== undefined && (typeof body.priority !== "number" || !Number.isFinite(body.priority))) return c.json({ error: "priority must be a finite number" }, 400);
+    if (body.active !== undefined && typeof body.active !== "boolean") return c.json({ error: "active must be a boolean" }, 400);
+
+    try {
+      const embedding = await embedder.generateEmbedding(mentalModelEmbeddingText(body.name, body.query, body.content));
+      const result = await insertMentalModel(pool, {
+        bank_id: body.bank_id ?? "openbrain",
+        name: body.name,
+        query: body.query,
+        content: body.content,
+        embedding,
+        structured: body.structured ?? {},
+        tags: body.tags ?? [],
+        trigger_tags: body.trigger_tags ?? [],
+        priority: body.priority ?? 0,
+        refresh_meta: body.refresh_meta ?? {},
+        history: body.history ?? [],
+        active: body.active ?? true,
+        project: body.project,
+        created_by: body.created_by,
+      });
+      return c.json(serializeMentalModel(result));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Mental model create failed:", message);
+      return c.json({ error: "Failed to create mental model", detail: message }, 502);
+    }
+  });
+
+  app.get("/mental-models", async (c) => {
+    const includeInactive = parseOptionalBoolean(c.req.query("include_inactive"));
+    if (c.req.query("include_inactive") !== undefined && includeInactive === undefined) {
+      return c.json({ error: "include_inactive must be true or false" }, 400);
+    }
+    const bankId = c.req.query("bank_id") ?? "openbrain";
+    if (bankId.trim().length === 0) return c.json({ error: "bank_id must not be empty" }, 400);
+
+    try {
+      const results = await listMentalModels(pool, {
+        bank_id: bankId,
+        project: c.req.query("project"),
+        created_by: c.req.query("created_by"),
+        trigger_tag: c.req.query("trigger_tag"),
+        include_inactive: includeInactive ?? false,
+        limit: parseBoundedLimit(c.req.query("limit"), 50, 100),
+      });
+      return c.json({ count: results.length, results: results.map(serializeMentalModel) });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Mental model list failed:", message);
+      return c.json({ error: "Failed to list mental models", detail: message }, 502);
+    }
+  });
+
+  app.get("/mental-models/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) return c.json({ error: "id must be a valid UUID" }, 400);
+
+    try {
+      const result = await getMentalModel(pool, id);
+      if (!result) return c.json({ error: `Mental model not found: ${id}` }, 404);
+      return c.json(serializeMentalModel(result));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Mental model fetch failed:", message);
+      return c.json({ error: "Failed to fetch mental model", detail: message }, 502);
+    }
+  });
+
+  app.put("/mental-models/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) return c.json({ error: "id must be a valid UUID" }, 400);
+    const body = await c.req.json<{
+      name?: string;
+      query?: string;
+      content?: string;
+      structured?: Record<string, unknown>;
+      tags?: unknown[];
+      trigger_tags?: unknown[];
+      priority?: number;
+      refresh_meta?: Record<string, unknown>;
+      history?: unknown[];
+      active?: boolean;
+      project?: string | null;
+      created_by?: string | null;
+    }>();
+
+    if (body.name !== undefined && body.name.trim().length === 0) return c.json({ error: "name must not be empty" }, 400);
+    if (body.query !== undefined && body.query.trim().length === 0) return c.json({ error: "query must not be empty" }, 400);
+    if (body.content !== undefined && body.content.trim().length === 0) return c.json({ error: "content must not be empty" }, 400);
+    if (body.structured !== undefined && !isPlainRecord(body.structured)) return c.json({ error: "structured must be an object" }, 400);
+    if (body.refresh_meta !== undefined && !isPlainRecord(body.refresh_meta)) return c.json({ error: "refresh_meta must be an object" }, 400);
+    if (body.tags !== undefined && !isArrayValue(body.tags)) return c.json({ error: "tags must be an array" }, 400);
+    if (body.trigger_tags !== undefined && !isArrayValue(body.trigger_tags)) return c.json({ error: "trigger_tags must be an array" }, 400);
+    if (body.history !== undefined && !isArrayValue(body.history)) return c.json({ error: "history must be an array" }, 400);
+    if (body.priority !== undefined && (typeof body.priority !== "number" || !Number.isFinite(body.priority))) return c.json({ error: "priority must be a finite number" }, 400);
+    if (body.active !== undefined && typeof body.active !== "boolean") return c.json({ error: "active must be a boolean" }, 400);
+
+    try {
+      const existing = await getMentalModel(pool, id);
+      if (!existing) return c.json({ error: `Mental model not found: ${id}` }, 404);
+      const nextName = body.name ?? existing.name;
+      const nextQuery = body.query ?? existing.query;
+      const nextContent = body.content ?? existing.content;
+      const embedding = (body.name !== undefined || body.query !== undefined || body.content !== undefined)
+        ? await embedder.generateEmbedding(mentalModelEmbeddingText(nextName, nextQuery, nextContent))
+        : undefined;
+      const result = await updateMentalModel(pool, id, {
+        name: body.name,
+        query: body.query,
+        content: body.content,
+        embedding,
+        structured: body.structured,
+        tags: body.tags,
+        trigger_tags: body.trigger_tags,
+        priority: body.priority,
+        refresh_meta: body.refresh_meta,
+        history: body.history,
+        active: body.active,
+        project: body.project,
+        created_by: body.created_by,
+      });
+      return c.json(serializeMentalModel(result));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("not found")) return c.json({ error: message }, 404);
+      console.error("[api] Mental model update failed:", message);
+      return c.json({ error: "Failed to update mental model", detail: message }, 502);
     }
   });
 

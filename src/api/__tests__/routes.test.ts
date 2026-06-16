@@ -60,6 +60,11 @@ const mockInsertConsolidatedObservation = vi.fn();
 const mockGetConsolidatedObservation = vi.fn();
 const mockSearchConsolidatedObservations = vi.fn();
 const mockUpdateConsolidatedObservation = vi.fn();
+const mockInsertMentalModel = vi.fn();
+const mockGetMentalModel = vi.fn();
+const mockListMentalModels = vi.fn();
+const mockSearchMentalModels = vi.fn();
+const mockUpdateMentalModel = vi.fn();
 const mockEnqueueConsolidationJob = vi.fn();
 const mockGetConsolidationJob = vi.fn();
 const mockInsertExperience = vi.fn();
@@ -103,6 +108,11 @@ vi.mock("../../db/queries.js", () => ({
   getConsolidatedObservation: (...args: any[]) => mockGetConsolidatedObservation(...args),
   searchConsolidatedObservations: (...args: any[]) => mockSearchConsolidatedObservations(...args),
   updateConsolidatedObservation: (...args: any[]) => mockUpdateConsolidatedObservation(...args),
+  insertMentalModel: (...args: any[]) => mockInsertMentalModel(...args),
+  getMentalModel: (...args: any[]) => mockGetMentalModel(...args),
+  listMentalModels: (...args: any[]) => mockListMentalModels(...args),
+  searchMentalModels: (...args: any[]) => mockSearchMentalModels(...args),
+  updateMentalModel: (...args: any[]) => mockUpdateMentalModel(...args),
   enqueueConsolidationJob: (...args: any[]) => mockEnqueueConsolidationJob(...args),
   getConsolidationJob: (...args: any[]) => mockGetConsolidationJob(...args),
   insertExperience: (...args: any[]) => mockInsertExperience(...args),
@@ -1226,6 +1236,246 @@ describe("REST API Routes", () => {
     const updateArg = mockUpdateConsolidatedObservation.mock.calls[0]![2];
     expect(updateArg.proof_count).toBe(3);
     expect(updateArg.edit_reason).toBe("refresh with more evidence");
+  });
+
+
+  // ─── Mental Models ────────────────────────────────────────────────────
+
+  it("POST /mental-models creates an explicit mental model", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockInsertMentalModel.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      bank_id: "openbrain",
+      name: "One Brain direction",
+      query: "What is the one-brain architecture direction?",
+      content: "OpenBrain is canonical; Markdown is transitional UI/archive.",
+      structured: { stance: "database-first" },
+      tags: ["one-brain"],
+      trigger_tags: ["architecture"],
+      priority: 7,
+      refresh_meta: { source: "manual" },
+      history: [],
+      active: true,
+      project: "one-brain",
+      created_by: "hermes",
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+
+    const res = await app.request("/mental-models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "One Brain direction",
+        query: "What is the one-brain architecture direction?",
+        content: "OpenBrain is canonical; Markdown is transitional UI/archive.",
+        structured: { stance: "database-first" },
+        tags: ["one-brain"],
+        trigger_tags: ["architecture"],
+        priority: 7,
+        project: "one-brain",
+        created_by: "hermes",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockGenerateEmbedding).toHaveBeenCalledWith("One Brain direction\nWhat is the one-brain architecture direction?\nOpenBrain is canonical; Markdown is transitional UI/archive.");
+    const insertArg = mockInsertMentalModel.mock.calls[0]![1];
+    expect(insertArg.name).toBe("One Brain direction");
+    expect(insertArg.embedding).toEqual([0.1, 0.2, 0.3]);
+    const body = (await res.json()) as { id: string; name: string; trigger_tags: string[] };
+    expect(body.name).toBe("One Brain direction");
+    expect(body.trigger_tags).toEqual(["architecture"]);
+  });
+
+  it("POST /mental-models validates required fields and structured metadata", async () => {
+    const missing = await app.request("/mental-models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "", query: "q", content: "c" }),
+    });
+    expect(missing.status).toBe(400);
+
+    const badTags = await app.request("/mental-models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "n", query: "q", content: "c", trigger_tags: "architecture" }),
+    });
+    expect(badTags.status).toBe(400);
+    expect(mockInsertMentalModel).not.toHaveBeenCalled();
+  });
+
+  it("GET /mental-models lists models and GET /mental-models/:id fetches one", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    const row = {
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      bank_id: "openbrain",
+      name: "One Brain direction",
+      query: "What is the one-brain architecture direction?",
+      content: "OpenBrain is canonical.",
+      structured: {},
+      tags: ["one-brain"],
+      trigger_tags: ["architecture"],
+      priority: 7,
+      refresh_meta: {},
+      history: [],
+      active: true,
+      project: "one-brain",
+      created_by: "hermes",
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    mockListMentalModels.mockResolvedValueOnce([row]);
+    mockGetMentalModel.mockResolvedValueOnce(row);
+
+    const listRes = await app.request("/mental-models?bank_id=openbrain&project=one-brain&trigger_tag=architecture&limit=5");
+    expect(listRes.status).toBe(200);
+    expect(mockListMentalModels.mock.calls[0]![1]).toMatchObject({ bank_id: "openbrain", project: "one-brain", trigger_tag: "architecture", limit: 5 });
+    const listBody = (await listRes.json()) as { count: number; results: Array<{ name: string }> };
+    expect(listBody.count).toBe(1);
+
+    const getRes = await app.request("/mental-models/a1b2c3d4-1234-5678-9abc-def012345678");
+    expect(getRes.status).toBe(200);
+    const getBody = (await getRes.json()) as { id: string; content: string };
+    expect(getBody.content).toBe("OpenBrain is canonical.");
+  });
+
+  it("POST /mental-models/search embeds query and returns similarity", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockSearchMentalModels.mockResolvedValueOnce([
+      {
+        id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        bank_id: "openbrain",
+        name: "One Brain direction",
+        query: "What is the one-brain architecture direction?",
+        content: "OpenBrain is canonical.",
+        structured: {},
+        tags: ["one-brain"],
+        trigger_tags: ["architecture"],
+        priority: 7,
+        refresh_meta: {},
+        history: [],
+        active: true,
+        project: "one-brain",
+        created_by: "hermes",
+        similarity: 0.91,
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+    ]);
+
+    const res = await app.request("/mental-models/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "one brain direction", project: "one-brain", trigger_tag: "architecture", limit: 3 }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockGenerateEmbedding).toHaveBeenCalledWith("one brain direction");
+    expect(mockSearchMentalModels.mock.calls[0]![2]).toMatchObject({ project: "one-brain", trigger_tag: "architecture", limit: 3 });
+    const body = (await res.json()) as { results: Array<{ similarity: number }> };
+    expect(body.results[0]!.similarity).toBe(0.91);
+  });
+
+  it("PUT /mental-models/:id updates and can deactivate a model", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockGetMentalModel.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      bank_id: "openbrain",
+      name: "One Brain direction",
+      query: "What is the one-brain architecture direction?",
+      content: "OpenBrain is canonical.",
+      structured: {},
+      tags: [],
+      trigger_tags: [],
+      priority: 0,
+      refresh_meta: {},
+      history: [],
+      active: true,
+      project: "one-brain",
+      created_by: "hermes",
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+    mockUpdateMentalModel.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      bank_id: "openbrain",
+      name: "One Brain direction",
+      query: "What is the one-brain architecture direction?",
+      content: "Updated mental model",
+      structured: {},
+      tags: [],
+      trigger_tags: [],
+      priority: 0,
+      refresh_meta: { refreshed_by: "smoke" },
+      history: [],
+      active: false,
+      project: "one-brain",
+      created_by: "hermes",
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+
+    const res = await app.request("/mental-models/a1b2c3d4-1234-5678-9abc-def012345678", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "Updated mental model", active: false, refresh_meta: { refreshed_by: "smoke" } }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockGenerateEmbedding).toHaveBeenCalledWith("One Brain direction\nWhat is the one-brain architecture direction?\nUpdated mental model");
+    expect(mockGetMentalModel).toHaveBeenCalledWith(expect.anything(), "a1b2c3d4-1234-5678-9abc-def012345678");
+    expect(mockUpdateMentalModel.mock.calls[0]![2]).toMatchObject({ content: "Updated mental model", active: false });
+    const body = (await res.json()) as { active: boolean };
+    expect(body.active).toBe(false);
+  });
+
+  it("POST /recall can opt into the mental-model lane without changing default recall", async () => {
+    const createdAt = new Date("2026-06-15T00:00:00Z");
+    mockSearchThoughts.mockResolvedValueOnce([]);
+    mockBm25SearchThoughts.mockResolvedValueOnce([]);
+    mockSearchMentalModels.mockResolvedValueOnce([
+      {
+        id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        bank_id: "openbrain",
+        name: "One Brain direction",
+        query: "What is the one-brain architecture direction?",
+        content: "OpenBrain is canonical.",
+        structured: { stance: "database-first" },
+        tags: ["one-brain"],
+        trigger_tags: ["architecture"],
+        priority: 7,
+        refresh_meta: {},
+        history: [],
+        active: true,
+        project: "one-brain",
+        created_by: "hermes",
+        similarity: 0.93,
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+    ]);
+
+    const res = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "one brain direction",
+        include_documents: false,
+        include_observations: false,
+        include_experiences: false,
+        include_mental_models: true,
+        limit: 5,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockSearchMentalModels).toHaveBeenCalledWith(expect.anything(), [0.1, 0.2, 0.3], expect.objectContaining({ bank_id: "openbrain", limit: 5 }));
+    const body = (await res.json()) as { lanes: Record<string, unknown>; results: Array<{ source_type: string; title: string; semantic_score: number }> };
+    expect(body.lanes.mental_models).toBe(true);
+    expect(body.results[0]!.source_type).toBe("mental_model");
+    expect(body.results[0]!.title).toBe("One Brain direction");
+    expect(body.results[0]!.semantic_score).toBe(0.93);
   });
 
 
