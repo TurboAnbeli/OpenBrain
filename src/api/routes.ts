@@ -7,6 +7,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import type pg from "pg";
 
 import { getPool } from "../db/connection.js";
 import {
@@ -67,6 +68,7 @@ import {
   type MentalModelSearchResult,
   type ConsolidationJobRow,
   type ExperienceEventType,
+  type ExperienceInput,
   type ExperienceRow,
   type ExperienceSearchResult,
   type MemoryLinkSourceType,
@@ -77,6 +79,7 @@ import {
   type TemporalRecallRow,
 } from "../db/queries.js";
 import { getEmbedder } from "../embedder/index.js";
+import type { Embedder } from "../embedder/types.js";
 import { hasSpecificityMarker, applyRecencyBoost, overfetchLimit } from "./recency_boost.js";
 import {
   shouldExpand,
@@ -145,7 +148,7 @@ const DOCUMENT_INTENT_SET = new Set<string>(DOCUMENT_INTENTS);
 const CONSOLIDATED_OBSERVATION_TREND_SET = new Set<string>(CONSOLIDATED_OBSERVATION_TRENDS);
 const CONSOLIDATION_JOB_TYPES = ["observe_thoughts", "observe_documents"] as const;
 const CONSOLIDATION_JOB_TYPE_SET = new Set<string>(CONSOLIDATION_JOB_TYPES);
-const EXPERIENCE_EVENT_TYPES = ["tool_call", "user_message", "assistant_message", "decide", "external_inbox"] as const;
+const EXPERIENCE_EVENT_TYPES = ["tool_call", "user_message", "assistant_message", "decide", "external_inbox", "recall_routing"] as const;
 const EXPERIENCE_EVENT_TYPE_SET = new Set<string>(EXPERIENCE_EVENT_TYPES);
 const MEMORY_LINK_SOURCE_TYPES = ["thought", "document", "chunk", "consolidated_observation", "experience", "mental_model"] as const;
 const MEMORY_LINK_SOURCE_TYPE_SET = new Set<string>(MEMORY_LINK_SOURCE_TYPES);
@@ -566,6 +569,49 @@ function routeRecallSourcesHeuristically(query: string): RecallSourceRouterDecis
 
 function recallSourceTypeSet(sourceTypes: RecallPrimarySourceType[] | null): Set<RecallPrimarySourceType> | null {
   return sourceTypes ? new Set<RecallPrimarySourceType>(sourceTypes) : null;
+}
+
+function insertRecallRouteTelemetry(
+  pool: pg.Pool,
+  embedder: Embedder,
+  bankId: string,
+  decision: RecallSourceRouterDecision | null,
+  requestedSourceTypes: Set<RecallPrimarySourceType> | null,
+  sourceBalance: string,
+  sourceRouter: string,
+  body: { project?: string; created_by?: string; session_id?: string; agent_id?: string }
+): void {
+  if (!decision || sourceRouter === "off") return;
+  // Fire-and-forget telemetry: must not block or fail the recall response.
+  (async () => {
+    try {
+      const content = `recall route decision: ${decision.route}`;
+      const metadata: Record<string, unknown> = {
+        event_type: "recall_routing",
+        source_router: sourceRouter,
+        route: decision.route,
+        source_balance: sourceBalance,
+        source_types: requestedSourceTypes ? [...requestedSourceTypes] : decision.source_types,
+        confidence: decision.confidence,
+        reasons: decision.reasons,
+      };
+      const embedding = await embedder.generateEmbedding(content);
+      await insertExperience(pool, {
+        content,
+        embedding,
+        event_type: "recall_routing",
+        bank_id: bankId,
+        session_id: body.session_id,
+        agent_id: body.agent_id,
+        refs: { event: "recall_routing_decision", metadata },
+        project: body.project,
+        created_by: body.created_by,
+      } as ExperienceInput);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Recall route telemetry failed (non-fatal):", message);
+    }
+  })();
 }
 
 function recallFromThought(row: SearchResult, lane: "semantic" | "bm25"): RecallApiResult {
@@ -1353,6 +1399,12 @@ export function createApi(): Hono {
 
       const filteredResults = filterRecallResultsBySourceTypes([...recallResults.values()], requestedSourceTypes);
       const results = rankRecallResults(filteredResults, sourceBalance as RecallSourceBalance).slice(0, limit);
+
+      insertRecallRouteTelemetry(pool, embedder, bankId, sourceRouterDecision, requestedSourceTypes, sourceBalance, sourceRouter, {
+        project: body.project,
+        created_by: body.created_by,
+      });
+
       return c.json({
         query: body.query,
         bank_id: bankId,

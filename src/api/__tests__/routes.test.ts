@@ -141,6 +141,7 @@ describe("REST API Routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockInsertExperience.mockResolvedValue({ id: "exp-telemetry-123", created_at: new Date() });
   });
 
   // ─── Health ────────────────────────────────────────────────────────
@@ -946,6 +947,54 @@ describe("REST API Routes", () => {
     });
     expect(invalidBalance.status).toBe(400);
     expect(mockSearchThoughts).not.toHaveBeenCalled();
+  });
+
+  it("POST /recall records privacy-safe telemetry when source_router is used", async () => {
+    mockSearchThoughts.mockResolvedValueOnce([]);
+    mockBm25SearchThoughts.mockResolvedValueOnce([]);
+    mockSearchDocumentChunks.mockResolvedValueOnce([]);
+    mockSearchConsolidatedObservations.mockResolvedValueOnce([]);
+    mockSearchExperiences.mockResolvedValueOnce([]);
+
+    const res = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: "Claude AI OAuth Connector Failure Root Cause",
+        source_router: "heuristic",
+        limit: 5,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockInsertExperience).toHaveBeenCalledTimes(1);
+    const call = mockInsertExperience.mock.calls[0]![1] as {
+      content: string;
+      refs: { metadata: Record<string, unknown> };
+    };
+    expect(call.content).not.toContain("OAuth");
+    expect(call.content).not.toContain("Claude");
+    expect(call.content).toContain("recall route decision");
+    expect(call.refs.metadata.event_type).toBe("recall_routing");
+    expect(call.refs.metadata.route).toBe("document_only");
+    expect(call.refs.metadata.source_router).toBe("heuristic");
+    expect(call.refs.metadata).not.toHaveProperty("query");
+    expect(call.refs.metadata).not.toHaveProperty("raw_query");
+  });
+
+  it("POST /recall omits telemetry when source_router is off", async () => {
+    mockSearchThoughts.mockResolvedValueOnce([]);
+    mockBm25SearchThoughts.mockResolvedValueOnce([]);
+    mockSearchDocumentChunks.mockResolvedValueOnce([]);
+
+    const res = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "memory lookup", limit: 5 }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockInsertExperience).not.toHaveBeenCalled();
   });
 
   // ─── PUT /memories/:id ─────────────────────────────────────────────

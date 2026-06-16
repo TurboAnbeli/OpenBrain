@@ -302,7 +302,8 @@ export type ExperienceEventType =
   | "user_message"
   | "assistant_message"
   | "decide"
-  | "external_inbox";
+  | "external_inbox"
+  | "recall_routing";
 
 export type ExperienceTimestampInput = string | Date;
 
