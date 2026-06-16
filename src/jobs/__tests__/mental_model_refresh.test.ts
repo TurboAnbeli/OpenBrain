@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => ({
   getConsolidatedObservation: vi.fn(),
   getMemoryBankContext: vi.fn(),
   updateMentalModel: vi.fn(),
+  insertMemoryLink: vi.fn(),
+  insertExperience: vi.fn(),
   synthesizeMentalModelRefresh: vi.fn(),
 }));
 
@@ -14,6 +16,8 @@ vi.mock("../../db/queries.js", () => ({
   getConsolidatedObservation: (...args: unknown[]) => mocks.getConsolidatedObservation(...args),
   getMemoryBankContext: (...args: unknown[]) => mocks.getMemoryBankContext(...args),
   updateMentalModel: (...args: unknown[]) => mocks.updateMentalModel(...args),
+  insertMemoryLink: (...args: unknown[]) => mocks.insertMemoryLink(...args),
+  insertExperience: (...args: unknown[]) => mocks.insertExperience(...args),
 }));
 
 vi.mock("../../api/synthesize.js", () => ({
@@ -116,6 +120,8 @@ beforeEach(() => {
   mocks.getMemoryBankContext.mockResolvedValue(memoryBank);
   mocks.synthesizeMentalModelRefresh.mockResolvedValue("Refreshed retrieval discipline content.");
   mocks.updateMentalModel.mockImplementation(async (_pool, id, patch) => ({ ...model, id, ...patch, updated_at: new Date("2026-06-15T02:00:00Z") }));
+  mocks.insertMemoryLink.mockImplementation(async (_pool, link) => ({ id: `link-${mocks.insertMemoryLink.mock.calls.length}`, ...link, weight: link.weight ?? 1, inferred: link.inferred ?? true, created_at: new Date("2026-06-15T02:00:00Z") }));
+  mocks.insertExperience.mockImplementation(async (_pool, experience) => ({ id: `exp-${mocks.insertExperience.mock.calls.length}`, ...experience, created_at: new Date("2026-06-15T02:00:00Z") }));
 });
 
 describe("refreshMentalModelFromObservations", () => {
@@ -149,16 +155,49 @@ describe("refreshMentalModelFromObservations", () => {
         refresh: expect.objectContaining({
           evidence_observation_ids: observations.map((obs) => obs.id),
           directive_ids: ["741a9339-ceb3-468b-81ac-616567382122"],
+          evidence_link_ids: ["link-1", "link-2"],
+          experience_id: "exp-1",
         }),
       }),
       refresh_meta: expect.objectContaining({
         last_refreshed_by: "mental_model_refresh",
         evidence_observation_ids: observations.map((obs) => obs.id),
+        evidence_link_ids: ["link-1", "link-2"],
+        experience_id: "exp-1",
       }),
       history: expect.arrayContaining([
-        expect.objectContaining({ event: "mental_model_refresh", previous_content: "Old model content." }),
+        expect.objectContaining({
+          event: "mental_model_refresh",
+          previous_content: "Old model content.",
+          evidence_link_ids: ["link-1", "link-2"],
+          experience_id: "exp-1",
+        }),
       ]),
     });
+    expect(mocks.insertMemoryLink).toHaveBeenCalledTimes(2);
+    expect(mocks.insertMemoryLink.mock.calls[0]![1]).toMatchObject({
+      bank_id: "openbrain",
+      source_type: "consolidated_observation",
+      source_id: observations[0]!.id,
+      target_type: "mental_model",
+      target_id: model.id,
+      relationship: "evidence_for",
+      inferred: true,
+    });
+    expect(mocks.insertExperience).toHaveBeenCalledWith(pool, expect.objectContaining({
+      bank_id: "openbrain",
+      event_type: "decide",
+      session_id: `mental_model_refresh:${model.id}`,
+      content: expect.stringContaining("Mental model refreshed"),
+      refs: expect.objectContaining({
+        event: "mental_model_refreshed",
+        mental_model_id: model.id,
+        evidence_observation_ids: observations.map((obs) => obs.id),
+        evidence_link_ids: ["link-1", "link-2"],
+      }),
+      project: "openbrain",
+      created_by: "openbrain-system",
+    }));
   });
 
   it("dry-runs proposed content without embedding or writing", async () => {
@@ -174,6 +213,8 @@ describe("refreshMentalModelFromObservations", () => {
     expect(result.proposed_content).toBe("Refreshed retrieval discipline content.");
     expect(embedder.generateEmbedding).not.toHaveBeenCalled();
     expect(mocks.updateMentalModel).not.toHaveBeenCalled();
+    expect(mocks.insertMemoryLink).not.toHaveBeenCalled();
+    expect(mocks.insertExperience).not.toHaveBeenCalled();
   });
 
   it("rejects missing explicit evidence before synthesis", async () => {

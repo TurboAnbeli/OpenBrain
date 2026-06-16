@@ -8,6 +8,8 @@ import {
   getDocument,
   getDocumentBySourceUri,
   insertConsolidatedObservation,
+  insertExperience,
+  insertMemoryLink,
   completeConsolidationJob,
   failConsolidationJob,
   getMemoryBankContext,
@@ -103,13 +105,23 @@ async function loadDocumentSources(pool: pg.Pool, input: ConsolidationJobInputPa
   return sources;
 }
 
-function outputEnvelope(sourceKind: "thought" | "document", sources: SourceItem[], observationId?: string): Record<string, unknown> {
+function outputEnvelope(
+  sourceKind: "thought" | "document",
+  sources: SourceItem[],
+  observationId?: string,
+  extra: Record<string, unknown> = {}
+): Record<string, unknown> {
   return {
     ...(observationId ? { observation_id: observationId } : {}),
     source_kind: sourceKind,
     source_count: sources.length,
     source_ids: sources.map((source) => source.id),
+    ...extra,
   };
+}
+
+function consolidationExperienceContent(job: ConsolidationJobRow, observationId: string, sourceCount: number): string {
+  return `Consolidation job ${job.id} materialized observation ${observationId} from ${sourceCount} explicit ${job.job_type} sources.`;
 }
 
 export async function runConsolidationJob(
@@ -176,11 +188,49 @@ export async function runConsolidationJob(
       archived: false,
     });
 
+    const evidenceLinks = [];
+    for (const source of sources) {
+      evidenceLinks.push(await insertMemoryLink(pool, {
+        bank_id: job.bank_id,
+        source_type: source.kind,
+        source_id: source.id,
+        target_type: "consolidated_observation",
+        target_id: observation.id,
+        relationship: "evidence_for",
+        weight: 1,
+        inferred: true,
+      }));
+    }
+    const evidenceLinkIds = evidenceLinks.map((link) => link.id);
+    const experienceContent = consolidationExperienceContent(job, observation.id, sources.length);
+    const experience = await insertExperience(pool, {
+      bank_id: job.bank_id,
+      session_id: `consolidation:${job.id}`,
+      agent_id: "openbrain-system",
+      event_type: "decide",
+      content: experienceContent,
+      embedding: await options.embedder.generateEmbedding(experienceContent),
+      refs: {
+        event: "consolidation_completed",
+        consolidation_job_id: job.id,
+        observation_id: observation.id,
+        source_kind: sourceKind,
+        source_ids: sources.map((source) => source.id),
+        evidence_link_ids: evidenceLinkIds,
+        directive_ids: directiveIds,
+      },
+      project: typeof input.project === "string" ? input.project : sources[0]?.project ?? undefined,
+      created_by: "openbrain-system",
+    });
+
     const completed = await completeConsolidationJob(
       pool,
       job.id,
       {
-        ...outputEnvelope(sourceKind, sources, observation.id),
+        ...outputEnvelope(sourceKind, sources, observation.id, {
+          evidence_link_ids: evidenceLinkIds,
+          experience_id: experience.id,
+        }),
         directive_ids: directiveIds,
       }
     );

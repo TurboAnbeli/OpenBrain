@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   insertConsolidatedObservation: vi.fn(),
   completeConsolidationJob: vi.fn(),
   failConsolidationJob: vi.fn(),
+  insertMemoryLink: vi.fn(),
+  insertExperience: vi.fn(),
   getMemoryBankContext: vi.fn(),
   synthesizeObservation: vi.fn(),
 }));
@@ -21,6 +23,8 @@ vi.mock("../../db/queries.js", () => ({
   insertConsolidatedObservation: (...args: any[]) => mocks.insertConsolidatedObservation(...args),
   completeConsolidationJob: (...args: any[]) => mocks.completeConsolidationJob(...args),
   failConsolidationJob: (...args: any[]) => mocks.failConsolidationJob(...args),
+  insertMemoryLink: (...args: any[]) => mocks.insertMemoryLink(...args),
+  insertExperience: (...args: any[]) => mocks.insertExperience(...args),
   getMemoryBankContext: (...args: any[]) => mocks.getMemoryBankContext(...args),
 }));
 
@@ -60,6 +64,8 @@ const job = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.insertMemoryLink.mockImplementation(async (_pool, link) => ({ id: `link-${mocks.insertMemoryLink.mock.calls.length}`, ...link, weight: link.weight ?? 1, inferred: link.inferred ?? true, created_at: new Date("2026-06-15T00:02:00Z") }));
+  mocks.insertExperience.mockImplementation(async (_pool, experience) => ({ id: `exp-${mocks.insertExperience.mock.calls.length}`, ...experience, created_at: new Date("2026-06-15T00:02:00Z") }));
   mocks.getMemoryBankContext.mockResolvedValue({
     id: "openbrain",
     name: "OpenBrain",
@@ -122,7 +128,40 @@ describe("runConsolidationJob", () => {
       source_kind: "thought",
       source_count: 2,
       source_ids: job.input.thought_ids,
+      evidence_link_ids: ["link-1", "link-2"],
+      experience_id: "exp-1",
     });
+    expect(mocks.insertMemoryLink).toHaveBeenCalledTimes(2);
+    expect(mocks.insertMemoryLink.mock.calls[0]![1]).toMatchObject({
+      bank_id: "openbrain",
+      source_type: "thought",
+      source_id: job.input.thought_ids[0],
+      target_type: "consolidated_observation",
+      target_id: "obs-123",
+      relationship: "evidence_for",
+      inferred: true,
+    });
+    expect(mocks.insertMemoryLink.mock.calls[1]![1]).toMatchObject({
+      source_type: "thought",
+      source_id: job.input.thought_ids[1],
+      target_type: "consolidated_observation",
+      target_id: "obs-123",
+      relationship: "evidence_for",
+    });
+    expect(mocks.insertExperience).toHaveBeenCalledWith(pool, expect.objectContaining({
+      bank_id: "openbrain",
+      event_type: "decide",
+      session_id: "consolidation:job-123",
+      content: expect.stringContaining("Consolidation job job-123 materialized"),
+      refs: expect.objectContaining({
+        event: "consolidation_completed",
+        consolidation_job_id: "job-123",
+        observation_id: "obs-123",
+        evidence_link_ids: ["link-1", "link-2"],
+      }),
+      project: "one-brain",
+      created_by: "openbrain-system",
+    }));
   });
 
 

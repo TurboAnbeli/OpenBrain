@@ -6,6 +6,8 @@ import {
   getConsolidatedObservation,
   getMemoryBankContext,
   getMentalModel,
+  insertExperience,
+  insertMemoryLink,
   updateMentalModel,
   type ConsolidatedObservationRow,
   type MentalModelRow,
@@ -31,6 +33,10 @@ function uniqueStrings(values: string[]): string[] {
 
 function mentalModelEmbeddingText(name: string, query: string, content: string): string {
   return `${name}\n${query}\n${content}`;
+}
+
+function refreshExperienceContent(model: MentalModelRow, observationCount: number): string {
+  return `Mental model refreshed: ${model.name} (${model.id}) using ${observationCount} explicit consolidated observation evidence rows.`;
 }
 
 function isoNow(): string {
@@ -98,6 +104,38 @@ export async function refreshMentalModelFromObservations(
   );
   const refreshedAt = isoNow();
   const evidenceObservationIds = observations.map((observation) => observation.id);
+  const evidenceLinks = [];
+  for (const observation of observations) {
+    evidenceLinks.push(await insertMemoryLink(pool, {
+      bank_id: model.bank_id,
+      source_type: "consolidated_observation",
+      source_id: observation.id,
+      target_type: "mental_model",
+      target_id: model.id,
+      relationship: "evidence_for",
+      weight: 1,
+      inferred: true,
+    }));
+  }
+  const evidenceLinkIds = evidenceLinks.map((link) => link.id);
+  const experienceContent = refreshExperienceContent(model, observations.length);
+  const experience = await insertExperience(pool, {
+    bank_id: model.bank_id,
+    session_id: `mental_model_refresh:${model.id}`,
+    agent_id: "openbrain-system",
+    event_type: "decide",
+    content: experienceContent,
+    embedding: await options.embedder.generateEmbedding(experienceContent),
+    refs: {
+      event: "mental_model_refreshed",
+      mental_model_id: model.id,
+      evidence_observation_ids: evidenceObservationIds,
+      evidence_link_ids: evidenceLinkIds,
+      directive_ids: directiveIds,
+    },
+    project: model.project ?? undefined,
+    created_by: "openbrain-system",
+  });
   const evidenceRefs = observations.map((observation) => ({
     type: "consolidated_observation",
     ref: observation.id,
@@ -109,6 +147,8 @@ export async function refreshMentalModelFromObservations(
     refresh: {
       refreshed_at: refreshedAt,
       evidence_observation_ids: evidenceObservationIds,
+      evidence_link_ids: evidenceLinkIds,
+      experience_id: experience.id,
       directive_ids: directiveIds,
       source: "mental_model_refresh",
     },
@@ -122,6 +162,8 @@ export async function refreshMentalModelFromObservations(
     last_refreshed_at: refreshedAt,
     last_refreshed_by: "mental_model_refresh",
     evidence_observation_ids: evidenceObservationIds,
+    evidence_link_ids: evidenceLinkIds,
+    experience_id: experience.id,
     directive_ids: directiveIds,
   };
   const nextHistory = [
@@ -131,6 +173,8 @@ export async function refreshMentalModelFromObservations(
       refreshed_at: refreshedAt,
       previous_content: model.content,
       evidence_observation_ids: evidenceObservationIds,
+      evidence_link_ids: evidenceLinkIds,
+      experience_id: experience.id,
       directive_ids: directiveIds,
     },
   ];
