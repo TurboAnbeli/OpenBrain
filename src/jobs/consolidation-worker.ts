@@ -43,7 +43,7 @@ function getRssMb(): number {
  * Each iteration:
  *   1. Claim next queued job → run it
  *   2. If no queued job, discover eligible candidates and enqueue one
- *   3. Sleep for the configured interval
+ *   3. Sleep for the configured interval (abortable on SIGTERM)
  */
 export async function runConsolidationWorkerLoop(
   options: ConsolidationWorkerOptions
@@ -52,9 +52,13 @@ export async function runConsolidationWorkerLoop(
   const intervalMs = options.intervalMs ?? (parseInt(process.env.CONSOLIDATION_INTERVAL_MS ?? "", 10) || DEFAULT_INTERVAL_MS);
   let shuttingDown = false;
 
+  /** Abort controller for cancelling in-flight sleep on shutdown. */
+  let shutdownAbort = new AbortController();
+
   const onSignal = () => {
     console.error("[consolidation-worker] received shutdown signal, draining…");
     shuttingDown = true;
+    shutdownAbort.abort();
   };
   process.on("SIGTERM", onSignal);
   process.on("SIGINT", onSignal);
@@ -76,7 +80,7 @@ export async function runConsolidationWorkerLoop(
       if (job) {
         console.error(`[consolidation-worker] claimed job ${job.id} (type=${job.job_type})`);
         try {
-          const result = await runConsolidationJob(pool, job.id, { embedder, synthesis });
+          const result = await runConsolidationJob(pool, job, { embedder, synthesis });
           if (result.observation) {
             console.error(`[consolidation-worker] job ${job.id} → observation ${result.observation.id}`);
           } else {
@@ -110,13 +114,22 @@ export async function runConsolidationWorkerLoop(
       console.error("[consolidation-worker] cycle error:", error instanceof Error ? error.message : String(error));
     }
 
-    // ── Sleep ────────────────────────────────────────────────────
-    await sleep(intervalMs);
+    if (shuttingDown) break;
+
+    // ── Sleep (abortable — SIGTERM wakes immediately) ─────────────
+    shutdownAbort = new AbortController();
+    await sleep(intervalMs, shutdownAbort.signal);
   }
 
   console.error("[consolidation-worker] shut down gracefully");
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    if (signal) {
+      const onAbort = () => { clearTimeout(timer); resolve(); };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
 }

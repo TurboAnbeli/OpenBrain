@@ -126,12 +126,18 @@ function consolidationExperienceContent(job: ConsolidationJobRow, observationId:
 
 export async function runConsolidationJob(
   pool: pg.Pool,
-  jobId: string,
+  jobIdOrPreclaimed: string | ConsolidationJobRow,
   options: RunConsolidationJobOptions
 ): Promise<RunConsolidationJobResult> {
-  const job = await startConsolidationJob(pool, jobId);
+  // When the worker claims a job via claimNextQueuedJob(), it already sets
+  // status='running'.  Calling startConsolidationJob() again would fail
+  // because it requires status IN ('queued', 'error').  Accept either a
+  // raw job ID (existing API path) or an already-claimed row (worker path).
+  const job = typeof jobIdOrPreclaimed === "string"
+    ? await startConsolidationJob(pool, jobIdOrPreclaimed)
+    : jobIdOrPreclaimed;
   if (!job) {
-    throw new Error(`Consolidation job is not queued or does not exist: ${jobId}`);
+    throw new Error(`Consolidation job is not queued or does not exist: ${typeof jobIdOrPreclaimed === "string" ? jobIdOrPreclaimed : jobIdOrPreclaimed.id}`);
   }
 
   const input = job.input ?? {};
