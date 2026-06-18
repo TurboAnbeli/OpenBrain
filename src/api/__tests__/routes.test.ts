@@ -1229,6 +1229,10 @@ describe("REST API Routes", () => {
     expect(telemetry.raw_fact_count).toBe(1);
     expect(telemetry.stale_mental_models).toEqual([]);
 
+    // Verify new top-level evidence_count and model_used fields
+    expect(body.evidence_count).toBe(3);
+    expect(body.model_used).toBeDefined();
+
     expect(mockGetMemoryBankContext).toHaveBeenCalledWith(expect.anything(), "openbrain", "reflect");
     expect(mockReflectAnswer).toHaveBeenCalledTimes(1);
     expect(mockSearchMentalModels).toHaveBeenCalledTimes(1);
@@ -1346,7 +1350,120 @@ describe("REST API Routes", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.answer).toBeNull();
     expect(body.cascade).toBeDefined();
+    expect(body.evidence_count).toBe(0);
+    expect(body.model_used).toBeDefined();
     expect(body.reflect_telemetry).toBeDefined();
+  });
+
+  it("POST /reflect omits detailed sources when include_sources is false", async () => {
+    mockSearchThoughts.mockReset();
+    mockSearchMentalModels.mockReset();
+    mockSearchConsolidatedObservations.mockReset();
+    mockSearchMentalModels.mockResolvedValue([
+      {
+        id: "mm-src",
+        name: "test-model",
+        query: "test",
+        content: "Model content.",
+        structured: {},
+        tags: [],
+        trigger_tags: [],
+        priority: 1,
+        refresh_meta: {},
+        history: [],
+        active: true,
+        project: null,
+        created_by: null,
+        created_at: new Date("2026-01-01"),
+        updated_at: new Date("2026-06-01"),
+        similarity: 0.9,
+        bank_id: "openbrain",
+      },
+    ]);
+    mockSearchConsolidatedObservations.mockResolvedValue([
+      {
+        id: "co-src",
+        content: "Observation content.",
+        proof_count: 2,
+        source_memory_ids: [],
+        source_quotes: {},
+        tags: ["test"],
+        history: [],
+        trend: "stable",
+        trend_computed_at: null,
+        project: null,
+        created_by: null,
+        archived: false,
+        created_at: new Date("2026-03-01"),
+        updated_at: new Date("2026-05-01"),
+        bank_id: "openbrain",
+        similarity: 0.8,
+      },
+    ]);
+    mockSearchThoughts.mockResolvedValue([]);
+    mockGetMemoryBankContext.mockResolvedValueOnce({
+      id: "openbrain",
+      name: "OpenBrain",
+      mission: null,
+      disposition: {},
+      directives: [],
+    });
+    mockReflectAnswer.mockResolvedValueOnce("Summary answer.");
+
+    const res = await app.request("/reflect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "test include_sources", include_sources: false }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.evidence_count).toBe(2);
+    expect(body.model_used).toBeDefined();
+    expect(body.answer).toBe("Summary answer.");
+    expect(body.cascade).toBeUndefined();
+    expect(body.mental_models).toBeUndefined();
+    expect(body.observations).toBeUndefined();
+    expect(body.raw_facts).toBeUndefined();
+    expect(body.memory_bank).toBeUndefined();
+    expect(body.reflect_telemetry).toBeDefined();
+    const telemetry = body.reflect_telemetry as Record<string, unknown>;
+    expect(telemetry.mental_model_count).toBe(1);
+    expect(telemetry.observation_count).toBe(1);
+    expect(telemetry.raw_fact_count).toBe(0);
+  });
+
+  it("POST /reflect includes sources by default when include_sources is true", async () => {
+    mockSearchThoughts.mockReset();
+    mockSearchMentalModels.mockReset();
+    mockSearchConsolidatedObservations.mockReset();
+    mockSearchMentalModels.mockResolvedValue([]);
+    mockSearchConsolidatedObservations.mockResolvedValue([]);
+    mockSearchThoughts.mockResolvedValue([
+      { id: "th-default", content: "A raw fact.", metadata: { type: "observation", topics: ["test"] }, similarity: 0.7, proof_count: 1, created_at: new Date("2026-06-01"), project: null, archived: false },
+    ]);
+    mockGetMemoryBankContext.mockResolvedValueOnce({
+      id: "openbrain",
+      name: "OpenBrain",
+      mission: null,
+      disposition: {},
+      directives: [],
+    });
+    mockReflectAnswer.mockResolvedValueOnce("A fact was found.");
+
+    const res = await app.request("/reflect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "default sources test", include_sources: true }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.evidence_count).toBe(1);
+    expect(body.cascade).toBeDefined();
+    expect(body.mental_models).toBeDefined();
+    expect(body.observations).toBeDefined();
+    expect(body.raw_facts).toBeDefined();
   });
 
   // ─── PUT /memories/:id ─────────────────────────────────────────────

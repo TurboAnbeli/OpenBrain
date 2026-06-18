@@ -1460,6 +1460,7 @@ export function createApi(): Hono {
       model_hint?: string;
       top_k?: number;
       threshold?: number;
+      include_sources?: boolean;
     }>();
 
     if (!body.query || body.query.trim().length === 0) {
@@ -1602,16 +1603,24 @@ export function createApi(): Hono {
       telemetry.raw_fact_count = rawFacts.length;
       telemetry.stale_mental_models = mentalModels.filter((m) => m.stale).map((m) => m.id);
 
-      return c.json({
+      const includeSources = body.include_sources !== false;
+      const evidenceCount = mentalModels.length + observations.length + rawFacts.length;
+
+      const responseBody: Record<string, unknown> = {
         query: body.query,
         bank_id: bankId,
-        cascade,
-        mental_models: mentalModels,
-        observations,
-        raw_facts: rawFacts,
+        evidence_count: evidenceCount,
+        model_used: reflectModel,
         answer,
         reflect_telemetry: telemetry,
-        memory_bank: memoryBank
+      };
+
+      if (includeSources) {
+        responseBody.cascade = cascade;
+        responseBody.mental_models = mentalModels;
+        responseBody.observations = observations;
+        responseBody.raw_facts = rawFacts;
+        responseBody.memory_bank = memoryBank
           ? {
               id: memoryBank.id,
               name: memoryBank.name,
@@ -1624,8 +1633,10 @@ export function createApi(): Hono {
                 priority: d.priority,
               })),
             }
-          : null,
-      });
+          : null;
+      }
+
+      return c.json(responseBody);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error("[api] Reflect failed:", message);
