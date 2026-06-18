@@ -187,7 +187,7 @@ export async function runConsolidationJob(
         source_kind: sourceKind,
         directive_ids: directiveIds,
       }],
-      trend: null,
+      trend: "stable",
       trend_computed_at: null,
       project: typeof input.project === "string" ? input.project : sources[0]?.project ?? undefined,
       created_by: typeof input.created_by === "string" ? input.created_by : undefined,
