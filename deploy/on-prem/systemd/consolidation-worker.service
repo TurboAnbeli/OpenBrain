@@ -13,9 +13,10 @@ RestartSec=30
 # Give the worker time to connect to DB on first start.
 TimeoutStartSec=120
 # Environment overrides (defaults are in .env):
-# CONSOLIDATION_INTERVAL_MS — poll interval in ms (default 900000 = 15 min)
-# OPENBRAIN_SYNTHESIS_MODEL — LLM for synthesis (default qwen3:1.7b)
-# OLLAMA_ENDPOINT — Ollama endpoint (default http://127.0.0.1:11434)
+# CONSOLIDATION_INTERVAL_MS              — poll interval in ms (default 900000 = 15 min)
+# OPENBRAIN_LLM_CONSOLIDATION_ENDPOINT   — dedicated LLM endpoint for consolidation
+# OPENBRAIN_SYNTHESIS_MODEL              — LLM for synthesis (default qwen3:1.7b)
+# OLLAMA_ENDPOINT                         — fallback Ollama endpoint (default http://127.0.0.1:11434)
 
 [Install]
 WantedBy=default.target

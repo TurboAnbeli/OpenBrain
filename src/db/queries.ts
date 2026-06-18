@@ -3167,6 +3167,17 @@ export async function findConsolidationCandidates(
            WHERE co.source_memory_ids @> ARRAY[t.id]::uuid[]
              AND co.archived = false
          )
+         AND NOT EXISTS (
+           SELECT 1 FROM thoughts newer
+           WHERE newer.supersedes = t.id
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM memory_links ml
+           WHERE ml.target_type = 'thought'
+             AND ml.target_id = t.id
+             AND ml.source_type = 'thought'
+             AND ml.relationship = 'supersedes'
+         )
      ),
      grouped AS (
        SELECT

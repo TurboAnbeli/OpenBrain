@@ -2,6 +2,12 @@
 # Launch the OpenBrain consolidation worker daemon.
 # Polls consolidation_jobs for queued work, auto-discovers eligible thought
 # clusters when idle. Invoked by consolidation-worker.service systemd --user unit.
+#
+# Environment (sourced from .env or systemd override):
+#   OPENBRAIN_LLM_CONSOLIDATION_ENDPOINT — dedicated LLM endpoint for consolidation
+#   OPENBRAIN_SYNTHESIS_MODEL             — LLM model for synthesis (default qwen3:1.7b)
+#   CONSOLIDATION_INTERVAL_MS             — poll interval in ms (default 900000)
+#   OLLAMA_ENDPOINT                       — fallback LLM endpoint
 set -euo pipefail
 
 OPENBRAIN_HOME="${OPENBRAIN_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
@@ -14,4 +20,4 @@ set -a
 source ./.env
 set +a
 
-exec npx tsx src/jobs/consolidation-worker-cli.ts
+exec npx tsx src/workers/consolidation-worker-cli.ts
