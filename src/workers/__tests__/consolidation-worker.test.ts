@@ -18,7 +18,7 @@ vi.mock("../../jobs/consolidation.js", () => ({
   runConsolidationJob: (...args: unknown[]) => mocks.runConsolidationJob(...args),
 }));
 
-import { runConsolidationWorkerLoop } from "../consolidation-worker.js";
+import { runConsolidationWorkerLoop, runSingleConsolidationCycle } from "../consolidation-worker.js";
 
 function mockPool(): pg.Pool {
   return { query: vi.fn(), connect: vi.fn() } as unknown as pg.Pool;
@@ -98,6 +98,9 @@ async function runOneCycle(
 describe("runConsolidationWorkerLoop", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default safe fallbacks: no queued jobs, no candidates
+    mocks.claimNextQueuedJob.mockResolvedValue(null);
+    mocks.findConsolidationCandidates.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -136,8 +139,11 @@ describe("runConsolidationWorkerLoop", () => {
   it("claims and runs a queued job when one is available", async () => {
     const pool = mockPool();
 
-    mocks.claimNextQueuedJob.mockResolvedValue(job);
-    mocks.runConsolidationJob.mockResolvedValue({
+    // First cycle: claim a job and run it. Subsequent cycles: claimNextQueuedJob returns null.
+    mocks.claimNextQueuedJob
+      .mockResolvedValueOnce(job)
+      .mockResolvedValue(null);
+    mocks.runConsolidationJob.mockResolvedValueOnce({
       job: { ...job, status: "success" },
       observation,
     });
@@ -161,16 +167,16 @@ describe("runConsolidationWorkerLoop", () => {
         }),
       }),
     );
-    // Should NOT auto-discover since a job was claimed
-    expect(mocks.findConsolidationCandidates).not.toHaveBeenCalled();
+    // The claimed job was processed
+    expect(mocks.runConsolidationJob).toHaveBeenCalledTimes(1);
   });
 
   it("uses OPENBRAIN_LLM_CONSOLIDATION_ENDPOINT env var when set", async () => {
     const pool = mockPool();
     process.env.OPENBRAIN_LLM_CONSOLIDATION_ENDPOINT = "http://custom-llm:8080";
 
-    mocks.claimNextQueuedJob.mockResolvedValue(job);
-    mocks.runConsolidationJob.mockResolvedValue({
+    mocks.claimNextQueuedJob.mockResolvedValueOnce(job);
+    mocks.runConsolidationJob.mockResolvedValueOnce({
       job: { ...job, status: "success" },
       observation,
     });
@@ -193,6 +199,36 @@ describe("runConsolidationWorkerLoop", () => {
     );
 
     delete process.env.OPENBRAIN_LLM_CONSOLIDATION_ENDPOINT;
+  });
+
+  it("uses OPENBRAIN_LLM_CONSOLIDATION_MODEL env var when set", async () => {
+    const pool = mockPool();
+    process.env.OPENBRAIN_LLM_CONSOLIDATION_MODEL = "gemma-4-E4B-it";
+
+    mocks.claimNextQueuedJob.mockResolvedValueOnce(job);
+    mocks.runConsolidationJob.mockResolvedValueOnce({
+      job: { ...job, status: "success" },
+      observation,
+    });
+
+    await runOneCycle({
+      pool,
+      embedder,
+      synthesis: { endpoint: "http://127.0.0.1:11434", model: "" },
+      intervalMs: 10,
+    });
+
+    expect(mocks.runConsolidationJob).toHaveBeenCalledWith(
+      pool,
+      job,
+      expect.objectContaining({
+        synthesis: expect.objectContaining({
+          model: "gemma-4-E4B-it",
+        }),
+      }),
+    );
+
+    delete process.env.OPENBRAIN_LLM_CONSOLIDATION_MODEL;
   });
 
   it("handles errors in runConsolidationJob gracefully and continues looping", async () => {
@@ -267,5 +303,104 @@ describe("runConsolidationWorkerLoop", () => {
     expect(typeof runConsolidationWorkerLoop).toBe("function");
 
     process.exitCode = originalExitCode;
+  });
+});
+
+describe("runSingleConsolidationCycle", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("claims and runs a queued job in single-cycle mode", async () => {
+    const pool = mockPool();
+
+    mocks.claimNextQueuedJob.mockResolvedValueOnce(job);
+    mocks.runConsolidationJob.mockResolvedValueOnce({
+      job: { ...job, status: "success" },
+      observation,
+    });
+
+    await runSingleConsolidationCycle({
+      pool,
+      embedder,
+      synthesis: { endpoint: "http://127.0.0.1:11434", model: "test-model" },
+    });
+
+    expect(mocks.claimNextQueuedJob).toHaveBeenCalledWith(pool);
+    expect(mocks.runConsolidationJob).toHaveBeenCalledWith(
+      pool,
+      job,
+      expect.objectContaining({
+        embedder,
+        synthesis: expect.objectContaining({
+          endpoint: "http://127.0.0.1:11434",
+          model: "test-model",
+        }),
+      }),
+    );
+    // Should NOT auto-discover after claiming a job
+    expect(mocks.findConsolidationCandidates).not.toHaveBeenCalled();
+    expect(mocks.enqueueConsolidationJob).not.toHaveBeenCalled();
+  });
+
+  it("auto-discovers when no queued job in single-cycle mode", async () => {
+    const pool = mockPool();
+    const candidates: Array<{ bank_id: string; project: string | null; thought_ids: string[] }> = [
+      { bank_id: "openbrain", project: "test-project", thought_ids: job.input.thought_ids },
+    ];
+
+    mocks.claimNextQueuedJob.mockResolvedValueOnce(null);
+    mocks.findConsolidationCandidates.mockResolvedValueOnce(candidates);
+    mocks.enqueueConsolidationJob.mockResolvedValueOnce(job);
+
+    await runSingleConsolidationCycle({
+      pool,
+      embedder,
+      synthesis: { endpoint: "http://127.0.0.1:11434", model: "test-model" },
+    });
+
+    expect(mocks.claimNextQueuedJob).toHaveBeenCalledWith(pool);
+    expect(mocks.findConsolidationCandidates).toHaveBeenCalledWith(pool);
+    expect(mocks.enqueueConsolidationJob).toHaveBeenCalledWith(pool, {
+      job_type: "observe_thoughts",
+      bank_id: "openbrain",
+      input: {
+        thought_ids: job.input.thought_ids,
+        project: "test-project",
+      },
+    });
+  });
+
+  it("goes idle when no queued jobs and no candidates in single-cycle mode", async () => {
+    const pool = mockPool();
+
+    mocks.claimNextQueuedJob.mockResolvedValueOnce(null);
+    mocks.findConsolidationCandidates.mockResolvedValueOnce([]);
+
+    await runSingleConsolidationCycle({
+      pool,
+      embedder,
+      synthesis: { endpoint: "http://127.0.0.1:11434", model: "test-model" },
+    });
+
+    expect(mocks.claimNextQueuedJob).toHaveBeenCalledWith(pool);
+    expect(mocks.findConsolidationCandidates).toHaveBeenCalledWith(pool);
+    expect(mocks.enqueueConsolidationJob).not.toHaveBeenCalled();
+  });
+
+  it("handles errors gracefully in single-cycle mode", async () => {
+    const pool = mockPool();
+
+    mocks.claimNextQueuedJob.mockRejectedValueOnce(new Error("DB connection lost"));
+
+    await expect(runSingleConsolidationCycle({
+      pool,
+      embedder,
+      synthesis: { endpoint: "http://127.0.0.1:11434", model: "test-model" },
+    })).rejects.toThrow("DB connection lost");
   });
 });

@@ -1,23 +1,16 @@
 [Unit]
-Description=OpenBrain consolidation worker daemon (auto-discovers and consolidates thoughts)
+Description=OpenBrain consolidation worker — single cycle (invoked by timer)
 Documentation=https://github.com/TurboAnbeli/OpenBrain
 After=openbrain-api.service
 Wants=openbrain-api.service
 
 [Service]
-Type=simple
+Type=oneshot
 WorkingDirectory=%h/workspace/openbrain
-ExecStart=%h/workspace/openbrain/deploy/on-prem/systemd/start-consolidation-worker.sh
-Restart=on-failure
-RestartSec=30
-# Give the worker time to connect to DB on first start.
-TimeoutStartSec=120
+ExecStart=%h/workspace/openbrain/deploy/on-prem/systemd/start-consolidation-worker-cycle.sh
+TimeoutStartSec=300
 # Environment overrides (defaults are in .env):
-# CONSOLIDATION_INTERVAL_MS              — poll interval in ms (default 900000 = 15 min)
 # OPENBRAIN_LLM_CONSOLIDATION_ENDPOINT   — dedicated LLM endpoint for consolidation
 # OPENBRAIN_LLM_CONSOLIDATION_MODEL      — LLM model for consolidation (default gemma-4-E4B-it)
 # OPENBRAIN_SYNTHESIS_MODEL              — legacy fallback for OPENBRAIN_LLM_CONSOLIDATION_MODEL
 # OLLAMA_ENDPOINT                         — fallback Ollama endpoint (default http://127.0.0.1:11434)
-
-[Install]
-WantedBy=default.target

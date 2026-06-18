@@ -12,6 +12,7 @@
  *   - Single observation per cycle
  *   - Must NOT re-consolidate thoughts that are archived or have supersedes links
  *   - LLM endpoint configurable via OPENBRAIN_LLM_CONSOLIDATION_ENDPOINT
+ *   - LLM model configurable via OPENBRAIN_LLM_CONSOLIDATION_MODEL
  *   - Hard cap 512 MB RSS — exit if exceeded
  *   - Poll interval: configurable via CONSOLIDATION_INTERVAL_MS (default 15 min)
  */
@@ -55,6 +56,74 @@ function resolveSynthesisEndpoint(): string {
 }
 
 /**
+ * Resolve the LLM model for consolidation synthesis.
+ * Priority: OPENBRAIN_LLM_CONSOLIDATION_MODEL > OPENBRAIN_SYNTHESIS_MODEL > default.
+ */
+function resolveSynthesisModel(): string {
+  return (
+    process.env.OPENBRAIN_LLM_CONSOLIDATION_MODEL ??
+    process.env.OPENBRAIN_SYNTHESIS_MODEL ??
+    "gemma-4-E4B-it"
+  );
+}
+
+/**
+ * Run a single consolidation cycle (one job or one auto-discovery).
+ * Used by the --once CLI mode for systemd timer invocation.
+ */
+export async function runSingleConsolidationCycle(
+  options: ConsolidationWorkerOptions
+): Promise<void> {
+  const { pool, embedder } = options;
+  const synthesisEndpoint = resolveSynthesisEndpoint();
+  const synthesisModel = resolveSynthesisModel();
+  const synthesis: RunConsolidationJobOptions["synthesis"] = {
+    ...options.synthesis,
+    endpoint: options.synthesis.endpoint || synthesisEndpoint,
+    model: options.synthesis.model || synthesisModel,
+  };
+
+  // ── Memory cap ────────────────────────────────────────────────
+  const rss = getRssMb();
+  if (rss > MEMORY_CAP_MB) {
+    throw new Error(`RSS ${Math.round(rss)}MB exceeds cap ${MEMORY_CAP_MB}MB — aborting cycle`);
+  }
+
+  // ── Step 1: Claim and run a queued job ──────────────────────
+  const job = await claimNextQueuedJob(pool);
+  if (job) {
+    console.error(`[consolidation-worker] claimed job ${job.id} (type=${job.job_type})`);
+    const result = await runConsolidationJob(pool, job, { embedder, synthesis });
+    if (result.observation) {
+      console.error(`[consolidation-worker] job ${job.id} → observation ${result.observation.id}`);
+    } else {
+      console.error(`[consolidation-worker] job ${job.id} completed (no observation — ${result.job.status})`);
+    }
+    return;
+  }
+
+  // ── Step 2: Auto-discover and enqueue ─────────────────────
+  const candidates = await findConsolidationCandidates(pool);
+  if (candidates && candidates.length > 0) {
+    const group: ConsolidationCandidateGroup = candidates[0]!;
+    console.error(
+      `[consolidation-worker] auto-discovered ${group.thought_ids.length} unconsolidated thoughts (project=${group.project ?? "(none)"})`
+    );
+    await enqueueConsolidationJob(pool, {
+      job_type: "observe_thoughts",
+      bank_id: group.bank_id,
+      input: {
+        thought_ids: group.thought_ids,
+        project: group.project ?? undefined,
+      },
+    });
+    console.error("[consolidation-worker] enqueued auto-discovered consolidation job");
+  } else {
+    console.error("[consolidation-worker] no queued jobs and no candidates — idle");
+  }
+}
+
+/**
  * Main worker loop.  Runs forever until SIGTERM or memory cap.
  *
  * Each iteration:
@@ -67,9 +136,11 @@ export async function runConsolidationWorkerLoop(
 ): Promise<void> {
   const { pool, embedder } = options;
   const synthesisEndpoint = resolveSynthesisEndpoint();
+  const synthesisModel = resolveSynthesisModel();
   const synthesis: RunConsolidationJobOptions["synthesis"] = {
     ...options.synthesis,
     endpoint: options.synthesis.endpoint || synthesisEndpoint,
+    model: options.synthesis.model || synthesisModel,
   };
   const intervalMs = options.intervalMs ?? (parseInt(process.env.CONSOLIDATION_INTERVAL_MS ?? "", 10) || DEFAULT_INTERVAL_MS);
   let shuttingDown = false;
@@ -114,7 +185,7 @@ export async function runConsolidationWorkerLoop(
       } else {
         // ── Step 2: Auto-discover and enqueue ─────────────────────
         const candidates = await findConsolidationCandidates(pool);
-        if (candidates.length > 0) {
+        if (candidates && candidates.length > 0) {
           const group: ConsolidationCandidateGroup = candidates[0]!;
           console.error(
             `[consolidation-worker] auto-discovered ${group.thought_ids.length} unconsolidated thoughts (project=${group.project ?? "(none)"})`
