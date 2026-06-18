@@ -1122,18 +1122,53 @@ describe("REST API Routes", () => {
     expect(mockReflectAnswer).not.toHaveBeenCalled();
   });
 
-  it("POST /reflect returns cascade + LLM answer", async () => {
+  it("POST /reflect returns cascade + LLM answer with full response structure", async () => {
     mockSearchThoughts.mockReset();
     mockSearchMentalModels.mockReset();
     mockSearchConsolidatedObservations.mockReset();
     mockSearchMentalModels.mockResolvedValue([
-      { id: "mm-1", name: "explicit-recall-lane-discipline", content: "Default recall stays opt-in.", similarity: 0.9 },
+      {
+        id: "mm-1",
+        name: "explicit-recall-lane-discipline",
+        query: "recall policy",
+        content: "Default recall stays opt-in.",
+        structured: {},
+        tags: ["recall", "policy"],
+        trigger_tags: ["recall"],
+        priority: 1,
+        refresh_meta: { source: "seed", next_refresh_after: "2099-01-01T00:00:00Z" },
+        history: [],
+        active: true,
+        project: null,
+        created_by: null,
+        created_at: new Date("2026-01-01"),
+        updated_at: new Date("2026-06-01"),
+        similarity: 0.9,
+        bank_id: "openbrain",
+      },
     ]);
     mockSearchConsolidatedObservations.mockResolvedValue([
-      { id: "co-1", content: "OpenBrain is single-user, localhost-only.", similarity: 0.8 },
+      {
+        id: "co-1",
+        content: "OpenBrain is single-user, localhost-only.",
+        proof_count: 3,
+        source_memory_ids: [],
+        source_quotes: {},
+        tags: ["infra"],
+        history: [],
+        trend: "stable",
+        trend_computed_at: null,
+        project: null,
+        created_by: null,
+        archived: false,
+        created_at: new Date("2026-03-01"),
+        updated_at: new Date("2026-05-01"),
+        bank_id: "openbrain",
+        similarity: 0.8,
+      },
     ]);
     mockSearchThoughts.mockResolvedValue([
-      { id: "th-1", content: "Slice S migrated 29 synthesis thoughts.", metadata: {}, similarity: 0.7, proof_count: 1, created_at: new Date() },
+      { id: "th-1", content: "Slice S migrated 29 synthesis thoughts.", metadata: { type: "observation", topics: ["migration"] }, similarity: 0.7, proof_count: 1, created_at: new Date("2026-06-01"), project: "openbrain", archived: false },
     ]);
     mockGetMemoryBankContext.mockResolvedValueOnce({
       id: "openbrain",
@@ -1141,7 +1176,7 @@ describe("REST API Routes", () => {
       mission: "I am Ryan's memory bank.",
       disposition: { skepticism: 4 },
       directives: [
-        { id: "d-1", name: "no_pii_verbatim", rule_text: "Never store PII verbatim.", severity: "hard", priority: 100 },
+        { id: "d-1", name: "no_pii_verbatim", rule_text: "Never store PII verbatim.", severity: "hard", priority: 100, applies_to: ["reflect"] },
       ],
     });
     mockReflectAnswer.mockResolvedValueOnce("Default recall stays opt-in [mm-1]; the bank is single-user [co-1].");
@@ -1161,11 +1196,128 @@ describe("REST API Routes", () => {
     expect((cascade.mental_models as unknown[]).length).toBe(1);
     expect((cascade.consolidated_observations as unknown[]).length).toBe(1);
     expect((cascade.raw_facts as unknown[]).length).toBe(1);
+
+    // Verify new top-level response fields
+    expect(body.mental_models).toBeDefined();
+    expect((body.mental_models as unknown[]).length).toBe(1);
+    const mms = body.mental_models as Record<string, unknown>[];
+    const mm = mms[0]!;
+    expect(mm.id).toBe("mm-1");
+    expect(mm.name).toBe("explicit-recall-lane-discipline");
+    expect(mm.stale).toBe(false); // next_refresh_after is 2099
+
+    expect(body.observations).toBeDefined();
+    expect((body.observations as unknown[]).length).toBe(1);
+    const obss = body.observations as Record<string, unknown>[];
+    const obs = obss[0]!;
+    expect(obs.id).toBe("co-1");
+    expect(obs.proof_count).toBe(3);
+
+    expect(body.raw_facts).toBeDefined();
+    expect((body.raw_facts as unknown[]).length).toBe(1);
+    const rfs = body.raw_facts as Record<string, unknown>[];
+    const rf = rfs[0]!;
+    expect(rf.id).toBe("th-1");
+    expect(rf.type).toBe("observation");
+
+    expect(body.reflect_telemetry).toBeDefined();
+    const telemetry = body.reflect_telemetry as Record<string, unknown>;
+    expect(telemetry.model).toBeDefined();
+    expect(telemetry.total_ms).toBeDefined();
+    expect(telemetry.mental_model_count).toBe(1);
+    expect(telemetry.observation_count).toBe(1);
+    expect(telemetry.raw_fact_count).toBe(1);
+    expect(telemetry.stale_mental_models).toEqual([]);
+
     expect(mockGetMemoryBankContext).toHaveBeenCalledWith(expect.anything(), "openbrain", "reflect");
     expect(mockReflectAnswer).toHaveBeenCalledTimes(1);
     expect(mockSearchMentalModels).toHaveBeenCalledTimes(1);
     expect(mockSearchConsolidatedObservations).toHaveBeenCalledTimes(1);
     expect(mockSearchThoughts).toHaveBeenCalledTimes(1);
+  });
+
+  it("POST /reflect marks mental models as stale when next_refresh_after is past", async () => {
+    mockSearchThoughts.mockReset();
+    mockSearchMentalModels.mockReset();
+    mockSearchConsolidatedObservations.mockReset();
+    mockSearchMentalModels.mockResolvedValue([
+      {
+        id: "mm-stale",
+        name: "stale-model",
+        query: "stale query",
+        content: "Stale content.",
+        structured: {},
+        tags: [],
+        trigger_tags: [],
+        priority: 2,
+        refresh_meta: { next_refresh_after: "2020-01-01T00:00:00Z" },
+        history: [],
+        active: true,
+        project: null,
+        created_by: null,
+        created_at: new Date("2025-01-01"),
+        updated_at: new Date("2025-06-01"),
+        similarity: 0.85,
+        bank_id: "openbrain",
+      },
+    ]);
+    mockSearchConsolidatedObservations.mockResolvedValue([]);
+    mockSearchThoughts.mockResolvedValue([]);
+    mockGetMemoryBankContext.mockResolvedValueOnce({
+      id: "openbrain",
+      name: "OpenBrain",
+      mission: null,
+      disposition: {},
+      directives: [],
+    });
+    mockReflectAnswer.mockResolvedValueOnce(null);
+
+    const res = await app.request("/reflect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "stale check" }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    const mms = body.mental_models as Record<string, unknown>[];
+    expect(mms.length).toBe(1);
+    expect(mms[0]!.stale).toBe(true);
+    const telemetry = body.reflect_telemetry as Record<string, unknown>;
+    expect(telemetry.stale_mental_models).toContain("mm-stale");
+  });
+
+  it("POST /reflect respects model_hint parameter", async () => {
+    mockSearchThoughts.mockReset();
+    mockSearchMentalModels.mockReset();
+    mockSearchConsolidatedObservations.mockReset();
+    mockSearchMentalModels.mockResolvedValue([]);
+    mockSearchConsolidatedObservations.mockResolvedValue([]);
+    mockSearchThoughts.mockResolvedValue([]);
+    mockGetMemoryBankContext.mockResolvedValueOnce({
+      id: "openbrain",
+      name: "OpenBrain",
+      mission: null,
+      disposition: {},
+      directives: [],
+    });
+    mockReflectAnswer.mockResolvedValueOnce("A response.");
+
+    const res = await app.request("/reflect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "test model hint", model_hint: "custom-model:7b" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockReflectAnswer).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Object),
+      expect.objectContaining({ model: "custom-model:7b" }),
+    );
+    const body = (await res.json()) as Record<string, unknown>;
+    const telemetry = body.reflect_telemetry as Record<string, unknown>;
+    expect(telemetry.model).toBe("custom-model:7b");
   });
 
   it("POST /reflect returns cascade with null answer when LLM refuses", async () => {
@@ -1194,6 +1346,7 @@ describe("REST API Routes", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.answer).toBeNull();
     expect(body.cascade).toBeDefined();
+    expect(body.reflect_telemetry).toBeDefined();
   });
 
   // ─── PUT /memories/:id ─────────────────────────────────────────────

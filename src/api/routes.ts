@@ -1457,6 +1457,7 @@ export function createApi(): Hono {
       bank_id?: string;
       project?: string;
       created_by?: string;
+      model_hint?: string;
       top_k?: number;
       threshold?: number;
     }>();
@@ -1474,13 +1475,18 @@ export function createApi(): Hono {
     const bankId = body.bank_id ?? "openbrain";
     const topK = body.top_k ?? 3;
     const threshold = body.threshold ?? 0.3;
+    const reflectModel = body.model_hint ?? SYNTHESIS_MODEL;
     const started = Date.now();
+    const telemetry: Record<string, unknown> = { model: reflectModel, bank_id: bankId };
 
     try {
       const pool = getPool();
       const embedder = getEmbedder();
+      const embedStart = Date.now();
       const queryEmbedding = await embedder.generateEmbedding(body.query);
+      telemetry.embedding_ms = Date.now() - embedStart;
 
+      const searchStart = Date.now();
       const [mentalModelHits, observationHits, rawFactHits, memoryBank] = await Promise.all([
         searchMentalModels(pool, queryEmbedding, {
           bank_id: bankId,
@@ -1499,11 +1505,61 @@ export function createApi(): Hono {
         searchThoughts(pool, queryEmbedding, topK, threshold, {}, body.project, false, body.created_by),
         getMemoryBankContext(pool, bankId, "reflect"),
       ]);
+      telemetry.search_ms = Date.now() - searchStart;
+
+      // ─── Staleness check: mark mental models whose refresh_meta.next_refresh_after is past ───
+      const now = new Date();
+      const mentalModels = mentalModelHits.map((row) => {
+        const refreshMeta = row.refresh_meta as Record<string, unknown> | null ?? {};
+        const nextRefresh = typeof refreshMeta.next_refresh_after === "string"
+          ? refreshMeta.next_refresh_after
+          : null;
+        const stale = nextRefresh !== null && new Date(nextRefresh) < now;
+        return {
+          id: row.id,
+          name: row.name,
+          query: row.query,
+          content: row.content,
+          structured: row.structured,
+          tags: row.tags,
+          trigger_tags: row.trigger_tags,
+          priority: row.priority,
+          refresh_meta: row.refresh_meta,
+          stale,
+          project: row.project ?? null,
+          created_by: row.created_by ?? null,
+          created_at: row.created_at.toISOString(),
+          updated_at: row.updated_at.toISOString(),
+          similarity: row.similarity,
+        };
+      });
+
+      const observations = observationHits.map((row) => ({
+        id: row.id,
+        content: row.content,
+        proof_count: row.proof_count,
+        tags: row.tags ?? [],
+        trend: row.trend ?? null,
+        project: row.project ?? null,
+        created_at: row.created_at.toISOString(),
+        updated_at: row.updated_at.toISOString(),
+        similarity: row.similarity,
+      }));
+
+      const rawFacts = rawFactHits.map((row) => ({
+        id: row.id,
+        content: row.content,
+        type: row.metadata?.type ?? null,
+        topics: row.metadata?.topics ?? [],
+        project: row.project ?? null,
+        created_at: row.created_at.toISOString(),
+        similarity: row.similarity,
+      }));
 
       const cascade: ReflectCascadeContext = {
         mental_models: mentalModelHits.map((row) => ({
           id: row.id,
-          label: (row as { name?: string | null }).name ?? null,
+          label: row.name ?? null,
           content: row.content,
         })),
         consolidated_observations: observationHits.map((row) => ({
@@ -1518,9 +1574,10 @@ export function createApi(): Hono {
         })),
       };
 
+      const llmStart = Date.now();
       const answer = await reflectAnswer(body.query, cascade, {
         endpoint: SYNTHESIS_ENDPOINT,
-        model: SYNTHESIS_MODEL,
+        model: reflectModel,
         memoryBank: memoryBank
           ? {
               id: memoryBank.id,
@@ -1537,14 +1594,23 @@ export function createApi(): Hono {
             }
           : undefined,
       });
+      telemetry.llm_ms = Date.now() - llmStart;
+
+      telemetry.total_ms = Date.now() - started;
+      telemetry.mental_model_count = mentalModels.length;
+      telemetry.observation_count = observations.length;
+      telemetry.raw_fact_count = rawFacts.length;
+      telemetry.stale_mental_models = mentalModels.filter((m) => m.stale).map((m) => m.id);
 
       return c.json({
         query: body.query,
         bank_id: bankId,
         cascade,
+        mental_models: mentalModels,
+        observations,
+        raw_facts: rawFacts,
         answer,
-        model: SYNTHESIS_MODEL,
-        latency_ms: Date.now() - started,
+        reflect_telemetry: telemetry,
         memory_bank: memoryBank
           ? {
               id: memoryBank.id,
