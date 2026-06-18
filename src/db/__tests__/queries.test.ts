@@ -48,6 +48,8 @@ import {
   inferExperienceTemporalLinks,
   inferSupersedesMemoryLinks,
   inferExperienceReferenceLinks,
+  claimNextQueuedJob,
+  findConsolidationCandidates,
   type ExperienceInput,
   type MemoryLinkInput,
   type ThoughtMetadata,
@@ -1568,5 +1570,95 @@ describe("consolidation jobs", () => {
     const sql = mockQuery.mock.calls[0]![0] as string;
     expect(sql).toContain("status = 'error'");
     expect(sql).toContain("error = $2");
+  });
+});
+
+describe("claimNextQueuedJob", () => {
+  const claimedRow = {
+    id: "job-claim-1",
+    bank_id: "openbrain",
+    job_type: "observe_thoughts",
+    status: "running",
+    input: { thought_ids: ["t1", "t2"] },
+    output: null,
+    error: null,
+    started_at: new Date("2026-06-18T00:00:00Z"),
+    finished_at: null,
+    attempts: 1,
+    created_at: new Date("2026-06-17T00:00:00Z"),
+  };
+
+  it("claims a queued job via SELECT FOR UPDATE SKIP LOCKED and updates status to running", async () => {
+    const { pool, mockConnect, mockRelease } = createMockPool();
+    const clientQuery = vi.fn();
+    // Sequence: BEGIN → SELECT FOR UPDATE SKIP LOCKED → UPDATE → COMMIT
+    clientQuery.mockResolvedValueOnce({ rows: [] }); // BEGIN
+    clientQuery.mockResolvedValueOnce({ rows: [{ id: "job-claim-1", status: "queued" }] }); // SELECT
+    clientQuery.mockResolvedValueOnce({ rows: [claimedRow] }); // UPDATE
+    clientQuery.mockResolvedValueOnce({ rows: [] }); // COMMIT
+    mockConnect.mockResolvedValue({ query: clientQuery, release: mockRelease });
+
+    const result = await claimNextQueuedJob(pool);
+
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe("running");
+    expect(result!.attempts).toBe(1);
+    // call 0 = BEGIN, call 1 = SELECT, call 2 = UPDATE, call 3 = COMMIT
+    const selectSql = clientQuery.mock.calls[1]![0] as string;
+    expect(selectSql).toContain("FOR UPDATE SKIP LOCKED");
+    expect(selectSql).toContain("WHERE status = 'queued'");
+    const updateSql = clientQuery.mock.calls[2]![0] as string;
+    expect(updateSql).toContain("SET status = 'running'");
+    expect(updateSql).toContain("attempts = attempts + 1");
+    // verify client was released
+    expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it("returns null when no queued jobs exist", async () => {
+    const { pool, mockConnect, mockRelease } = createMockPool();
+    const clientQuery = vi.fn();
+    // Sequence: BEGIN → SELECT (empty) → ROLLBACK
+    clientQuery.mockResolvedValueOnce({ rows: [] }); // BEGIN
+    clientQuery.mockResolvedValueOnce({ rows: [] }); // SELECT (no rows)
+    clientQuery.mockResolvedValueOnce({ rows: [] }); // ROLLBACK
+    mockConnect.mockResolvedValue({ query: clientQuery, release: mockRelease });
+
+    const result = await claimNextQueuedJob(pool);
+
+    expect(result).toBeNull();
+    expect(mockRelease).toHaveBeenCalled();
+  });
+});
+
+describe("findConsolidationCandidates", () => {
+  it("returns groups of unconsolidated thoughts by project", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        { project: "test-project", thought_ids: ["id-1", "id-2", "id-3"] },
+        { project: "", thought_ids: ["id-4", "id-5"] },
+      ],
+    });
+
+    const result = await findConsolidationCandidates(pool);
+
+    expect(result).toHaveLength(2);
+    expect(result[0]!.project).toBe("test-project");
+    expect(result[0]!.thought_ids).toHaveLength(3);
+    expect(result[0]!.bank_id).toBe("openbrain");
+    // Empty project becomes null
+    expect(result[1]!.project).toBeNull();
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("unconsolidated");
+    expect(sql).toContain("NOT EXISTS");
+  });
+
+  it("returns empty array when no candidates exist", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+
+    const result = await findConsolidationCandidates(pool);
+
+    expect(result).toEqual([]);
   });
 });

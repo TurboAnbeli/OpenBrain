@@ -3083,3 +3083,106 @@ export async function failConsolidationJob(
   }
   return rows[0]!;
 }
+// ─── Consolidation Worker: Job Claiming ──────────────────────────────
+
+export interface ConsolidationCandidateGroup {
+  bank_id: string;
+  project: string | null;
+  thought_ids: string[];
+}
+
+/**
+ * Atomically claim the next queued consolidation job using
+ * SELECT … FOR UPDATE SKIP LOCKED so multiple workers never
+ * claim the same job.  Sets status = 'running' and increments
+ * attempts in one step.
+ */
+export async function claimNextQueuedJob(
+  pool: pg.Pool
+): Promise<ConsolidationJobRow | null> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<ConsolidationJobRow>(
+      `SELECT id, bank_id, job_type, status, input, output, error,
+              started_at, finished_at, attempts, created_at
+       FROM consolidation_jobs
+       WHERE status = 'queued'
+       ORDER BY created_at
+       LIMIT 1
+       FOR UPDATE SKIP LOCKED`,
+      []
+    );
+    if (rows.length === 0) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+    const job = rows[0]!;
+    const { rows: updated } = await client.query<ConsolidationJobRow>(
+      `UPDATE consolidation_jobs
+       SET status = 'running',
+           attempts = attempts + 1,
+           started_at = now(),
+           finished_at = NULL,
+           error = NULL
+       WHERE id = $1
+       RETURNING id, bank_id, job_type, status, input, output, error,
+                 started_at, finished_at, attempts, created_at`,
+      [job.id]
+    );
+    await client.query("COMMIT");
+    return updated[0] ?? null;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Find clusters of unconsolidated thoughts that are eligible for
+ * consolidation.  A thought is "unconsolidated" when it is:
+ *   - NOT archived
+ *   - NOT already referenced in any consolidated_observations.source_memory_ids
+ *   - proof_count >= 1
+ *
+ * Returns groups of 2-5 thought IDs, bucketed by project.
+ * Since thoughts don't have a bank_id column, we default bank_id
+ * to 'openbrain' (the canonical memory bank).
+ */
+export async function findConsolidationCandidates(
+  pool: pg.Pool
+): Promise<ConsolidationCandidateGroup[]> {
+  const { rows } = await pool.query(
+    `WITH unconsolidated AS (
+       SELECT
+         COALESCE(t.project, '') AS project,
+         t.id
+       FROM thoughts t
+       WHERE t.archived = false
+         AND t.proof_count >= 1
+         AND NOT EXISTS (
+           SELECT 1 FROM consolidated_observations co
+           WHERE co.source_memory_ids @> ARRAY[t.id]::uuid[]
+             AND co.archived = false
+         )
+     ),
+     grouped AS (
+       SELECT
+         project,
+         array_agg(id ORDER BY id) AS ids
+       FROM unconsolidated
+       GROUP BY project
+       HAVING count(*) >= 2
+     )
+     SELECT project, ids[1:5] AS thought_ids
+     FROM grouped
+     ORDER BY project`
+  );
+  return rows.map((row: Record<string, unknown>) => ({
+    bank_id: "openbrain",
+    project: row.project === "" ? null : (row.project as string),
+    thought_ids: row.thought_ids as string[],
+  }));
+}
