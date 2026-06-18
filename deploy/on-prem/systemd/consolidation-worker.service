@@ -1,8 +1,8 @@
 [Unit]
-Description=OpenBrain consolidation worker daemon (auto-discovers eligible thoughts and runs LLM synthesis)
+Description=OpenBrain consolidation worker daemon (auto-discovers and consolidates thoughts)
 Documentation=https://github.com/TurboAnbeli/OpenBrain
-After=network-online.target openbrain-api.service
-Wants=network-online.target
+After=openbrain-api.service
+Wants=openbrain-api.service
 
 [Service]
 Type=simple
@@ -10,14 +10,12 @@ WorkingDirectory=%h/workspace/openbrain
 ExecStart=%h/workspace/openbrain/deploy/on-prem/systemd/start-consolidation-worker.sh
 Restart=on-failure
 RestartSec=30
-# Allow time for Postgres / Ollama to come up at boot
-TimeoutStartSec=90
-# Memory cap: worker self-exits at 512 MB RSS, but enforce hard limit
-MemoryMax=768M
-
-# Environment defaults (can be overridden in .env which the start script sources)
-Environment=CONSOLIDATION_INTERVAL_MS=900000
-Environment=OPENBRAIN_SYNTHESIS_MODEL=qwen3:1.7b
+# Give the worker time to connect to DB on first start.
+TimeoutStartSec=120
+# Environment overrides (defaults are in .env):
+# CONSOLIDATION_INTERVAL_MS — poll interval in ms (default 900000 = 15 min)
+# OPENBRAIN_SYNTHESIS_MODEL — LLM for synthesis (default qwen3:1.7b)
+# OLLAMA_ENDPOINT — Ollama endpoint (default http://127.0.0.1:11434)
 
 [Install]
 WantedBy=default.target
