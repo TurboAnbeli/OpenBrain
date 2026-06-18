@@ -156,6 +156,15 @@ export interface DocumentChunkSearchResult extends DocumentChunkRow {
   score: number;
 }
 
+export interface DocumentChunkEntityOverlapResult extends DocumentChunkSearchResult {
+  overlap_count: number;
+}
+
+export interface DocumentChunkEntityOverlapOptions {
+  limit?: number;
+  project?: string;
+}
+
 // ─── Consolidated Observations ─────────────────────────────────────────────────────
 
 export type ConsolidatedObservationTrend = "strengthening" | "stable" | "weakening" | "stale";
@@ -1523,6 +1532,61 @@ export async function searchDocumentChunks(
      ORDER BY c.embedding <=> $1::vector ASC
      LIMIT $3`,
     [embeddingStr, key, limit, threshold, project, sourceType]
+  );
+  return rows;
+}
+
+/**
+ * Phase 3 graph lane: surface chunks that mention the same entities as the
+ * query, ranked by how many distinct query entities the chunk covers. Score
+ * is normalized entity coverage in [0, 1] so it can compete with semantic /
+ * BM25 lanes via the existing rankRecallResults blending.
+ *
+ * Entity names are matched case-insensitively after the caller has
+ * lower-cased them; this lets the input contain mixed-case forms from
+ * extractQueryEntities() without a normalize round-trip in TypeScript.
+ */
+export async function searchDocumentChunksByEntity(
+  pool: pg.Pool,
+  entityNames: string[],
+  options: DocumentChunkEntityOverlapOptions = {}
+): Promise<DocumentChunkEntityOverlapResult[]> {
+  if (entityNames.length === 0) return [];
+  const limit = options.limit ?? 10;
+  const project = options.project ?? null;
+  const key = getCipherKey();
+  const normalized = [...new Set(entityNames.map((n) => n.toLowerCase().trim()).filter((n) => n.length >= 2))];
+  if (normalized.length === 0) return [];
+
+  const { rows } = await pool.query<DocumentChunkEntityOverlapResult>(
+    `SELECT c.id, c.document_id, d.title AS document_title,
+            d.source_type AS document_source_type,
+            d.source_uri AS document_source_uri,
+            d.project,
+            c.chunk_index,
+            pgp_sym_decrypt(c.content_enc, $2)::text AS content,
+            c.metadata, c.token_count, c.char_start, c.char_end,
+            c.created_at, c.updated_at,
+            count(DISTINCT e.id)::int AS overlap_count,
+            -- Cap the graph-lane similarity at 0.5 so it never beats a strong
+            -- semantic match. The same chunk found by semantic+graph keeps its
+            -- semantic score via Max-merge in upsertRecallResult; a graph-only
+            -- chunk still surfaces at low rank.
+            LEAST(0.5, count(DISTINCT e.id)::float8 / GREATEST($4::int, 1)) AS similarity,
+            0::float8 AS fts_rank,
+            LEAST(0.5, count(DISTINCT e.id)::float8 / GREATEST($4::int, 1)) AS score
+     FROM document_chunks c
+     JOIN documents d ON d.id = c.document_id
+     JOIN chunk_entities ce ON ce.chunk_id = c.id
+     JOIN entities e ON e.id = ce.entity_id
+     WHERE d.status = 'active'
+       AND LOWER(e.name) = ANY($1::text[])
+       AND ($3::text IS NULL OR d.project = $3)
+     GROUP BY c.id, d.title, d.source_type, d.source_uri, d.project
+     HAVING count(DISTINCT e.id) >= 1
+     ORDER BY count(DISTINCT e.id) DESC, c.created_at DESC
+     LIMIT $5`,
+    [normalized, key, project, normalized.length, limit]
   );
   return rows;
 }

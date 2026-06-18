@@ -31,6 +31,7 @@ import {
   replaceDocumentChunks,
   listDocumentChunks,
   searchDocumentChunks,
+  searchDocumentChunksByEntity,
   insertConsolidatedObservation,
   getConsolidatedObservation,
   searchConsolidatedObservations,
@@ -63,6 +64,7 @@ import {
   type DocumentIntent,
   type DocumentRow,
   type DocumentChunkSearchResult,
+  type DocumentChunkEntityOverlapResult,
   type ConsolidatedObservationRow,
   type ConsolidatedObservationSearchResult,
   type MentalModelRow,
@@ -1301,9 +1303,12 @@ export function createApi(): Hono {
     if (body.type) filter.type = body.type;
     if (body.topic) filter.topics = [body.topic];
 
+    const chunkGraphQueryEntities = includeDocuments ? extractQueryEntityNames(body.query) : [];
+    const chunkGraphEnabled = chunkGraphQueryEntities.length > 0;
+
     try {
       const queryEmbedding = await embedder.generateEmbedding(body.query);
-      const [semanticResults, bm25Results, documentResults, observationResults, experienceResults, mentalModelResults, linkResults, temporalResults] = await Promise.all([
+      const [semanticResults, bm25Results, documentResults, chunkGraphResults, observationResults, experienceResults, mentalModelResults, linkResults, temporalResults] = await Promise.all([
         includeThoughts
           ? searchThoughts(
               pool, queryEmbedding, limit, threshold, filter,
@@ -1322,6 +1327,12 @@ export function createApi(): Hono {
               mode: "hybrid",
               limit,
               threshold,
+              project: body.project,
+            })
+          : Promise.resolve([]),
+        chunkGraphEnabled
+          ? searchDocumentChunksByEntity(pool, chunkGraphQueryEntities, {
+              limit,
               project: body.project,
             })
           : Promise.resolve([]),
@@ -1380,6 +1391,7 @@ export function createApi(): Hono {
       semanticResults.forEach((row) => upsertRecallResult(recallResults, recallFromThought(row, "semantic")));
       bm25Results.forEach((row) => upsertRecallResult(recallResults, recallFromThought(row, "bm25")));
       documentResults.forEach((row) => upsertRecallResult(recallResults, recallFromDocumentChunk(row)));
+      chunkGraphResults.forEach((row) => upsertRecallResult(recallResults, recallFromDocumentChunk(row)));
       observationResults.forEach((row) => upsertRecallResult(recallResults, recallFromObservation(row)));
       experienceResults.forEach((row) => upsertRecallResult(recallResults, recallFromExperience(row)));
       mentalModelResults.forEach((row) => upsertRecallResult(recallResults, recallFromMentalModel(row)));
@@ -1415,6 +1427,17 @@ export function createApi(): Hono {
           source_router: sourceRouter,
           source_router_decision: sourceRouterDecision,
           link_expansion: seeds.length > 0,
+          chunk_graph: chunkGraphEnabled
+            ? {
+                status: "active",
+                query_entities: chunkGraphQueryEntities,
+                result_count: chunkGraphResults.length,
+                max_overlap: chunkGraphResults.reduce(
+                  (m: number, r: DocumentChunkEntityOverlapResult) => Math.max(m, r.overlap_count),
+                  0
+                ),
+              }
+            : { status: "stub", query_entities: [], result_count: 0, max_overlap: 0 },
           temporal: (temporalEnabled ? "active" : "stub") as RecallTemporalLaneStatus,
         },
         results,

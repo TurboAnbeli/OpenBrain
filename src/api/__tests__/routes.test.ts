@@ -57,6 +57,7 @@ const mockUpdateDocument = vi.fn();
 const mockReplaceDocumentChunks = vi.fn();
 const mockListDocumentChunks = vi.fn();
 const mockSearchDocumentChunks = vi.fn();
+const mockSearchDocumentChunksByEntity = vi.fn().mockResolvedValue([]);
 const mockInsertConsolidatedObservation = vi.fn();
 const mockGetConsolidatedObservation = vi.fn();
 const mockSearchConsolidatedObservations = vi.fn();
@@ -107,6 +108,7 @@ vi.mock("../../db/queries.js", () => ({
   replaceDocumentChunks: (...args: any[]) => mockReplaceDocumentChunks(...args),
   listDocumentChunks: (...args: any[]) => mockListDocumentChunks(...args),
   searchDocumentChunks: (...args: any[]) => mockSearchDocumentChunks(...args),
+  searchDocumentChunksByEntity: (...args: any[]) => mockSearchDocumentChunksByEntity(...args),
   insertConsolidatedObservation: (...args: any[]) => mockInsertConsolidatedObservation(...args),
   getConsolidatedObservation: (...args: any[]) => mockGetConsolidatedObservation(...args),
   searchConsolidatedObservations: (...args: any[]) => mockSearchConsolidatedObservations(...args),
@@ -1016,6 +1018,96 @@ describe("REST API Routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockInsertRecallRoutingTelemetry).not.toHaveBeenCalled();
+  });
+
+  it("POST /recall activates chunk_graph lane when query has entities", async () => {
+    mockSearchThoughts.mockReset();
+    mockBm25SearchThoughts.mockReset();
+    mockSearchDocumentChunks.mockReset();
+    mockSearchDocumentChunksByEntity.mockReset();
+    mockSearchConsolidatedObservations.mockReset();
+    mockSearchExperiences.mockReset();
+    mockSearchMentalModels.mockReset();
+    mockExpandMemoryLinks.mockReset();
+    mockRecallTemporalMemories.mockReset();
+    mockSearchThoughts.mockResolvedValue([]);
+    mockBm25SearchThoughts.mockResolvedValue([]);
+    mockSearchDocumentChunks.mockResolvedValue([]);
+    mockSearchConsolidatedObservations.mockResolvedValue([]);
+    mockSearchExperiences.mockResolvedValue([]);
+    mockSearchMentalModels.mockResolvedValue([]);
+    mockExpandMemoryLinks.mockResolvedValue([]);
+    mockRecallTemporalMemories.mockResolvedValue([]);
+    mockSearchDocumentChunksByEntity.mockResolvedValue([
+      {
+        id: "chunk-graph-1",
+        document_id: "doc-1",
+        document_title: "OpenBrain Plan",
+        document_source_type: "ryel_markdown",
+        document_source_uri: null,
+        project: null,
+        chunk_index: 0,
+        content: "...",
+        metadata: {},
+        token_count: 100,
+        char_start: 0,
+        char_end: 200,
+        created_at: new Date(),
+        updated_at: new Date(),
+        overlap_count: 2,
+        similarity: 1.0,
+        fts_rank: 0,
+        score: 1.0,
+      },
+    ]);
+
+    const res = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "Slice S Phase 4 startup synthesis migration", limit: 5 }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockSearchDocumentChunksByEntity).toHaveBeenCalledTimes(1);
+    const callArgs = mockSearchDocumentChunksByEntity.mock.calls[0]!;
+    expect(Array.isArray(callArgs[1])).toBe(true);
+    expect((callArgs[1] as string[]).length).toBeGreaterThan(0);
+    const body = (await res.json()) as { lanes: { chunk_graph: { status: string; result_count: number; max_overlap: number } } };
+    expect(body.lanes.chunk_graph.status).toBe("active");
+    expect(body.lanes.chunk_graph.result_count).toBe(1);
+    expect(body.lanes.chunk_graph.max_overlap).toBe(2);
+  });
+
+  it("POST /recall reports chunk_graph as stub when query has no entities", async () => {
+    mockSearchThoughts.mockReset();
+    mockBm25SearchThoughts.mockReset();
+    mockSearchDocumentChunks.mockReset();
+    mockSearchDocumentChunksByEntity.mockReset();
+    mockSearchConsolidatedObservations.mockReset();
+    mockSearchExperiences.mockReset();
+    mockSearchMentalModels.mockReset();
+    mockExpandMemoryLinks.mockReset();
+    mockRecallTemporalMemories.mockReset();
+    mockSearchThoughts.mockResolvedValue([]);
+    mockBm25SearchThoughts.mockResolvedValue([]);
+    mockSearchDocumentChunks.mockResolvedValue([]);
+    mockSearchConsolidatedObservations.mockResolvedValue([]);
+    mockSearchExperiences.mockResolvedValue([]);
+    mockSearchMentalModels.mockResolvedValue([]);
+    mockExpandMemoryLinks.mockResolvedValue([]);
+    mockRecallTemporalMemories.mockResolvedValue([]);
+    mockSearchDocumentChunksByEntity.mockResolvedValue([]);
+
+    const res = await app.request("/recall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "the and or", limit: 5 }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockSearchDocumentChunksByEntity).not.toHaveBeenCalled();
+    const body = (await res.json()) as { lanes: { chunk_graph: { status: string } } };
+    expect(body.lanes.chunk_graph.status).toBe("stub");
   });
 
   // ─── POST /reflect ─────────────────────────────────────────────────
