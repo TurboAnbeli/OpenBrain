@@ -1,11 +1,12 @@
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import CodeMirror from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
-import { Database, FileText, GitCompare, Layers3, RefreshCw, Search } from "lucide-react";
+import { AlertTriangle, Database, FileText, GitCompare, Layers3, Pencil, RefreshCw, Save, Search, X } from "lucide-react";
 
-import { getDocument, getRevisionDiff, listDocumentChunks, listDocumentRevisions, listDocuments } from "./api";
-import type { DocumentSummary } from "./types";
+import { getDocument, getRevisionDiff, listDocumentChunks, listDocumentRevisions, listDocuments, updateDocument } from "./api";
+import { buildDocumentUpdatePayload, buildLineDiffRows, createDocumentDraft, isDocumentDraftDirty, type DocumentDraft } from "./editorState";
+import type { DocumentDetail, DocumentSummary } from "./types";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader } from "./components/ui/card";
@@ -43,11 +44,29 @@ function DocumentRow({ document, selected, onSelect }: { document: DocumentSumma
   );
 }
 
+function emptyDraft(): DocumentDraft {
+  return { title: "", content: "", editReason: "" };
+}
+
+function DraftMetadata({ document }: { document: DocumentDetail }) {
+  return (
+    <div className="grid gap-2 text-sm text-zinc-400 md:grid-cols-3">
+      <div><span className="text-zinc-500">Project:</span> {document.project ?? "—"}</div>
+      <div><span className="text-zinc-500">Kind:</span> {document.document_kind ?? "—"}</div>
+      <div><span className="text-zinc-500">Updated:</span> {formatDate(document.updated_at)}</div>
+    </div>
+  );
+}
+
 export default function App() {
   const [query, setQuery] = useState("");
   const [project, setProject] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState<DocumentDraft>(emptyDraft);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   const filters = useMemo(() => ({ q: query || undefined, project: project || undefined, status: "active", limit: 25 }), [query, project]);
   const documentsQuery = useQuery({ queryKey: ["documents", filters], queryFn: () => listDocuments(filters) });
@@ -75,6 +94,39 @@ export default function App() {
     enabled: Boolean(activeDocumentId && selectedRevision),
   });
 
+  useEffect(() => {
+    if (!detailQuery.data) return;
+    setDraft(createDocumentDraft(detailQuery.data));
+    setIsEditing(false);
+    setSaveMessage(null);
+  }, [detailQuery.data?.id, detailQuery.data?.updated_at]);
+
+  const dirty = detailQuery.data ? isDocumentDraftDirty(detailQuery.data, draft) : false;
+  const validDraft = draft.title.trim().length > 0 && draft.content.trim().length > 0;
+  const lineDiffRows = useMemo(
+    () => (diffQuery.data ? buildLineDiffRows(diffQuery.data.revision.content, diffQuery.data.current.content).slice(0, 200) : []),
+    [diffQuery.data]
+  );
+
+  const saveMutation = useMutation({
+    mutationFn: () => {
+      if (!activeDocumentId) throw new Error("No active document selected");
+      return updateDocument(activeDocumentId, buildDocumentUpdatePayload(draft));
+    },
+    onSuccess: async (updated) => {
+      setDraft(createDocumentDraft(updated));
+      setIsEditing(false);
+      setSelectedRevision(null);
+      setSaveMessage("Saved. A revision was recorded before the update.");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["documents"] }),
+        queryClient.invalidateQueries({ queryKey: ["document", updated.id] }),
+        queryClient.invalidateQueries({ queryKey: ["document-revisions", updated.id] }),
+        queryClient.invalidateQueries({ queryKey: ["revision-diff", updated.id] }),
+      ]);
+    },
+  });
+
   return (
     <div className="min-h-screen px-6 py-6 text-zinc-100">
       <header className="mx-auto mb-6 flex max-w-7xl flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -82,8 +134,8 @@ export default function App() {
           <div className="flex items-center gap-3 text-sm uppercase tracking-[0.3em] text-violet-300">
             <Database className="h-4 w-4" /> OpenBrain
           </div>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">One Brain Document Browser</h1>
-          <p className="mt-1 text-sm text-zinc-400">Direct PostgreSQL-backed explorer for source docs, chunks, revisions, and diff metrics.</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight">One Brain Document Editor</h1>
+          <p className="mt-1 text-sm text-zinc-400">Direct PostgreSQL-backed editor for source docs, chunks, revisions, and diff metrics.</p>
         </div>
         <Button onClick={() => void documentsQuery.refetch()} disabled={documentsQuery.isFetching}>
           <RefreshCw className="mr-2 h-4 w-4" /> Refresh
@@ -110,6 +162,7 @@ export default function App() {
                 onSelect={() => {
                   setSelectedId(document.id);
                   setSelectedRevision(null);
+                  setSaveMessage(null);
                 }}
               />
             ))}
@@ -119,31 +172,88 @@ export default function App() {
         <div className="grid gap-4">
           <Card>
             <CardHeader>
-              <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                 <div>
                   <div className="flex items-center gap-2 text-sm text-zinc-400"><FileText className="h-4 w-4" /> Current source</div>
-                  <h2 className="mt-1 text-2xl font-semibold">{detailQuery.data?.title ?? "Select a document"}</h2>
+                  <h2 className="mt-1 text-2xl font-semibold">{isEditing ? draft.title || "Untitled draft" : detailQuery.data?.title ?? "Select a document"}</h2>
                 </div>
-                {detailQuery.data ? <Badge>{detailQuery.data.source_type}</Badge> : null}
+                <div className="flex flex-wrap items-center gap-2">
+                  {detailQuery.data ? <Badge>{detailQuery.data.source_type}</Badge> : null}
+                  {detailQuery.data && !isEditing ? (
+                    <Button onClick={() => setIsEditing(true)}><Pencil className="mr-2 h-4 w-4" /> Edit</Button>
+                  ) : null}
+                  {detailQuery.data && isEditing ? (
+                    <>
+                      <Button
+                        onClick={() => saveMutation.mutate()}
+                        disabled={!dirty || !validDraft || saveMutation.isPending}
+                        title={!dirty ? "No changes to save" : !validDraft ? "Title and content are required" : "Save document"}
+                      >
+                        <Save className="mr-2 h-4 w-4" /> {saveMutation.isPending ? "Saving…" : "Save"}
+                      </Button>
+                      <Button
+                        onClick={() => {
+                          setDraft(createDocumentDraft(detailQuery.data!));
+                          setIsEditing(false);
+                          setSaveMessage(null);
+                        }}
+                        disabled={saveMutation.isPending}
+                      >
+                        <X className="mr-2 h-4 w-4" /> Cancel
+                      </Button>
+                    </>
+                  ) : null}
+                </div>
               </div>
             </CardHeader>
             <CardContent>
               {detailQuery.isError ? <p className="text-sm text-red-300">{String(detailQuery.error)}</p> : null}
+              {saveMutation.isError ? <p className="mb-3 text-sm text-red-300">{String(saveMutation.error)}</p> : null}
+              {saveMessage ? <p className="mb-3 text-sm text-emerald-300">{saveMessage}</p> : null}
               {detailQuery.data ? (
                 <div className="grid gap-4">
-                  <div className="grid gap-2 text-sm text-zinc-400 md:grid-cols-3">
-                    <div><span className="text-zinc-500">Project:</span> {detailQuery.data.project ?? "—"}</div>
-                    <div><span className="text-zinc-500">Kind:</span> {detailQuery.data.document_kind ?? "—"}</div>
-                    <div><span className="text-zinc-500">Updated:</span> {formatDate(detailQuery.data.updated_at)}</div>
-                  </div>
-                  <CodeMirror
-                    value={detailQuery.data.content}
-                    height="420px"
-                    extensions={[markdown()]}
-                    editable={false}
-                    basicSetup={{ lineNumbers: true, foldGutter: true }}
-                    theme="dark"
-                  />
+                  <DraftMetadata document={detailQuery.data} />
+                  {isEditing ? (
+                    <div className="grid gap-3">
+                      <label className="grid gap-1 text-sm text-zinc-300">
+                        Title
+                        <Input value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} />
+                      </label>
+                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+                        <div className="flex items-center gap-2 font-medium"><AlertTriangle className="h-4 w-4" /> Save behavior</div>
+                        <p className="mt-1 text-amber-100/80">Saving updates the source document and records a revision. Existing chunks/search embeddings are not regenerated yet.</p>
+                      </div>
+                      <CodeMirror
+                        value={draft.content}
+                        height="520px"
+                        extensions={[markdown()]}
+                        editable
+                        onChange={(value) => setDraft((current) => ({ ...current, content: value }))}
+                        basicSetup={{ lineNumbers: true, foldGutter: true }}
+                        theme="dark"
+                      />
+                      <label className="grid gap-1 text-sm text-zinc-300">
+                        Edit reason
+                        <Input
+                          placeholder="Why are you changing this document?"
+                          value={draft.editReason}
+                          onChange={(event) => setDraft((current) => ({ ...current, editReason: event.target.value }))}
+                        />
+                      </label>
+                      <div className="text-xs text-zinc-500">
+                        {dirty ? "Unsaved changes" : "No changes"} · {draft.content.length.toLocaleString()} chars
+                      </div>
+                    </div>
+                  ) : (
+                    <CodeMirror
+                      value={detailQuery.data.content}
+                      height="420px"
+                      extensions={[markdown()]}
+                      editable={false}
+                      basicSetup={{ lineNumbers: true, foldGutter: true }}
+                      theme="dark"
+                    />
+                  )}
                 </div>
               ) : (
                 <p className="text-sm text-zinc-400">Pick a document from the explorer to load full content.</p>
@@ -153,7 +263,7 @@ export default function App() {
 
           <div className="grid gap-4 xl:grid-cols-2">
             <Card>
-              <CardHeader><div className="flex items-center gap-2 font-medium"><GitCompare className="h-4 w-4" /> Revisions</div></CardHeader>
+              <CardHeader><div className="flex items-center gap-2 font-medium"><GitCompare className="h-4 w-4" /> Revisions & diff</div></CardHeader>
               <CardContent className="space-y-3">
                 {revisionsQuery.data?.revisions.length === 0 ? <p className="text-sm text-zinc-400">No revisions recorded yet.</p> : null}
                 {revisionsQuery.data?.revisions.map((revision) => (
@@ -180,6 +290,22 @@ export default function App() {
                       <span>{diffQuery.data.diff.char_delta} chars</span>
                       <span>{diffQuery.data.diff.changed ? "changed" : "unchanged"}</span>
                     </div>
+                    <div className="mt-3 max-h-80 overflow-auto rounded-md border border-zinc-800 font-mono text-xs">
+                      {lineDiffRows.map((row, index) => (
+                        <div
+                          key={`${row.kind}-${index}-${row.oldLineNumber ?? "n"}-${row.newLineNumber ?? "n"}`}
+                          className={`grid grid-cols-[3rem_3rem_1fr] gap-2 px-2 py-0.5 ${
+                            row.kind === "added" ? "bg-emerald-500/10 text-emerald-100" : row.kind === "removed" ? "bg-red-500/10 text-red-100" : "text-zinc-400"
+                          }`}
+                        >
+                          <span className="text-right text-zinc-600">{row.oldLineNumber ?? ""}</span>
+                          <span className="text-right text-zinc-600">{row.newLineNumber ?? ""}</span>
+                          <span><span className="mr-2 text-zinc-500">{row.kind === "added" ? "+" : row.kind === "removed" ? "-" : " "}</span>{row.text || " "}</span>
+                        </div>
+                      ))}
+                      {lineDiffRows.length === 0 ? <div className="p-3 text-zinc-500">No line-level changes.</div> : null}
+                    </div>
+                    {lineDiffRows.length >= 200 ? <p className="mt-2 text-xs text-zinc-500">Showing first 200 diff rows.</p> : null}
                   </div>
                 ) : null}
               </CardContent>

@@ -1,0 +1,107 @@
+{
+	auto_https off
+	admin off
+	servers {
+		trusted_proxies static 127.0.0.0/8 ::1/128
+	}
+	log {
+		output stderr
+		format console
+	}
+}
+
+:8088 {
+	# Listen on loopback for OrbStack/Mac local access and on the VM Tailscale IP for remote phone access.
+	bind 127.0.0.1 100.68.72.85
+	header -Server
+
+	@auth host auth-orbstack-ubuntu.tail361fbc.ts.net
+	handle @auth {
+		reverse_proxy 127.0.0.1:9091 {
+			header_up X-Forwarded-For {client_ip}
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	@denied not client_ip 127.0.0.0/8 192.168.139.0/24 160.79.96.0/19 100.64.0.0/10
+	handle @denied {
+		respond "forbidden\n" 403 {
+			close
+		}
+	}
+
+	@matrix_paths {
+		host orbstack-ubuntu.tail361fbc.ts.net
+		path /_matrix* /.well-known/matrix/*
+	}
+	handle @matrix_paths {
+		reverse_proxy 127.0.0.1:6167 {
+			header_up X-Forwarded-For {client_ip}
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	@forgejo host forgejo.tail361fbc.ts.net 127.0.0.1 localhost
+	handle @forgejo {
+		reverse_proxy unix//run/forgejo/forgejo.sock {
+			header_up X-Forwarded-For {client_ip}
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	@ryel host ryel.tail361fbc.ts.net
+	handle @ryel {
+		reverse_proxy 127.0.0.1:8090
+	}
+
+	@openbrain host openbrain.tail361fbc.ts.net orbstack-ubuntu.tail361fbc.ts.net
+	handle @openbrain {
+		handle_path /web/api/* {
+			uri strip_prefix /web/api
+			reverse_proxy 127.0.0.1:8000 {
+				header_up X-Forwarded-For {client_ip}
+				header_up X-Forwarded-Proto https
+			}
+		}
+		handle_path /web/* {
+			uri strip_prefix /web
+			root * /home/ryan/workspace/openbrain/packages/web/dist
+			try_files {path} /index.html
+			file_server
+		}
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	handle {
+		respond "forbidden\n" 403 {
+			close
+		}
+	}
+	log {
+		output stderr
+		format console
+	}
+}
+
+# Local-admin listener: loopback-only, no client_ip gate.
+:8087 {
+	bind 127.0.0.1
+	header -Server
+
+	@forgejo host forgejo.tail361fbc.ts.net 127.0.0.1 localhost
+	handle @forgejo {
+		reverse_proxy unix//run/forgejo/forgejo.sock {
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	handle {
+		respond "forbidden\n" 403 {
+			close
+		}
+	}
+	log {
+		output stderr
+		format console
+	}
+}

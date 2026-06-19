@@ -39,7 +39,10 @@
     "consolidation:worker:v2": "tsx src/workers/consolidation-worker-cli.ts",
     "web:dev": "pnpm --filter @openbrain/web dev",
     "web:build": "pnpm --filter @openbrain/web build",
-    "web:typecheck": "pnpm --filter @openbrain/web typecheck"
+    "web:typecheck": "pnpm --filter @openbrain/web typecheck",
+    "web:deploy:check": "deploy/on-prem/caddy/install-openbrain-caddy.sh --check",
+    "web:healthcheck": "deploy/on-prem/caddy/openbrain-web-healthcheck.sh",
+    "web:test": "pnpm --filter @openbrain/web test"
   },
   "engines": {
     "node": ">=22.0.0"

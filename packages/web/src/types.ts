@@ -26,6 +26,16 @@ export interface DocumentDetail extends Omit<DocumentSummary, "content_preview" 
   content: string;
 }
 
+export interface UpdateDocumentInput {
+  title?: string;
+  source_uri?: string | null;
+  content?: string;
+  metadata?: Record<string, unknown>;
+  status?: "active" | "archived" | "deleted";
+  edit_reason?: string;
+  updated_by?: string;
+}
+
 export interface DocumentRevision {
   id: string;
   document_id: string;

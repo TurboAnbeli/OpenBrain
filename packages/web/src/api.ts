@@ -1,9 +1,9 @@
-import type { DocumentChunk, DocumentDetail, DocumentRevision, DocumentSummary, RevisionDiff } from "./types";
+import type { DocumentChunk, DocumentDetail, DocumentRevision, DocumentSummary, RevisionDiff, UpdateDocumentInput } from "./types";
 
 const API_BASE = import.meta.env.VITE_OPENBRAIN_API_URL ?? "/web/api";
 
-async function requestJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`);
+async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, init);
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`${response.status} ${response.statusText}: ${text}`);
@@ -33,6 +33,14 @@ export function listDocuments(filters: DocumentListFilters) {
 
 export function getDocument(id: string) {
   return requestJson<DocumentDetail>(`/documents/${id}`);
+}
+
+export function updateDocument(id: string, payload: UpdateDocumentInput) {
+  return requestJson<DocumentDetail>(`/documents/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }
 
 export function listDocumentRevisions(id: string) {
