@@ -250,6 +250,51 @@ function serializeOptionalTimestamp(value: Date | string | null | undefined): st
 }
 
 
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+}
+
+function extractHtmlTitle(html: string): string | undefined {
+  const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const title = match?.[1]?.replace(/<[^>]+>/g, "").trim();
+  return title ? decodeHtmlEntities(title) : undefined;
+}
+
+function htmlToMarkdownLikeText(html: string): string {
+  let text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, "\n# $1\n")
+    .replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, "\n## $1\n")
+    .replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, "\n### $1\n")
+    .replace(/<p[^>]*>/gi, "\n")
+    .replace(/<br\s*\/?\s*>/gi, "\n")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<li[^>]*>/gi, "\n- ")
+    .replace(/<[^>]+>/g, " ");
+  text = decodeHtmlEntities(text);
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter((line, index, lines) => line.length > 0 || (index > 0 && lines[index - 1]?.length))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function normalizeFetchedDocumentContent(raw: string, contentType: string | null): { content: string; title?: string } {
+  if (contentType?.toLowerCase().includes("text/html") || /<html[\s>]/i.test(raw)) {
+    return { content: htmlToMarkdownLikeText(raw), title: extractHtmlTitle(raw) };
+  }
+  return { content: raw };
+}
+
 async function buildDocumentChunkInputs(embedder: Embedder, content: string): Promise<DocumentChunkInput[]> {
   const markdownChunks = chunkMarkdown(content);
   return Promise.all(
@@ -3505,26 +3550,45 @@ export function createApi(): Hono {
       return c.json({ error: "url is required" }, 400);
     }
 
+    const existing = await getDocumentBySourceUri(pool, body.url);
+    if (existing) {
+      return c.json({
+        error: "URL already imported",
+        existing_document: {
+          id: existing.id,
+          title: existing.title,
+          source_uri: existing.source_uri,
+          updated_at: serializeOptionalTimestamp(existing.updated_at),
+        },
+      }, 409);
+    }
+
     let fetchedContent: string;
+    let contentType: string | null = null;
     try {
       const response = await fetch(body.url, { signal: AbortSignal.timeout(30_000) });
       if (!response.ok) {
         return c.json({ error: `Failed to fetch URL: ${response.status} ${response.statusText}` }, 502);
       }
-      fetchedContent = await response.text();
+      contentType = response.headers.get("content-type");
+      const rawContent = await response.text();
+      const normalized = normalizeFetchedDocumentContent(rawContent, contentType);
+      fetchedContent = normalized.content;
+      body.title = body.title ?? normalized.title;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: "Failed to fetch URL", detail: message }, 502);
     }
 
-    const title = body.title ?? new URL(body.url).pathname.split("/").pop() ?? "imported-document";
+    const title = body.title ?? new URL(body.url).pathname.split("/").filter(Boolean).pop() ?? "imported-document";
 
     try {
       const document = await insertDocument(pool, {
         title,
-        source_type: "markdown",
+        source_type: "url",
         source_uri: body.url,
         content: fetchedContent,
+        metadata: { content_type: contentType, imported_from: "url" },
         project: body.project ?? "default",
         created_by: body.created_by ?? "import",
       });

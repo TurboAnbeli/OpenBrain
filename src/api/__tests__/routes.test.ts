@@ -2535,6 +2535,93 @@ describe("REST API Routes", () => {
     );
   });
 
+
+  it("POST /documents/import-url returns existing active document instead of duplicating source_uri", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("should not fetch", { status: 200 })
+    );
+    mockGetDocumentBySourceUri.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      title: "Existing URL doc",
+      source_type: "url",
+      source_uri: "https://example.com/existing",
+      content: "Existing",
+      metadata: {},
+      project: "default",
+      created_by: "test",
+      status: "active",
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
+
+    const res = await app.request("/documents/import-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenBrain-Admin-Key": "test-admin-key" },
+      body: JSON.stringify({ url: "https://example.com/existing" }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; existing_document: { id: string; title: string } };
+    expect(body.error).toContain("already imported");
+    expect(body.existing_document).toMatchObject({ id: "a1b2c3d4-1234-5678-9abc-def012345678", title: "Existing URL doc" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockInsertDocument).not.toHaveBeenCalled();
+  });
+
+  it("POST /documents/import-url converts HTML pages into clean markdown-like content", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
+    mockGetDocumentBySourceUri.mockResolvedValueOnce(null);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<html><head><title>Example Title</title><script>bad()</script></head><body><h1>Hello</h1><p>World <a href='/x'>link</a></p></body></html>", {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      })
+    );
+    mockInsertDocument.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      title: "Example Title",
+      source_type: "url",
+      source_uri: "https://example.com/html",
+      content: `# Hello\n\nWorld link`,
+      metadata: {},
+      project: "default",
+      created_by: "url-import",
+      status: "active",
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
+    mockUpdateDocumentWithChunks.mockResolvedValueOnce({
+      document: {
+        id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        title: "Example Title",
+        source_type: "url",
+        source_uri: "https://example.com/html",
+        content: `# Hello\n\nWorld link`,
+        metadata: {},
+        project: "default",
+        created_by: "url-import",
+        status: "active",
+        created_at: new Date(),
+        updated_at: new Date(),
+      },
+      chunks: [],
+    });
+
+    const res = await app.request("/documents/import-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenBrain-Admin-Key": "test-admin-key" },
+      body: JSON.stringify({ url: "https://example.com/html" }),
+    });
+
+    expect(res.status).toBe(201);
+    const insertPayload = mockInsertDocument.mock.calls[0]![1];
+    expect(insertPayload.title).toBe("Example Title");
+    expect(insertPayload.content).toContain("# Hello");
+    expect(insertPayload.content).toContain("World link");
+    expect(insertPayload.content).not.toContain("bad()");
+    expect(insertPayload.metadata.content_type).toContain("text/html");
+  });
   it("POST /documents/import-url fetches a URL and creates a document with chunks", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("# Imported\n\nFrom the web.", { status: 200, headers: { "Content-Type": "text/markdown" } }));
     const updatedAt = new Date("2026-06-19T15:10:00Z");
