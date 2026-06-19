@@ -130,6 +130,11 @@ describe("runConsolidationJob", () => {
       source_ids: job.input.thought_ids,
       evidence_link_ids: ["link-1", "link-2"],
       experience_id: "exp-1",
+      synthesis_model: "test-model",
+      synthesis_endpoint: "http://127.0.0.1:11434",
+      embedder_version: "test-embedder",
+      quality_gate_passed: true,
+      synthesis_ms: expect.any(Number),
     });
     expect(mocks.insertMemoryLink).toHaveBeenCalledTimes(2);
     expect(mocks.insertMemoryLink.mock.calls[0]![1]).toMatchObject({

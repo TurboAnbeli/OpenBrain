@@ -8,6 +8,7 @@ import {
   type ThoughtMetadataExtracted,
   DEFAULT_METADATA,
   METADATA_PROMPT,
+  parseThoughtMetadata,
 } from "./types.js";
 
 export class OllamaEmbedder implements Embedder {
@@ -73,14 +74,7 @@ export class OllamaEmbedder implements Embedder {
     const data = (await response.json()) as { message: { content: string } };
 
     try {
-      const parsed = JSON.parse(data.message.content) as ThoughtMetadataExtracted;
-      return {
-        type: parsed.type ?? "observation",
-        topics: parsed.topics ?? [],
-        people: parsed.people ?? [],
-        action_items: parsed.action_items ?? [],
-        dates: parsed.dates ?? [],
-      };
+      return parseThoughtMetadata(data.message.content);
     } catch (e) {
       console.warn("[embedder] Failed to parse metadata JSON:", e);
       return DEFAULT_METADATA;

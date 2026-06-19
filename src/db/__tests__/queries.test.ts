@@ -15,9 +15,13 @@ import {
   deleteThought,
   batchInsertThoughts,
   insertDocument,
+  listDocuments,
   getDocument,
   getDocumentBySourceUri,
   updateDocument,
+  listDocumentRevisions,
+  getDocumentRevision,
+  deleteDocument,
   replaceDocumentChunks,
   listDocumentChunks,
   searchDocumentChunks,
@@ -531,6 +535,107 @@ describe("documents", () => {
     const params = mockQuery.mock.calls[0]![1] as unknown[];
     expect(params[0]).toBe("doc-123");
   });
+
+  it("lists document summaries with filters, pagination, and encrypted previews", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: "doc-123",
+        title: "One brain handoff",
+        source_type: "markdown",
+        source_uri: "file:///vault/handoff.md",
+        content_preview: "Handoff preview",
+        content_char_count: 128,
+        metadata: { tags: ["one-brain"] },
+        project: "one-brain",
+        created_by: "hermes",
+        bank_id: "openbrain",
+        document_kind: "handoff",
+        session_id: null,
+        task_id: null,
+        intent: "operational_log",
+        event_started_at: null,
+        event_ended_at: null,
+        status: "active",
+        chunk_count: 3,
+        revision_count: 2,
+        created_at: new Date(),
+        updated_at: new Date(),
+      }],
+    });
+
+    const result = await listDocuments(pool, {
+      project: "one-brain",
+      source_type: "markdown",
+      status: "active",
+      q: "handoff",
+      limit: 25,
+      offset: 50,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.content_preview).toBe("Handoff preview");
+    expect(result[0]!.chunk_count).toBe(3);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("FROM documents d");
+    expect(sql).toContain("pgp_sym_decrypt(d.content_enc");
+    expect(sql).toContain("LEFT JOIN document_chunks");
+    expect(sql).toContain("LEFT JOIN document_revisions");
+    expect(sql).toContain("LIMIT");
+    expect(sql).toContain("OFFSET");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params).toContain("one-brain");
+    expect(params).toContain("markdown");
+    expect(params).toContain("active");
+    expect(params).toContain("handoff");
+    expect(params).toContain("%handoff%");
+    expect(params).toContain(25);
+    expect(params).toContain(50);
+  });
+
+  it("lists and fetches decrypted document revisions", async () => {
+    const { pool, mockQuery } = createMockPool();
+    const revision = {
+      id: "rev-123",
+      document_id: "doc-123",
+      revision_number: 2,
+      title: "Old title",
+      source_uri: "file:///old.md",
+      content: "Old body",
+      metadata: { tags: ["old"] },
+      status: "active",
+      edit_reason: "manual correction",
+      created_by: "ryan",
+      created_at: new Date(),
+    };
+    mockQuery.mockResolvedValueOnce({ rows: [revision] }).mockResolvedValueOnce({ rows: [revision] });
+
+    const revisions = await listDocumentRevisions(pool, "doc-123");
+    const fetched = await getDocumentRevision(pool, "doc-123", 2);
+
+    expect(revisions[0]!.content).toBe("Old body");
+    expect(fetched?.revision_number).toBe(2);
+    const listSql = mockQuery.mock.calls[0]![0] as string;
+    expect(listSql).toContain("FROM document_revisions");
+    expect(listSql).toContain("pgp_sym_decrypt(content_enc");
+    expect(listSql).toContain("ORDER BY revision_number DESC");
+    const fetchSql = mockQuery.mock.calls[1]![0] as string;
+    expect(fetchSql).toContain("revision_number = $2");
+  });
+
+  it("soft deletes documents without removing rows", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: "doc-123" }], rowCount: 1 });
+
+    const result = await deleteDocument(pool, "doc-123");
+
+    expect(result).toEqual({ deleted: true, id: "doc-123" });
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("UPDATE documents");
+    expect(sql).toContain("status = 'deleted'");
+    expect(sql).not.toContain("DELETE FROM documents");
+  });
+
 
   it("updates documents and records the prior version as a revision transactionally", async () => {
     const { pool, mockConnect } = createMockPool();

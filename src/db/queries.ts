@@ -100,6 +100,58 @@ export interface DocumentRow {
   updated_at: Date;
 }
 
+export interface DocumentSummaryRow {
+  id: string;
+  title: string;
+  source_type: string;
+  source_uri?: string | null;
+  content_preview: string;
+  content_char_count: number;
+  metadata: DocumentMetadata;
+  project?: string | null;
+  created_by?: string | null;
+  bank_id?: string | null;
+  document_kind?: DocumentKind | null;
+  session_id?: string | null;
+  task_id?: string | null;
+  intent?: DocumentIntent | null;
+  event_started_at?: Date | null;
+  event_ended_at?: Date | null;
+  status: DocumentStatus;
+  chunk_count: number;
+  revision_count: number;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface DocumentListOptions {
+  project?: string;
+  source_type?: string;
+  status?: DocumentStatus;
+  created_by?: string;
+  bank_id?: string;
+  document_kind?: DocumentKind;
+  intent?: DocumentIntent;
+  q?: string;
+  include_deleted?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export interface DocumentRevisionRow {
+  id: string;
+  document_id: string;
+  revision_number: number;
+  title: string;
+  source_uri?: string | null;
+  content: string;
+  metadata: DocumentMetadata;
+  status: DocumentStatus;
+  edit_reason?: string | null;
+  created_by?: string | null;
+  created_at: Date;
+}
+
 export interface DocumentUpdateInput {
   title?: string;
   source_uri?: string | null;
@@ -1298,6 +1350,172 @@ export async function getDocument(
     [id, key]
   );
   return rows[0] ?? null;
+}
+
+export async function listDocuments(
+  pool: pg.Pool,
+  options: DocumentListOptions = {}
+): Promise<DocumentSummaryRow[]> {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  let idx = 0;
+
+  if (options.project) {
+    idx++;
+    conditions.push(`d.project = $${idx}`);
+    params.push(options.project);
+  }
+  if (options.source_type) {
+    idx++;
+    conditions.push(`d.source_type = $${idx}`);
+    params.push(options.source_type);
+  }
+  if (options.status) {
+    idx++;
+    conditions.push(`d.status = $${idx}`);
+    params.push(options.status);
+  } else if (!options.include_deleted) {
+    conditions.push("d.status != 'deleted'");
+  }
+  if (options.created_by) {
+    idx++;
+    conditions.push(`d.created_by = $${idx}`);
+    params.push(options.created_by);
+  }
+  if (options.bank_id) {
+    idx++;
+    conditions.push(`d.bank_id = $${idx}`);
+    params.push(options.bank_id);
+  }
+  if (options.document_kind) {
+    idx++;
+    conditions.push(`d.document_kind = $${idx}`);
+    params.push(options.document_kind);
+  }
+  if (options.intent) {
+    idx++;
+    conditions.push(`d.intent = $${idx}`);
+    params.push(options.intent);
+  }
+  if (options.q?.trim()) {
+    const q = options.q.trim();
+    idx++;
+    const ftsIdx = idx;
+    params.push(q);
+    idx++;
+    const likeIdx = idx;
+    params.push(`%${q}%`);
+    conditions.push(`(d.fts @@ plainto_tsquery('english', $${ftsIdx}) OR d.title ILIKE $${likeIdx} OR d.source_uri ILIKE $${likeIdx})`);
+  }
+
+  idx++;
+  const keyIdx = idx;
+  params.push(getCipherKey());
+  idx++;
+  const limitIdx = idx;
+  params.push(Math.min(Math.max(Math.trunc(options.limit ?? 50), 1), 100));
+  idx++;
+  const offsetIdx = idx;
+  params.push(Math.max(Math.trunc(options.offset ?? 0), 0));
+
+  const whereClause = conditions.length > 0 ? conditions.join(" AND ") : "TRUE";
+  const { rows } = await pool.query<DocumentSummaryRow>(
+    `SELECT d.id,
+            d.title,
+            d.source_type,
+            d.source_uri,
+            left(pgp_sym_decrypt(d.content_enc, $${keyIdx})::text, 240) AS content_preview,
+            char_length(pgp_sym_decrypt(d.content_enc, $${keyIdx})::text)::int AS content_char_count,
+            d.metadata,
+            d.project,
+            d.created_by,
+            d.bank_id,
+            d.document_kind,
+            d.session_id,
+            d.task_id,
+            d.intent,
+            d.event_started_at,
+            d.event_ended_at,
+            d.status,
+            COUNT(DISTINCT c.id)::int AS chunk_count,
+            COUNT(DISTINCT r.id)::int AS revision_count,
+            d.created_at,
+            d.updated_at
+     FROM documents d
+     LEFT JOIN document_chunks c ON c.document_id = d.id
+     LEFT JOIN document_revisions r ON r.document_id = d.id
+     WHERE ${whereClause}
+     GROUP BY d.id
+     ORDER BY d.updated_at DESC
+     LIMIT $${limitIdx}
+     OFFSET $${offsetIdx}`,
+    params
+  );
+  return rows;
+}
+
+export async function listDocumentRevisions(
+  pool: pg.Pool,
+  documentId: string
+): Promise<DocumentRevisionRow[]> {
+  const key = getCipherKey();
+  const { rows } = await pool.query<DocumentRevisionRow>(
+    `SELECT id,
+            document_id,
+            revision_number,
+            title,
+            source_uri,
+            pgp_sym_decrypt(content_enc, $2)::text AS content,
+            metadata,
+            status,
+            edit_reason,
+            created_by,
+            created_at
+     FROM document_revisions
+     WHERE document_id = $1
+     ORDER BY revision_number DESC`,
+    [documentId, key]
+  );
+  return rows;
+}
+
+export async function getDocumentRevision(
+  pool: pg.Pool,
+  documentId: string,
+  revisionNumber: number
+): Promise<DocumentRevisionRow | null> {
+  const key = getCipherKey();
+  const { rows } = await pool.query<DocumentRevisionRow>(
+    `SELECT id,
+            document_id,
+            revision_number,
+            title,
+            source_uri,
+            pgp_sym_decrypt(content_enc, $3)::text AS content,
+            metadata,
+            status,
+            edit_reason,
+            created_by,
+            created_at
+     FROM document_revisions
+     WHERE document_id = $1 AND revision_number = $2
+     LIMIT 1`,
+    [documentId, revisionNumber, key]
+  );
+  return rows[0] ?? null;
+}
+
+export async function deleteDocument(
+  pool: pg.Pool,
+  id: string
+): Promise<{ deleted: boolean; id: string }> {
+  const { rowCount } = await pool.query(
+    `UPDATE documents
+     SET status = 'deleted', updated_at = now()
+     WHERE id = $1 AND status != 'deleted'`,
+    [id]
+  );
+  return { deleted: (rowCount ?? 0) > 0, id };
 }
 
 export async function updateDocument(

@@ -35,3 +35,10 @@ models/
 # Local migration / secret backups
 .env.backup-*
 *.backup-*
+
+# Workspace build artifacts
+**/node_modules/
+**/dist/
+*.tsbuildinfo
+packages/*/vite.config.js
+packages/*/vite.config.d.ts

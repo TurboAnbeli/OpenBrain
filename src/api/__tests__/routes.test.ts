@@ -51,9 +51,13 @@ const mockArchiveThoughts = vi.fn();
 const mockExtractAndLinkEntities = vi.fn().mockResolvedValue(undefined);
 const mockExtractAndLinkChunkEntities = vi.fn().mockResolvedValue(undefined);
 const mockInsertDocument = vi.fn();
+const mockListDocuments = vi.fn();
 const mockGetDocument = vi.fn();
 const mockGetDocumentBySourceUri = vi.fn();
 const mockUpdateDocument = vi.fn();
+const mockListDocumentRevisions = vi.fn();
+const mockGetDocumentRevision = vi.fn();
+const mockDeleteDocument = vi.fn();
 const mockReplaceDocumentChunks = vi.fn();
 const mockListDocumentChunks = vi.fn();
 const mockSearchDocumentChunks = vi.fn();
@@ -102,9 +106,13 @@ vi.mock("../../db/queries.js", () => ({
   extractAndLinkEntities: (...args: any[]) => mockExtractAndLinkEntities(...args),
   extractAndLinkChunkEntities: (...args: any[]) => mockExtractAndLinkChunkEntities(...args),
   insertDocument: (...args: any[]) => mockInsertDocument(...args),
+  listDocuments: (...args: any[]) => mockListDocuments(...args),
   getDocument: (...args: any[]) => mockGetDocument(...args),
   getDocumentBySourceUri: (...args: any[]) => mockGetDocumentBySourceUri(...args),
   updateDocument: (...args: any[]) => mockUpdateDocument(...args),
+  listDocumentRevisions: (...args: any[]) => mockListDocumentRevisions(...args),
+  getDocumentRevision: (...args: any[]) => mockGetDocumentRevision(...args),
+  deleteDocument: (...args: any[]) => mockDeleteDocument(...args),
   replaceDocumentChunks: (...args: any[]) => mockReplaceDocumentChunks(...args),
   listDocumentChunks: (...args: any[]) => mockListDocumentChunks(...args),
   searchDocumentChunks: (...args: any[]) => mockSearchDocumentChunks(...args),
@@ -1663,6 +1671,61 @@ describe("REST API Routes", () => {
     expect(mockInsertDocument).not.toHaveBeenCalled();
   });
 
+  it("GET /documents returns a filtered paginated document explorer list", async () => {
+    const now = new Date("2026-06-18T12:00:00Z");
+    mockListDocuments.mockResolvedValueOnce([
+      {
+        id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        title: "One brain handoff",
+        source_type: "markdown",
+        source_uri: "file:///vault/handoff.md",
+        content_preview: "Handoff preview",
+        content_char_count: 128,
+        metadata: { tags: ["one-brain"] },
+        project: "one-brain",
+        created_by: "hermes",
+        bank_id: "openbrain",
+        document_kind: "handoff",
+        session_id: null,
+        task_id: null,
+        intent: "operational_log",
+        event_started_at: null,
+        event_ended_at: null,
+        status: "active",
+        chunk_count: 3,
+        revision_count: 2,
+        created_at: now,
+        updated_at: now,
+      },
+    ]);
+
+    const res = await app.request("/documents?project=one-brain&source_type=markdown&status=active&q=handoff&limit=25&offset=50");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { count: number; limit: number; offset: number; documents: Array<Record<string, unknown>> };
+    expect(body.count).toBe(1);
+    expect(body.limit).toBe(25);
+    expect(body.offset).toBe(50);
+    expect(body.documents[0]!.content_preview).toBe("Handoff preview");
+    expect(body.documents[0]!.chunk_count).toBe(3);
+    expect(mockListDocuments).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      project: "one-brain",
+      source_type: "markdown",
+      status: "active",
+      q: "handoff",
+      limit: 25,
+      offset: 50,
+    }));
+  });
+
+  it("GET /documents rejects invalid list query params", async () => {
+    const invalidStatus = await app.request("/documents?status=missing");
+    expect(invalidStatus.status).toBe(400);
+    const invalidLimit = await app.request("/documents?limit=0");
+    expect(invalidLimit.status).toBe(400);
+    expect(mockListDocuments).not.toHaveBeenCalled();
+  });
+
 
 
   it("GET /documents/by-source-uri returns an active document for importer de-duplication", async () => {
@@ -1785,6 +1848,93 @@ describe("REST API Routes", () => {
       body: JSON.stringify({ title: "x" }),
     });
     expect(missing.status).toBe(404);
+  });
+
+  it("GET /documents/:id/revisions lists decrypted revision history", async () => {
+    const now = new Date("2026-06-18T12:00:00Z");
+    mockGetDocument.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      title: "Current source",
+      source_type: "markdown",
+      content: "Current body",
+      metadata: {},
+      status: "active",
+      created_at: now,
+      updated_at: now,
+    });
+    mockListDocumentRevisions.mockResolvedValueOnce([
+      {
+        id: "rev-123",
+        document_id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        revision_number: 1,
+        title: "Old source",
+        source_uri: "file:///old.md",
+        content: "Old body",
+        metadata: { tags: ["old"] },
+        status: "active",
+        edit_reason: "manual correction",
+        created_by: "ryan",
+        created_at: now,
+      },
+    ]);
+
+    const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678/revisions");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { document_id: string; count: number; revisions: Array<Record<string, unknown>> };
+    expect(body.count).toBe(1);
+    expect(body.revisions[0]!.content).toBe("Old body");
+    expect(body.revisions[0]!.revision_number).toBe(1);
+    expect(mockListDocumentRevisions).toHaveBeenCalledWith(expect.anything(), "a1b2c3d4-1234-5678-9abc-def012345678");
+  });
+
+  it("GET /documents/:id/revisions/:rev/diff returns revision-to-current diff metrics", async () => {
+    const now = new Date("2026-06-18T12:00:00Z");
+    mockGetDocument.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      title: "Current source",
+      source_type: "markdown",
+      source_uri: "file:///current.md",
+      content: "line one\nline two changed\nline three",
+      metadata: { tags: ["new"] },
+      status: "active",
+      created_at: now,
+      updated_at: now,
+    });
+    mockGetDocumentRevision.mockResolvedValueOnce({
+      id: "rev-123",
+      document_id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      revision_number: 1,
+      title: "Old source",
+      source_uri: "file:///old.md",
+      content: "line one\nline two",
+      metadata: { tags: ["old"] },
+      status: "active",
+      edit_reason: "manual correction",
+      created_by: "ryan",
+      created_at: now,
+    });
+
+    const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678/revisions/1/diff");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { diff: Record<string, unknown>; revision: Record<string, unknown> };
+    expect(body.revision.revision_number).toBe(1);
+    expect(body.diff.changed).toBe(true);
+    expect(body.diff.added_lines).toBeGreaterThan(0);
+    expect(body.diff.removed_lines).toBeGreaterThan(0);
+    expect(body.diff.title_changed).toBe(true);
+  });
+
+  it("DELETE /documents/:id soft deletes a document", async () => {
+    mockDeleteDocument.mockResolvedValueOnce({ deleted: true, id: "a1b2c3d4-1234-5678-9abc-def012345678" });
+
+    const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678", { method: "DELETE" });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { deleted: boolean; id: string };
+    expect(body.deleted).toBe(true);
+    expect(mockDeleteDocument).toHaveBeenCalledWith(expect.anything(), "a1b2c3d4-1234-5678-9abc-def012345678");
   });
 
 
@@ -2802,7 +2952,9 @@ describe("REST API Routes", () => {
     expect(body.job.status).toBe("success");
     expect(body.observation.id).toBe("11111111-2222-3333-4444-555555555555");
     expect(mockRunConsolidationJob).toHaveBeenCalled();
-    expect(mockRunConsolidationJob.mock.calls[0]![2].synthesis.model).toBe("qwen3:1.7b");
+    expect(mockRunConsolidationJob.mock.calls[0]![2].synthesis.model).toBe(
+      process.env.OPENBRAIN_SYNTHESIS_MODEL ?? "qwen3:1.7b"
+    );
   });
 
   // ─── GET /stats ────────────────────────────────────────────────────

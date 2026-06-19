@@ -36,7 +36,10 @@
     "refresh:mental-model": "tsx src/jobs/mental-model-refresh-cli.ts",
     "backfill:chunk-entities": "tsx src/seed/chunk-entities-backfill-cli.ts",
     "consolidation:worker": "tsx src/jobs/consolidation-worker-cli.ts",
-    "consolidation:worker:v2": "tsx src/workers/consolidation-worker-cli.ts"
+    "consolidation:worker:v2": "tsx src/workers/consolidation-worker-cli.ts",
+    "web:dev": "pnpm --filter @openbrain/web dev",
+    "web:build": "pnpm --filter @openbrain/web build",
+    "web:typecheck": "pnpm --filter @openbrain/web typecheck"
   },
   "engines": {
     "node": ">=22.0.0"

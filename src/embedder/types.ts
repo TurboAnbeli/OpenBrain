@@ -69,3 +69,60 @@ export const METADATA_PROMPT = `Extract metadata from the following thought. Ret
 - action_items: array of implied action items
 - dates: array of dates mentioned (YYYY-MM-DD format)
 Return ONLY valid JSON, no explanation.`;
+
+const THOUGHT_TYPES = new Set<ThoughtType>([
+  "observation",
+  "task",
+  "idea",
+  "reference",
+  "person_note",
+  "decision",
+  "meeting",
+  "architecture",
+  "pattern",
+  "postmortem",
+  "requirement",
+  "bug",
+  "convention",
+]);
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function normalizeMetadataPayload(content: string): string {
+  const trimmed = content.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced?.[1]) {
+    return fenced[1].trim();
+  }
+
+  const objectStart = trimmed.indexOf("{");
+  const arrayStart = trimmed.indexOf("[");
+  const candidates = [objectStart, arrayStart].filter((index) => index >= 0);
+  if (candidates.length === 0) {
+    return trimmed;
+  }
+
+  const start = Math.min(...candidates);
+  const lastObject = trimmed.lastIndexOf("}");
+  const lastArray = trimmed.lastIndexOf("]");
+  const end = Math.max(lastObject, lastArray);
+  return end >= start ? trimmed.slice(start, end + 1).trim() : trimmed;
+}
+
+export function parseThoughtMetadata(content: string): ThoughtMetadataExtracted {
+  const parsed = JSON.parse(normalizeMetadataPayload(content)) as Partial<ThoughtMetadataExtracted> | Array<Partial<ThoughtMetadataExtracted>>;
+  const metadata = Array.isArray(parsed) ? parsed[0] ?? {} : parsed;
+  const type = typeof metadata.type === "string" && THOUGHT_TYPES.has(metadata.type as ThoughtType)
+    ? metadata.type as ThoughtType
+    : "observation";
+
+  return {
+    type,
+    topics: stringArray(metadata.topics),
+    people: stringArray(metadata.people),
+    action_items: stringArray(metadata.action_items),
+    dates: stringArray(metadata.dates),
+  };
+}

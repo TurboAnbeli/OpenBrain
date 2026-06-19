@@ -8,6 +8,7 @@ import {
   type ThoughtMetadataExtracted,
   DEFAULT_METADATA,
   METADATA_PROMPT,
+  parseThoughtMetadata,
 } from "./types.js";
 
 export class LlamaServerEmbedder implements Embedder {
@@ -22,8 +23,18 @@ export class LlamaServerEmbedder implements Embedder {
     this.embedModel = process.env.LLAMA_SERVER_EMBED_MODEL ?? "harrier-oss-v1-0.6B-BF16.gguf";
     this.apiKey = process.env.LLAMA_SERVER_API_KEY ?? "";
     // Fallback to Ollama for metadata extraction (llama-server may be embedding-only)
-    this.llmEndpoint = process.env.LLAMA_SERVER_LLM_ENDPOINT ?? process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
-    this.llmModel = process.env.LLAMA_SERVER_LLM_MODEL ?? process.env.OLLAMA_LLM_MODEL ?? "llama3.2";
+    this.llmEndpoint = process.env.LLAMA_SERVER_LLM_ENDPOINT
+      ?? process.env.OPENBRAIN_LLM_CONSOLIDATION_ENDPOINT
+      ?? process.env.OPENBRAIN_SYNTHESIS_ENDPOINT
+      ?? process.env.OLLAMA_ENDPOINT
+      ?? "http://127.0.0.1:11434";
+    this.llmModel = process.env.LLAMA_SERVER_LLM_MODEL
+      ?? process.env.OPENBRAIN_LLM_CONSOLIDATION_MODEL
+      ?? process.env.OPENBRAIN_SYNTHESIS_MODEL
+      ?? process.env.CONSOLIDATION_MODEL
+      ?? process.env.SYNTHESIS_MODEL
+      ?? process.env.OLLAMA_LLM_MODEL
+      ?? "llama3.2";
 
     console.error(
       "[embedder] LlamaServer -> " + this.endpoint + " (embed: " + this.embedModel + ", llm fallback: " + this.llmEndpoint + "/" + this.llmModel + ")"    );
@@ -85,14 +96,7 @@ export class LlamaServerEmbedder implements Embedder {
     const data = (await response.json()) as { message: { content: string } };
 
     try {
-      const parsed = JSON.parse(data.message.content) as ThoughtMetadataExtracted;
-      return {
-        type: parsed.type ?? "observation",
-        topics: parsed.topics ?? [],
-        people: parsed.people ?? [],
-        action_items: parsed.action_items ?? [],
-        dates: parsed.dates ?? [],
-      };
+      return parseThoughtMetadata(data.message.content);
     } catch (e) {
       console.warn("[embedder] Failed to parse metadata JSON:", e);
       return DEFAULT_METADATA;

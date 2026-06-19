@@ -124,6 +124,20 @@ function consolidationExperienceContent(job: ConsolidationJobRow, observationId:
   return `Consolidation job ${job.id} materialized observation ${observationId} from ${sourceCount} explicit ${job.job_type} sources.`;
 }
 
+function jobTelemetry(
+  options: RunConsolidationJobOptions,
+  qualityGatePassed: boolean,
+  synthesisMs?: number
+): Record<string, unknown> {
+  return {
+    synthesis_model: options.synthesis.model,
+    synthesis_endpoint: options.synthesis.endpoint,
+    embedder_version: options.embedder.getVersion(),
+    quality_gate_passed: qualityGatePassed,
+    ...(typeof synthesisMs === "number" ? { synthesis_ms: synthesisMs } : {}),
+  };
+}
+
 export async function runConsolidationJob(
   pool: pg.Pool,
   jobIdOrPreclaimed: string | ConsolidationJobRow,
@@ -145,6 +159,7 @@ export async function runConsolidationJob(
   const sources = sourceKind === "document"
     ? await loadDocumentSources(pool, input)
     : await loadThoughtSources(pool, input);
+  let synthesisMs: number | undefined;
 
   try {
     if (sources.length === 0) {
@@ -157,6 +172,7 @@ export async function runConsolidationJob(
     const memoryBank = await getMemoryBankContext(pool, job.bank_id, "reflect");
     const directiveIds = memoryBank?.directives.map((directive) => directive.id) ?? [];
 
+    const synthesisStartedAt = Date.now();
     const synthesis = await synthesizeObservation(
       sources.map((source) => source.content),
       {
@@ -164,6 +180,7 @@ export async function runConsolidationJob(
         ...(memoryBank ? { memoryBank } : {}),
       }
     );
+    synthesisMs = Date.now() - synthesisStartedAt;
     if (!synthesis) {
       throw new Error("synthesis quality gate failed");
     }
@@ -236,6 +253,7 @@ export async function runConsolidationJob(
         ...outputEnvelope(sourceKind, sources, observation.id, {
           evidence_link_ids: evidenceLinkIds,
           experience_id: experience.id,
+          ...jobTelemetry(options, true, synthesisMs),
         }),
         directive_ids: directiveIds,
       }
@@ -247,7 +265,7 @@ export async function runConsolidationJob(
       pool,
       job.id,
       message,
-      outputEnvelope(sourceKind, sources)
+      outputEnvelope(sourceKind, sources, undefined, jobTelemetry(options, false, synthesisMs))
     );
     return { job: failed };
   }

@@ -25,9 +25,13 @@ import {
   archiveThoughts,
   searchThoughtsByEntity,
   insertDocument,
+  listDocuments,
   getDocument,
   getDocumentBySourceUri,
   updateDocument,
+  listDocumentRevisions,
+  getDocumentRevision,
+  deleteDocument,
   replaceDocumentChunks,
   listDocumentChunks,
   searchDocumentChunks,
@@ -63,6 +67,9 @@ import {
   type DocumentKind,
   type DocumentIntent,
   type DocumentRow,
+  type DocumentSummaryRow,
+  type DocumentRevisionRow,
+  type DocumentStatus,
   type DocumentChunkSearchResult,
   type DocumentChunkEntityOverlapResult,
   type ConsolidatedObservationRow,
@@ -147,6 +154,8 @@ const DOCUMENT_INTENTS: DocumentIntent[] = [
 const CONSOLIDATED_OBSERVATION_TRENDS = ["strengthening", "stable", "weakening", "stale"] as const;
 const DOCUMENT_KIND_SET = new Set<string>(DOCUMENT_KINDS);
 const DOCUMENT_INTENT_SET = new Set<string>(DOCUMENT_INTENTS);
+const DOCUMENT_STATUSES: DocumentStatus[] = ["active", "archived", "deleted"];
+const DOCUMENT_STATUS_SET = new Set<string>(DOCUMENT_STATUSES);
 const CONSOLIDATED_OBSERVATION_TREND_SET = new Set<string>(CONSOLIDATED_OBSERVATION_TRENDS);
 const CONSOLIDATION_JOB_TYPES = ["observe_thoughts", "observe_documents"] as const;
 const CONSOLIDATION_JOB_TYPE_SET = new Set<string>(CONSOLIDATION_JOB_TYPES);
@@ -193,6 +202,105 @@ function serializeDocument(document: DocumentRow) {
     created_at: document.created_at.toISOString(),
     updated_at: document.updated_at.toISOString(),
   };
+}
+
+function serializeDocumentSummary(document: DocumentSummaryRow) {
+  return {
+    id: document.id,
+    title: document.title,
+    source_type: document.source_type,
+    source_uri: document.source_uri ?? null,
+    content_preview: document.content_preview,
+    content_char_count: document.content_char_count,
+    metadata: document.metadata,
+    project: document.project ?? null,
+    created_by: document.created_by ?? null,
+    bank_id: document.bank_id ?? null,
+    document_kind: document.document_kind ?? null,
+    session_id: document.session_id ?? null,
+    task_id: document.task_id ?? null,
+    intent: document.intent ?? null,
+    event_started_at: serializeOptionalTimestamp(document.event_started_at),
+    event_ended_at: serializeOptionalTimestamp(document.event_ended_at),
+    status: document.status,
+    chunk_count: document.chunk_count,
+    revision_count: document.revision_count,
+    created_at: document.created_at.toISOString(),
+    updated_at: document.updated_at.toISOString(),
+  };
+}
+
+function serializeDocumentRevision(revision: DocumentRevisionRow) {
+  return {
+    id: revision.id,
+    document_id: revision.document_id,
+    revision_number: revision.revision_number,
+    title: revision.title,
+    source_uri: revision.source_uri ?? null,
+    content: revision.content,
+    metadata: revision.metadata,
+    status: revision.status,
+    edit_reason: revision.edit_reason ?? null,
+    created_by: revision.created_by ?? null,
+    created_at: revision.created_at.toISOString(),
+  };
+}
+
+function splitLinesForDiff(content: string): string[] {
+  if (content.length === 0) return [];
+  return content.split(/\r?\n/);
+}
+
+function lineLcsLength(a: string[], b: string[]): number {
+  const previous = new Array<number>(b.length + 1).fill(0);
+  const current = new Array<number>(b.length + 1).fill(0);
+  for (const left of a) {
+    for (let j = 0; j < b.length; j++) {
+      const right = b[j] ?? "";
+      const diagonal = previous[j] ?? 0;
+      current[j + 1] = left === right ? diagonal + 1 : Math.max(previous[j + 1] ?? 0, current[j] ?? 0);
+    }
+    for (let j = 0; j < current.length; j++) {
+      previous[j] = current[j] ?? 0;
+      current[j] = 0;
+    }
+  }
+  return previous[b.length] ?? 0;
+}
+
+function documentRevisionDiff(document: DocumentRow, revision: DocumentRevisionRow) {
+  const revisionLines = splitLinesForDiff(revision.content);
+  const currentLines = splitLinesForDiff(document.content);
+  const common = lineLcsLength(revisionLines, currentLines);
+  const addedLines = currentLines.length - common;
+  const removedLines = revisionLines.length - common;
+  const metadataChanged = JSON.stringify(document.metadata ?? {}) !== JSON.stringify(revision.metadata ?? {});
+
+  return {
+    document_id: document.id,
+    revision_number: revision.revision_number,
+    changed: document.content !== revision.content || document.title !== revision.title || (document.source_uri ?? null) !== (revision.source_uri ?? null) || metadataChanged || document.status !== revision.status,
+    old_content_chars: revision.content.length,
+    current_content_chars: document.content.length,
+    char_delta: document.content.length - revision.content.length,
+    old_line_count: revisionLines.length,
+    current_line_count: currentLines.length,
+    added_lines: addedLines,
+    removed_lines: removedLines,
+    unchanged_lines: common,
+    title_changed: document.title !== revision.title,
+    source_uri_changed: (document.source_uri ?? null) !== (revision.source_uri ?? null),
+    metadata_changed: metadataChanged,
+    status_changed: document.status !== revision.status,
+  };
+}
+
+function parseBoundedInt(value: string | undefined, name: string, min: number, max: number, defaultValue: number): { ok: true; value: number } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true, value: defaultValue };
+  if (!/^\d+$/.test(value)) return { ok: false, error: `${name} must be an integer between ${min} and ${max}` };
+  const parsed = Number.parseInt(value, 10);
+  if (parsed < min || parsed > max) return { ok: false, error: `${name} must be an integer between ${min} and ${max}` };
+  return { ok: true, value: parsed };
 }
 
 function serializeConsolidationJob(job: ConsolidationJobRow) {
@@ -2739,6 +2847,53 @@ export function createApi(): Hono {
 
   // ─── Source Documents ─────────────────────────────────────────────
 
+  app.get("/documents", async (c) => {
+    const limit = parseBoundedInt(c.req.query("limit"), "limit", 1, 100, 50);
+    if (!limit.ok) return c.json({ error: limit.error }, 400);
+    const offset = parseBoundedInt(c.req.query("offset"), "offset", 0, 100000, 0);
+    if (!offset.ok) return c.json({ error: offset.error }, 400);
+
+    const status = c.req.query("status") as DocumentStatus | undefined;
+    if (status !== undefined && !DOCUMENT_STATUS_SET.has(status)) {
+      return c.json({ error: `status must be one of: ${DOCUMENT_STATUSES.join(", ")}` }, 400);
+    }
+    const documentKind = c.req.query("document_kind") as DocumentKind | undefined;
+    if (documentKind !== undefined && !DOCUMENT_KIND_SET.has(documentKind)) {
+      return c.json({ error: `document_kind must be one of: ${DOCUMENT_KINDS.join(", ")}` }, 400);
+    }
+    const intent = c.req.query("intent") as DocumentIntent | undefined;
+    if (intent !== undefined && !DOCUMENT_INTENT_SET.has(intent)) {
+      return c.json({ error: `intent must be one of: ${DOCUMENT_INTENTS.join(", ")}` }, 400);
+    }
+    const includeDeleted = c.req.query("include_deleted") === "true";
+
+    try {
+      const documents = await listDocuments(pool, {
+        project: c.req.query("project"),
+        source_type: c.req.query("source_type"),
+        status,
+        created_by: c.req.query("created_by"),
+        bank_id: c.req.query("bank_id"),
+        document_kind: documentKind,
+        intent,
+        q: c.req.query("q"),
+        include_deleted: includeDeleted,
+        limit: limit.value,
+        offset: offset.value,
+      });
+      return c.json({
+        count: documents.length,
+        limit: limit.value,
+        offset: offset.value,
+        documents: documents.map(serializeDocumentSummary),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Document list failed:", message);
+      return c.json({ error: "Failed to list documents", detail: message }, 502);
+    }
+  });
+
   app.post("/documents", async (c) => {
     const body = await c.req.json<{
       title: string;
@@ -2856,6 +3011,61 @@ export function createApi(): Hono {
     }
   });
 
+  app.get("/documents/:id/revisions", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
+
+    try {
+      const document = await getDocument(pool, id);
+      if (!document) {
+        return c.json({ error: `Document not found: ${id}` }, 404);
+      }
+      const revisions = await listDocumentRevisions(pool, id);
+      return c.json({
+        document_id: id,
+        count: revisions.length,
+        revisions: revisions.map(serializeDocumentRevision),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Document revision list failed:", message);
+      return c.json({ error: "Failed to list document revisions", detail: message }, 502);
+    }
+  });
+
+  app.get("/documents/:id/revisions/:revision_number/diff", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
+    const revisionNumber = parseBoundedInt(c.req.param("revision_number"), "revision_number", 1, 1000000, 1);
+    if (!revisionNumber.ok) return c.json({ error: revisionNumber.error }, 400);
+
+    try {
+      const document = await getDocument(pool, id);
+      if (!document) {
+        return c.json({ error: `Document not found: ${id}` }, 404);
+      }
+      const revision = await getDocumentRevision(pool, id, revisionNumber.value);
+      if (!revision) {
+        return c.json({ error: `Document revision not found: ${id}#${revisionNumber.value}` }, 404);
+      }
+      return c.json({
+        document_id: id,
+        revision_number: revisionNumber.value,
+        revision: serializeDocumentRevision(revision),
+        current: serializeDocument(document),
+        diff: documentRevisionDiff(document, revision),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Document revision diff failed:", message);
+      return c.json({ error: "Failed to diff document revision", detail: message }, 502);
+    }
+  });
+
   app.patch("/documents/:id", async (c) => {
     const id = c.req.param("id");
     if (!UUID_RE.test(id)) {
@@ -2910,6 +3120,25 @@ export function createApi(): Hono {
 
 
 
+
+  app.delete("/documents/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
+
+    try {
+      const result = await deleteDocument(pool, id);
+      if (!result.deleted) {
+        return c.json({ error: `Document not found: ${id}` }, 404);
+      }
+      return c.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Document delete failed:", message);
+      return c.json({ error: "Failed to delete document", detail: message }, 502);
+    }
+  });
 
   app.post("/documents/search", async (c) => {
     const body = await c.req.json<{
