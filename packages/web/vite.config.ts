@@ -4,6 +4,7 @@ import react from "@vitejs/plugin-react";
 const apiTarget = process.env.VITE_OPENBRAIN_API_URL ?? "http://127.0.0.1:8000";
 
 export default defineConfig({
+  base: "/web/",
   plugins: [react()],
   server: {
     port: 5173,

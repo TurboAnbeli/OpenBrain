@@ -1,6 +1,6 @@
 import type { DocumentChunk, DocumentDetail, DocumentRevision, DocumentSummary, RevisionDiff } from "./types";
 
-const API_BASE = import.meta.env.VITE_OPENBRAIN_API_URL ?? "/api";
+const API_BASE = import.meta.env.VITE_OPENBRAIN_API_URL ?? "/web/api";
 
 async function requestJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`);
