@@ -1712,6 +1712,44 @@ export async function replaceDocumentChunks(
   }
 }
 
+export interface ReindexDocumentOptions {
+  targetVersion: string;
+  staleOnly?: boolean;
+  limit?: number;
+}
+
+export async function listDocumentsForReindex(
+  pool: pg.Pool,
+  options: ReindexDocumentOptions
+): Promise<DocumentRow[]> {
+  const key = getCipherKey();
+  const limit = Math.max(1, Math.min(options.limit ?? 25, 100));
+  const staleOnly = options.staleOnly === true;
+  const { rows } = await pool.query<DocumentRow>(
+    `SELECT d.id, d.title, d.source_type, d.source_uri,
+            pgp_sym_decrypt(d.content_enc, $2)::text AS content,
+            d.metadata, d.project, d.created_by, d.bank_id, d.document_kind,
+            d.session_id, d.task_id, d.intent, d.event_started_at, d.event_ended_at,
+            d.status, d.created_at, d.updated_at
+       FROM documents d
+      WHERE d.status = 'active'
+        AND (
+          $3::boolean = false
+          OR NOT EXISTS (SELECT 1 FROM document_chunks c WHERE c.document_id = d.id)
+          OR EXISTS (
+            SELECT 1
+              FROM document_chunks c
+             WHERE c.document_id = d.id
+               AND COALESCE(NULLIF(c.metadata->>'embedder_version', ''), 'unknown') <> $4
+          )
+        )
+      ORDER BY d.updated_at DESC
+      LIMIT $1`,
+    [limit, key, staleOnly, options.targetVersion]
+  );
+  return rows;
+}
+
 export async function getDocumentChunkEmbedderVersionStats(pool: pg.Pool): Promise<EmbedderVersionStat[]> {
   const { rows } = await pool.query<{ embedder_version: string; count: string }>(
     `SELECT COALESCE(NULLIF(metadata->>'embedder_version', ''), 'unknown') AS embedder_version,

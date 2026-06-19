@@ -4,7 +4,7 @@
  * /memories/:id (PUT, DELETE), /stats endpoints.
  */
 
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import type pg from "pg";
@@ -39,6 +39,7 @@ import {
   searchDocumentChunks,
   searchDocumentChunksByEntity,
   getDocumentChunkEmbedderVersionStats,
+  listDocumentsForReindex,
   insertConsolidatedObservation,
   getConsolidatedObservation,
   searchConsolidatedObservations,
@@ -147,6 +148,8 @@ const ADMIN_UUID_SEGMENT = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 const ADMIN_PROTECTED_ROUTES: Array<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /^\/embedder\/switch$/ },
   { method: "POST", pattern: /^\/documents$/ },
+  { method: "POST", pattern: /^\/documents\/reindex-stale$/ },
+  { method: "POST", pattern: /^\/documents\/reindex-all$/ },
   { method: "POST", pattern: /^\/documents\/upload$/ },
   { method: "POST", pattern: /^\/documents\/import-url$/ },
   { method: "PATCH", pattern: new RegExp(`^/documents/${ADMIN_UUID_SEGMENT}$`, "i") },
@@ -3176,6 +3179,58 @@ export function createApi(): Hono {
   });
 
 
+
+  async function handleBulkDocumentReindex(c: Context, staleOnly: boolean) {
+    const body = (await c.req.json<{ dry_run?: boolean; limit?: number }>().catch(() => ({}))) as { dry_run?: boolean; limit?: number };
+    const dryRun = body.dry_run === true;
+    const limit = Math.max(1, Math.min(Number.isFinite(body.limit ?? 25) ? Number(body.limit ?? 25) : 25, 100));
+    const targetVersion = embedder.getVersion();
+    const candidates = await listDocumentsForReindex(pool, { targetVersion, staleOnly, limit });
+    const documents = candidates.map((document) => ({ id: document.id, title: document.title, updated_at: serializeOptionalTimestamp(document.updated_at) }));
+
+    if (dryRun) {
+      return c.json({
+        mode: staleOnly ? "stale" : "all",
+        dry_run: true,
+        target_embedder_version: targetVersion,
+        count: candidates.length,
+        documents,
+      });
+    }
+
+    const reindexed: Array<{ id: string; title: string; chunk_count: number }> = [];
+    const failed: Array<{ id: string; title: string; error: string }> = [];
+
+    for (const document of candidates) {
+      try {
+        const chunkInputs = await buildDocumentChunkInputs(embedder, document.content);
+        const result = await updateDocumentWithChunks(
+          pool,
+          document.id,
+          { edit_reason: staleOnly ? "bulk stale reindex" : "bulk full reindex", updated_by: "bulk-reindex" },
+          chunkInputs
+        );
+        await linkDocumentChunkEntities(pool, result.chunks);
+        reindexed.push({ id: document.id, title: document.title, chunk_count: result.chunks.length });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        failed.push({ id: document.id, title: document.title, error: message });
+      }
+    }
+
+    return c.json({
+      mode: staleOnly ? "stale" : "all",
+      dry_run: false,
+      target_embedder_version: targetVersion,
+      count: candidates.length,
+      reindexed,
+      failed,
+    });
+  }
+
+  app.post("/documents/reindex-stale", (c) => handleBulkDocumentReindex(c, true));
+
+  app.post("/documents/reindex-all", (c) => handleBulkDocumentReindex(c, false));
 
   app.get("/documents/by-source-uri", async (c) => {
     const sourceUri = c.req.query("source_uri");

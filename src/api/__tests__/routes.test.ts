@@ -66,6 +66,7 @@ const mockListDocumentChunks = vi.fn();
 const mockSearchDocumentChunks = vi.fn();
 const mockSearchDocumentChunksByEntity = vi.fn().mockResolvedValue([]);
 const mockGetDocumentChunkEmbedderVersionStats = vi.fn().mockResolvedValue([]);
+const mockListDocumentsForReindex = vi.fn().mockResolvedValue([]);
 const mockInsertConsolidatedObservation = vi.fn();
 const mockGetConsolidatedObservation = vi.fn();
 const mockSearchConsolidatedObservations = vi.fn();
@@ -123,6 +124,7 @@ vi.mock("../../db/queries.js", () => ({
   searchDocumentChunks: (...args: any[]) => mockSearchDocumentChunks(...args),
   searchDocumentChunksByEntity: (...args: any[]) => mockSearchDocumentChunksByEntity(...args),
   getDocumentChunkEmbedderVersionStats: (...args: any[]) => mockGetDocumentChunkEmbedderVersionStats(...args),
+  listDocumentsForReindex: (...args: any[]) => mockListDocumentsForReindex(...args),
   insertConsolidatedObservation: (...args: any[]) => mockInsertConsolidatedObservation(...args),
   getConsolidatedObservation: (...args: any[]) => mockGetConsolidatedObservation(...args),
   searchConsolidatedObservations: (...args: any[]) => mockSearchConsolidatedObservations(...args),
@@ -1877,6 +1879,87 @@ describe("REST API Routes", () => {
 
 
 
+
+  it("POST /documents/reindex-stale dry-runs stale document candidates without embedding", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
+    mockListDocumentsForReindex.mockResolvedValueOnce([
+      {
+        id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        title: "Stale doc",
+        source_type: "markdown",
+        source_uri: null,
+        content: "# Stale",
+        metadata: {},
+        project: "default",
+        created_by: "test",
+        status: "active",
+        created_at: new Date(),
+        updated_at: new Date(),
+      },
+    ]);
+
+    const res = await app.request("/documents/reindex-stale", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenBrain-Admin-Key": "test-admin-key" },
+      body: JSON.stringify({ dry_run: true, limit: 5 }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { dry_run: boolean; count: number; documents: Array<{ id: string; title: string }> };
+    expect(body.dry_run).toBe(true);
+    expect(body.count).toBe(1);
+    expect(body.documents[0]).toMatchObject({ id: "a1b2c3d4-1234-5678-9abc-def012345678", title: "Stale doc" });
+    expect(mockGenerateEmbedding).not.toHaveBeenCalled();
+    expect(mockUpdateDocumentWithChunks).not.toHaveBeenCalled();
+  });
+
+  it("POST /documents/reindex-stale reindexes candidates with the current embedder version", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
+    mockListDocumentsForReindex.mockResolvedValueOnce([
+      {
+        id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        title: "Stale doc",
+        source_type: "markdown",
+        source_uri: null,
+        content: "# Stale",
+        metadata: {},
+        project: "default",
+        created_by: "test",
+        status: "active",
+        created_at: new Date(),
+        updated_at: new Date(),
+      },
+    ]);
+    mockUpdateDocumentWithChunks.mockResolvedValueOnce({
+      document: {
+        id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        title: "Stale doc",
+        source_type: "markdown",
+        source_uri: null,
+        content: "# Stale",
+        metadata: {},
+        project: "default",
+        created_by: "test",
+        status: "active",
+        created_at: new Date(),
+        updated_at: new Date(),
+      },
+      chunks: [{ id: "chunk-1", document_id: "a1b2c3d4-1234-5678-9abc-def012345678", chunk_index: 0, content: "# Stale", metadata: {}, created_at: new Date(), updated_at: new Date() }],
+    });
+
+    const res = await app.request("/documents/reindex-stale", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenBrain-Admin-Key": "test-admin-key" },
+      body: JSON.stringify({ limit: 1 }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { dry_run: boolean; reindexed: Array<{ id: string; chunk_count: number }> };
+    expect(body.dry_run).toBe(false);
+    expect(body.reindexed).toEqual([{ id: "a1b2c3d4-1234-5678-9abc-def012345678", title: "Stale doc", chunk_count: 1 }]);
+    const chunkInputs = mockUpdateDocumentWithChunks.mock.calls[0]![3];
+    expect(chunkInputs[0].metadata.embedder_version).toBe("test-embedder");
+  });
   it("GET /documents/by-source-uri returns an active document for importer de-duplication", async () => {
     const createdAt = new Date();
     mockGetDocumentBySourceUri.mockResolvedValueOnce({
