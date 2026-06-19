@@ -53,6 +53,11 @@ import {
   inferExperienceTemporalLinks,
   inferSupersedesMemoryLinks,
   inferExperienceReferenceLinks,
+  insertMemoryBankDirective,
+  getMemoryBankDirective,
+  listMemoryBankDirectives,
+  updateMemoryBankDirective,
+  deactivateMemoryBankDirective,
   claimNextQueuedJob,
   findConsolidationCandidates,
   type ExperienceInput,
@@ -62,6 +67,7 @@ import {
   type DocumentChunkInput,
   type ConsolidatedObservationInput,
   type MentalModelInput,
+  type MemoryBankDirectiveInput,
 } from "../queries.js";
 
 // ─── Mock Pool Factory ──────────────────────────────────────────────
@@ -1521,6 +1527,120 @@ describe("recallTemporalMemories", () => {
   });
 });
 
+
+
+// ─── Memory Bank Directives CRUD ─────────────────────────────────────
+
+describe("memory bank directives CRUD", () => {
+  const createdAt = new Date("2026-06-19T00:00:00Z");
+  const directiveRow = {
+    id: "11111111-2222-4333-8444-555555555555",
+    bank_id: "openbrain",
+    name: "source_boundary",
+    rule_text: "Preserve source boundaries.",
+    applies_to: ["reflect", "retain"],
+    severity: "hard",
+    active: true,
+    priority: 50,
+    revision: 1,
+    created_at: createdAt,
+    updated_at: createdAt,
+  };
+
+  it("inserts into the existing directives table", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [directiveRow] });
+    const input: MemoryBankDirectiveInput = {
+      bank_id: "openbrain",
+      name: "source_boundary",
+      rule_text: "Preserve source boundaries.",
+      applies_to: ["reflect", "retain"],
+      severity: "hard",
+      active: true,
+      priority: 50,
+    };
+
+    const result = await insertMemoryBankDirective(pool, input);
+
+    expect(result.id).toBe(directiveRow.id);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("INSERT INTO directives");
+    expect(sql).not.toContain("memory_bank_directives");
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params).toEqual([
+      "openbrain",
+      "source_boundary",
+      "Preserve source boundaries.",
+      JSON.stringify(["reflect", "retain"]),
+      "hard",
+      true,
+      50,
+      null,
+    ]);
+  });
+
+  it("lists from directives with active and applies_to filters", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [directiveRow] });
+
+    const results = await listMemoryBankDirectives(pool, {
+      bank_id: "openbrain",
+      active: true,
+      applies_to: "reflect",
+      severity: "hard",
+      limit: 25,
+    });
+
+    expect(results).toHaveLength(1);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("FROM directives");
+    expect(sql).toContain("bank_id = $1");
+    expect(sql).toContain("active = $2");
+    expect(sql).toContain("applies_to ? $3");
+    expect(sql).not.toContain("memory_bank_directives");
+    expect(mockQuery.mock.calls[0]![1]).toEqual(["openbrain", true, "reflect", "hard", 25]);
+  });
+
+  it("gets one directive by id from directives", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [directiveRow] });
+
+    const result = await getMemoryBankDirective(pool, directiveRow.id);
+
+    expect(result?.name).toBe("source_boundary");
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("FROM directives");
+    expect(sql).toContain("WHERE id = $1");
+    expect(sql).not.toContain("memory_bank_directives");
+  });
+
+  it("updates directives and bumps revision", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [{ ...directiveRow, priority: 60, revision: 2 }], rowCount: 1 });
+
+    const result = await updateMemoryBankDirective(pool, directiveRow.id, { priority: 60 });
+
+    expect(result?.revision).toBe(2);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("UPDATE directives");
+    expect(sql).toContain("revision = revision + 1");
+    expect(sql).not.toContain("memory_bank_directives");
+  });
+
+  it("soft-deactivates directives instead of deleting rows", async () => {
+    const { pool, mockQuery } = createMockPool();
+    mockQuery.mockResolvedValueOnce({ rows: [{ ...directiveRow, active: false, revision: 2 }], rowCount: 1 });
+
+    const result = await deactivateMemoryBankDirective(pool, directiveRow.id);
+
+    expect(result?.active).toBe(false);
+    const sql = mockQuery.mock.calls[0]![0] as string;
+    expect(sql).toContain("UPDATE directives");
+    expect(sql).toContain("active = false");
+    expect(sql).not.toContain("DELETE FROM directives");
+    expect(sql).not.toContain("memory_bank_directives");
+  });
+});
 
 // ─── Memory Bank Context ─────────────────────────────────────────────
 

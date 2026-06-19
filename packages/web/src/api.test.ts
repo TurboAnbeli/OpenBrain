@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { reindexDocument, setStoredAdminApiKey, updateDocument } from "./api";
+import { createMemoryBankDirective, deleteMemoryBankDirective, listMemoryBankDirectives, reindexDocument, setStoredAdminApiKey, updateDocument, updateMemoryBankDirective } from "./api";
 
 describe("updateDocument", () => {
   afterEach(() => {
@@ -72,4 +72,70 @@ describe("updateDocument", () => {
     );
   });
 
+});
+
+describe("memory bank directive API helpers", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    setStoredAdminApiKey("");
+  });
+
+  it("lists directives with filters", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ count: 0, directives: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    await listMemoryBankDirectives({ bank_id: "openbrain", active: true, applies_to: "reflect", limit: 25 });
+
+    expect(fetchMock).toHaveBeenCalledWith("/web/api/memory-bank-directives?limit=25&bank_id=openbrain&active=true&applies_to=reflect", undefined);
+  });
+
+  it("sends admin key for mutating directive helpers", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ id: "dir-1", name: "source_boundary" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    setStoredAdminApiKey("test-admin-key");
+
+    await createMemoryBankDirective({ name: "source_boundary", rule_text: "Preserve source boundaries." });
+    await updateMemoryBankDirective("dir/1", { priority: 2 });
+    await deleteMemoryBankDirective("dir/1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/web/api/memory-bank-directives",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "Content-Type": "application/json",
+          "X-OpenBrain-Admin-Key": "test-admin-key",
+        }),
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/web/api/memory-bank-directives/dir%2F1",
+      expect.objectContaining({
+        method: "PATCH",
+        headers: expect.objectContaining({
+          "Content-Type": "application/json",
+          "X-OpenBrain-Admin-Key": "test-admin-key",
+        }),
+        body: JSON.stringify({ priority: 2 }),
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/web/api/memory-bank-directives/dir%2F1",
+      expect.objectContaining({
+        method: "DELETE",
+        headers: expect.objectContaining({ "X-OpenBrain-Admin-Key": "test-admin-key" }),
+      })
+    );
+  });
 });

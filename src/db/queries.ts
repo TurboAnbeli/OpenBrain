@@ -575,6 +575,35 @@ export interface ConsolidationJobRow {
   created_at: Date;
 }
 
+export interface MemoryBankDirectiveInput {
+  bank_id?: string;
+  name: string;
+  rule_text: string;
+  applies_to?: string[];
+  severity?: string;
+  active?: boolean;
+  priority?: number;
+  revision?: number;
+}
+
+export interface MemoryBankDirectiveUpdateInput {
+  bank_id?: string;
+  name?: string;
+  rule_text?: string;
+  applies_to?: string[];
+  severity?: string;
+  active?: boolean;
+  priority?: number;
+}
+
+export interface MemoryBankDirectiveListOptions {
+  bank_id?: string;
+  active?: boolean;
+  applies_to?: string;
+  severity?: string;
+  limit?: number;
+}
+
 export interface MemoryBankDirectiveContext {
   id: string;
   bank_id: string;
@@ -3225,6 +3254,163 @@ export async function inferExperienceReferenceLinks(
     params
   );
   return rows;
+}
+
+
+
+// ─── Memory Bank Directive CRUD ──────────────────────────────────────
+
+const MEMORY_BANK_DIRECTIVE_RETURNING = `id,
+               bank_id,
+               name,
+               rule_text,
+               applies_to,
+               severity,
+               active,
+               priority,
+               revision,
+               created_at,
+               updated_at`;
+
+function boundedMemoryBankDirectiveLimit(limit?: number): number {
+  if (!Number.isFinite(limit ?? 50)) return 50;
+  return Math.max(1, Math.min(100, Math.trunc(limit ?? 50)));
+}
+
+export async function insertMemoryBankDirective(
+  pool: pg.Pool,
+  directive: MemoryBankDirectiveInput
+): Promise<MemoryBankDirectiveContext> {
+  const { rows } = await pool.query<MemoryBankDirectiveContext>(
+    `INSERT INTO directives (
+       bank_id,
+       name,
+       rule_text,
+       applies_to,
+       severity,
+       active,
+       priority,
+       revision
+     )
+     VALUES (
+       COALESCE($1, 'openbrain'),
+       $2,
+       $3,
+       COALESCE($4::jsonb, '["reflect"]'::jsonb),
+       COALESCE($5, 'hard'),
+       COALESCE($6, true),
+       COALESCE($7, 0),
+       COALESCE($8, 1)
+     )
+     RETURNING ${MEMORY_BANK_DIRECTIVE_RETURNING}`,
+    [
+      directive.bank_id ?? null,
+      directive.name,
+      directive.rule_text,
+      directive.applies_to !== undefined ? JSON.stringify(directive.applies_to) : null,
+      directive.severity ?? null,
+      directive.active ?? null,
+      directive.priority ?? null,
+      directive.revision ?? null,
+    ]
+  );
+  return rows[0]!;
+}
+
+export async function getMemoryBankDirective(
+  pool: pg.Pool,
+  id: string
+): Promise<MemoryBankDirectiveContext | null> {
+  const { rows } = await pool.query<MemoryBankDirectiveContext>(
+    `SELECT ${MEMORY_BANK_DIRECTIVE_RETURNING}
+     FROM directives
+     WHERE id = $1
+     LIMIT 1`,
+    [id]
+  );
+  return rows[0] ?? null;
+}
+
+export async function listMemoryBankDirectives(
+  pool: pg.Pool,
+  options: MemoryBankDirectiveListOptions = {}
+): Promise<MemoryBankDirectiveContext[]> {
+  const params: unknown[] = [options.bank_id ?? "openbrain"];
+  const clauses = ["bank_id = $1"];
+  if (options.active !== undefined) {
+    params.push(options.active);
+    clauses.push(`active = $${params.length}`);
+  }
+  if (options.applies_to !== undefined) {
+    params.push(options.applies_to);
+    clauses.push(`applies_to ? $${params.length}`);
+  }
+  if (options.severity !== undefined) {
+    params.push(options.severity);
+    clauses.push(`severity = $${params.length}`);
+  }
+  params.push(boundedMemoryBankDirectiveLimit(options.limit));
+  const limitPlaceholder = `$${params.length}`;
+
+  const { rows } = await pool.query<MemoryBankDirectiveContext>(
+    `SELECT ${MEMORY_BANK_DIRECTIVE_RETURNING}
+     FROM directives
+     WHERE ${clauses.join(" AND ")}
+     ORDER BY priority DESC, name ASC, updated_at DESC
+     LIMIT ${limitPlaceholder}`,
+    params
+  );
+  return rows;
+}
+
+export async function updateMemoryBankDirective(
+  pool: pg.Pool,
+  id: string,
+  patch: MemoryBankDirectiveUpdateInput
+): Promise<MemoryBankDirectiveContext | null> {
+  const { rows, rowCount } = await pool.query<MemoryBankDirectiveContext>(
+    `UPDATE directives
+     SET bank_id = COALESCE($2, bank_id),
+         name = COALESCE($3, name),
+         rule_text = COALESCE($4, rule_text),
+         applies_to = COALESCE($5::jsonb, applies_to),
+         severity = COALESCE($6, severity),
+         active = COALESCE($7::boolean, active),
+         priority = COALESCE($8::integer, priority),
+         revision = revision + 1,
+         updated_at = now()
+     WHERE id = $1
+     RETURNING ${MEMORY_BANK_DIRECTIVE_RETURNING}`,
+    [
+      id,
+      patch.bank_id ?? null,
+      patch.name ?? null,
+      patch.rule_text ?? null,
+      patch.applies_to !== undefined ? JSON.stringify(patch.applies_to) : null,
+      patch.severity ?? null,
+      patch.active ?? null,
+      patch.priority ?? null,
+    ]
+  );
+  if (!rowCount || rowCount === 0) return null;
+  return rows[0]!;
+}
+
+export async function deactivateMemoryBankDirective(
+  pool: pg.Pool,
+  id: string
+): Promise<MemoryBankDirectiveContext | null> {
+  const { rows, rowCount } = await pool.query<MemoryBankDirectiveContext>(
+    `UPDATE directives
+     SET active = false,
+         revision = revision + 1,
+         updated_at = now()
+     WHERE id = $1
+     RETURNING ${MEMORY_BANK_DIRECTIVE_RETURNING}`,
+    [id]
+  );
+  if (!rowCount || rowCount === 0) return null;
+  return rows[0]!;
 }
 
 

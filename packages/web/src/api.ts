@@ -130,3 +130,83 @@ export function importUrlDocument(url: string, title?: string, project?: string,
     body: JSON.stringify({ url, title, project, created_by: createdBy }),
   });
 }
+
+export interface MemoryBankDirective {
+  id: string;
+  bank_id: string;
+  name: string;
+  rule_text: string;
+  applies_to: string[];
+  severity: string;
+  active: boolean;
+  priority: number;
+  revision: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface MemoryBankDirectiveFilters {
+  bank_id?: string;
+  active?: boolean;
+  applies_to?: string;
+  severity?: string;
+  limit?: number;
+}
+
+export interface MemoryBankDirectiveInput {
+  bank_id?: string;
+  name: string;
+  rule_text: string;
+  applies_to?: string[];
+  severity?: string;
+  active?: boolean;
+  priority?: number;
+  revision?: number;
+}
+
+export interface MemoryBankDirectiveUpdateInput {
+  bank_id?: string;
+  name?: string;
+  rule_text?: string;
+  applies_to?: string[];
+  severity?: string;
+  active?: boolean;
+  priority?: number;
+}
+
+export function listMemoryBankDirectives(filters: MemoryBankDirectiveFilters = {}) {
+  const params = new URLSearchParams();
+  params.set("limit", String(filters.limit ?? 50));
+  if (filters.bank_id) params.set("bank_id", filters.bank_id);
+  if (filters.active !== undefined) params.set("active", String(filters.active));
+  if (filters.applies_to) params.set("applies_to", filters.applies_to);
+  if (filters.severity) params.set("severity", filters.severity);
+  return requestJson<{ count: number; directives: MemoryBankDirective[] }>(`/memory-bank-directives?${params.toString()}`);
+}
+
+export function getMemoryBankDirective(id: string) {
+  return requestJson<MemoryBankDirective>(`/memory-bank-directives/${encodeURIComponent(id)}`);
+}
+
+export function createMemoryBankDirective(payload: MemoryBankDirectiveInput) {
+  return requestJson<MemoryBankDirective>("/memory-bank-directives", {
+    method: "POST",
+    headers: adminHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateMemoryBankDirective(id: string, payload: MemoryBankDirectiveUpdateInput) {
+  return requestJson<MemoryBankDirective>(`/memory-bank-directives/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: adminHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteMemoryBankDirective(id: string) {
+  return requestJson<MemoryBankDirective>(`/memory-bank-directives/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: adminHeaders(),
+  });
+}

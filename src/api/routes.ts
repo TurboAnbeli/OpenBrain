@@ -65,6 +65,11 @@ import {
   inferSupersedesMemoryLinks,
   inferExperienceReferenceLinks,
   getMemoryBankContext,
+  insertMemoryBankDirective,
+  getMemoryBankDirective,
+  listMemoryBankDirectives,
+  updateMemoryBankDirective,
+  deactivateMemoryBankDirective,
   type ListFilters,
   type BatchThoughtInput,
   type SearchResult,
@@ -93,6 +98,9 @@ import {
   type MemoryLinkExpansionDirectionFilter,
   type MemoryLinkExpansionRow,
   type TemporalRecallRow,
+  type MemoryBankDirectiveContext,
+  type MemoryBankDirectiveInput,
+  type MemoryBankDirectiveUpdateInput,
 } from "../db/queries.js";
 import { getEmbedder, resetEmbedder, getEmbedderProviders } from "../embedder/index.js";
 import type { Embedder } from "../embedder/types.js";
@@ -154,6 +162,9 @@ const ADMIN_PROTECTED_ROUTES: Array<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /^\/documents\/import-url$/ },
   { method: "PATCH", pattern: new RegExp(`^/documents/${ADMIN_UUID_SEGMENT}$`, "i") },
   { method: "DELETE", pattern: new RegExp(`^/documents/${ADMIN_UUID_SEGMENT}$`, "i") },
+  { method: "POST", pattern: /^\/memory-bank-directives$/ },
+  { method: "PATCH", pattern: new RegExp(`^/memory-bank-directives/${ADMIN_UUID_SEGMENT}$`, "i") },
+  { method: "DELETE", pattern: new RegExp(`^/memory-bank-directives/${ADMIN_UUID_SEGMENT}$`, "i") },
   { method: "POST", pattern: new RegExp(`^/documents/${ADMIN_UUID_SEGMENT}/reindex$`, "i") },
   { method: "PUT", pattern: new RegExp(`^/documents/${ADMIN_UUID_SEGMENT}/chunks$`, "i") },
 ];
@@ -523,6 +534,77 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function isArrayValue(value: unknown): value is unknown[] {
   return Array.isArray(value);
+}
+
+function isNonEmptyStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.trim().length > 0);
+}
+
+function serializeMemoryBankDirective(directive: MemoryBankDirectiveContext) {
+  return {
+    id: directive.id,
+    bank_id: directive.bank_id,
+    name: directive.name,
+    rule_text: directive.rule_text,
+    applies_to: directive.applies_to ?? [],
+    severity: directive.severity,
+    active: directive.active,
+    priority: directive.priority,
+    revision: directive.revision,
+    created_at: serializeOptionalTimestamp(directive.created_at),
+    updated_at: serializeOptionalTimestamp(directive.updated_at),
+  };
+}
+
+function validateDirectiveCreateBody(body: Record<string, unknown>): { ok: true; value: MemoryBankDirectiveInput } | { ok: false; error: string } {
+  const name = body.name;
+  const ruleText = body.rule_text;
+  if (typeof name !== "string" || name.trim().length === 0) return { ok: false, error: "name is required" };
+  if (typeof ruleText !== "string" || ruleText.trim().length === 0) return { ok: false, error: "rule_text is required" };
+  if (body.bank_id !== undefined && (typeof body.bank_id !== "string" || body.bank_id.trim().length === 0)) return { ok: false, error: "bank_id must not be empty" };
+  if (body.applies_to !== undefined && !isNonEmptyStringArray(body.applies_to)) return { ok: false, error: "applies_to must be a non-empty string array" };
+  if (body.severity !== undefined && (typeof body.severity !== "string" || body.severity.trim().length === 0)) return { ok: false, error: "severity must not be empty" };
+  if (body.active !== undefined && typeof body.active !== "boolean") return { ok: false, error: "active must be a boolean" };
+  if (body.priority !== undefined && (typeof body.priority !== "number" || !Number.isInteger(body.priority))) return { ok: false, error: "priority must be an integer" };
+  if (body.revision !== undefined && (typeof body.revision !== "number" || !Number.isInteger(body.revision) || body.revision < 1)) return { ok: false, error: "revision must be a positive integer" };
+
+  return {
+    ok: true,
+    value: {
+      bank_id: typeof body.bank_id === "string" ? body.bank_id : undefined,
+      name,
+      rule_text: ruleText,
+      applies_to: body.applies_to as string[] | undefined,
+      severity: typeof body.severity === "string" ? body.severity : undefined,
+      active: typeof body.active === "boolean" ? body.active : undefined,
+      priority: typeof body.priority === "number" ? body.priority : undefined,
+      revision: typeof body.revision === "number" ? body.revision : undefined,
+    },
+  };
+}
+
+function validateDirectiveUpdateBody(body: Record<string, unknown>): { ok: true; value: MemoryBankDirectiveUpdateInput } | { ok: false; error: string } {
+  if (Object.keys(body).length === 0) return { ok: false, error: "directive patch must include at least one field" };
+  if (body.bank_id !== undefined && (typeof body.bank_id !== "string" || body.bank_id.trim().length === 0)) return { ok: false, error: "bank_id must not be empty" };
+  if (body.name !== undefined && (typeof body.name !== "string" || body.name.trim().length === 0)) return { ok: false, error: "name must not be empty" };
+  if (body.rule_text !== undefined && (typeof body.rule_text !== "string" || body.rule_text.trim().length === 0)) return { ok: false, error: "rule_text must not be empty" };
+  if (body.applies_to !== undefined && !isNonEmptyStringArray(body.applies_to)) return { ok: false, error: "applies_to must be a non-empty string array" };
+  if (body.severity !== undefined && (typeof body.severity !== "string" || body.severity.trim().length === 0)) return { ok: false, error: "severity must not be empty" };
+  if (body.active !== undefined && typeof body.active !== "boolean") return { ok: false, error: "active must be a boolean" };
+  if (body.priority !== undefined && (typeof body.priority !== "number" || !Number.isInteger(body.priority))) return { ok: false, error: "priority must be an integer" };
+
+  return {
+    ok: true,
+    value: {
+      bank_id: typeof body.bank_id === "string" ? body.bank_id : undefined,
+      name: typeof body.name === "string" ? body.name : undefined,
+      rule_text: typeof body.rule_text === "string" ? body.rule_text : undefined,
+      applies_to: body.applies_to as string[] | undefined,
+      severity: typeof body.severity === "string" ? body.severity : undefined,
+      active: typeof body.active === "boolean" ? body.active : undefined,
+      priority: typeof body.priority === "number" ? body.priority : undefined,
+    },
+  };
 }
 
 function serializeExperience(experience: ExperienceRow & { similarity?: number }) {
@@ -2331,6 +2413,96 @@ export function createApi(): Hono {
       const message = err instanceof Error ? err.message : String(err);
       console.error("[api] Memory link fetch failed:", message);
       return c.json({ error: "Failed to fetch memory link", detail: message }, 502);
+    }
+  });
+
+
+
+  // ─── Memory Bank Directives ─────────────────────────────────────────
+
+  app.post("/memory-bank-directives", async (c) => {
+    const body = await c.req.json<Record<string, unknown>>();
+    const validation = validateDirectiveCreateBody(body);
+    if (!validation.ok) return c.json({ error: validation.error }, 400);
+
+    try {
+      const result = await insertMemoryBankDirective(pool, validation.value);
+      return c.json(serializeMemoryBankDirective(result));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Memory bank directive create failed:", message);
+      return c.json({ error: "Failed to create directive", detail: message }, 502);
+    }
+  });
+
+  app.get("/memory-bank-directives", async (c) => {
+    const bankId = c.req.query("bank_id") ?? "openbrain";
+    if (bankId.trim().length === 0) return c.json({ error: "bank_id must not be empty" }, 400);
+    const activeQuery = c.req.query("active");
+    const active = parseOptionalBoolean(activeQuery);
+    if (activeQuery !== undefined && active === undefined) return c.json({ error: "active must be true or false" }, 400);
+
+    try {
+      const results = await listMemoryBankDirectives(pool, {
+        bank_id: bankId,
+        active,
+        applies_to: c.req.query("applies_to"),
+        severity: c.req.query("severity"),
+        limit: parseBoundedLimit(c.req.query("limit"), 50, 100),
+      });
+      return c.json({ count: results.length, directives: results.map(serializeMemoryBankDirective) });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Memory bank directive list failed:", message);
+      return c.json({ error: "Failed to list directives", detail: message }, 502);
+    }
+  });
+
+  app.get("/memory-bank-directives/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) return c.json({ error: "id must be a valid UUID" }, 400);
+
+    try {
+      const result = await getMemoryBankDirective(pool, id);
+      if (!result) return c.json({ error: `Directive not found: ${id}` }, 404);
+      return c.json(serializeMemoryBankDirective(result));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Memory bank directive fetch failed:", message);
+      return c.json({ error: "Failed to fetch directive", detail: message }, 502);
+    }
+  });
+
+  app.patch("/memory-bank-directives/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) return c.json({ error: "id must be a valid UUID" }, 400);
+    const body = await c.req.json<Record<string, unknown>>();
+    const validation = validateDirectiveUpdateBody(body);
+    if (!validation.ok) return c.json({ error: validation.error }, 400);
+
+    try {
+      const result = await updateMemoryBankDirective(pool, id, validation.value);
+      if (!result) return c.json({ error: `Directive not found: ${id}` }, 404);
+      return c.json(serializeMemoryBankDirective(result));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Memory bank directive update failed:", message);
+      return c.json({ error: "Failed to update directive", detail: message }, 502);
+    }
+  });
+
+  app.delete("/memory-bank-directives/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) return c.json({ error: "id must be a valid UUID" }, 400);
+
+    try {
+      const result = await deactivateMemoryBankDirective(pool, id);
+      if (!result) return c.json({ error: `Directive not found: ${id}` }, 404);
+      return c.json(serializeMemoryBankDirective(result));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Memory bank directive delete failed:", message);
+      return c.json({ error: "Failed to delete directive", detail: message }, 502);
     }
   });
 

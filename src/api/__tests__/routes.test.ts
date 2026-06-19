@@ -84,6 +84,11 @@ const mockListExperiences = vi.fn();
 const mockSearchExperiences = vi.fn();
 const mockInsertRecallRoutingTelemetry = vi.fn();
 const mockGetMemoryBankContext = vi.fn().mockResolvedValue({ id: "openbrain", name: "OpenBrain", mission: null, disposition: {}, directives: [] });
+const mockInsertMemoryBankDirective = vi.fn();
+const mockGetMemoryBankDirective = vi.fn();
+const mockListMemoryBankDirectives = vi.fn();
+const mockUpdateMemoryBankDirective = vi.fn();
+const mockDeactivateMemoryBankDirective = vi.fn();
 const mockInsertMemoryLink = vi.fn();
 const mockGetMemoryLink = vi.fn();
 const mockListMemoryLinks = vi.fn();
@@ -142,6 +147,11 @@ vi.mock("../../db/queries.js", () => ({
   searchExperiences: (...args: any[]) => mockSearchExperiences(...args),
   insertRecallRoutingTelemetry: (...args: any[]) => mockInsertRecallRoutingTelemetry(...args),
   getMemoryBankContext: (...args: any[]) => mockGetMemoryBankContext(...args),
+  insertMemoryBankDirective: (...args: any[]) => mockInsertMemoryBankDirective(...args),
+  getMemoryBankDirective: (...args: any[]) => mockGetMemoryBankDirective(...args),
+  listMemoryBankDirectives: (...args: any[]) => mockListMemoryBankDirectives(...args),
+  updateMemoryBankDirective: (...args: any[]) => mockUpdateMemoryBankDirective(...args),
+  deactivateMemoryBankDirective: (...args: any[]) => mockDeactivateMemoryBankDirective(...args),
   insertMemoryLink: (...args: any[]) => mockInsertMemoryLink(...args),
   getMemoryLink: (...args: any[]) => mockGetMemoryLink(...args),
   listMemoryLinks: (...args: any[]) => mockListMemoryLinks(...args),
@@ -3861,4 +3871,181 @@ describe("REST API Routes", () => {
     const callArgs = mockGetThoughtStats.mock.calls[0]!;
     expect(callArgs[1]).toBe("plan-forge");
   });
+
+  // ─── Memory Bank Directives ─────────────────────────────────────────
+
+  it("GET /memory-bank-directives lists existing directives with filters", async () => {
+    const updatedAt = new Date("2026-06-19T00:00:00Z");
+    mockListMemoryBankDirectives.mockResolvedValueOnce([
+      {
+        id: "11111111-2222-4333-8444-555555555555",
+        bank_id: "openbrain",
+        name: "no_pii_verbatim",
+        rule_text: "Never store PII verbatim.",
+        applies_to: ["reflect", "retain"],
+        severity: "hard",
+        active: true,
+        priority: 100,
+        revision: 1,
+        created_at: updatedAt,
+        updated_at: updatedAt,
+      },
+    ]);
+
+    const res = await app.request("/memory-bank-directives?bank_id=openbrain&active=true&applies_to=reflect&severity=hard&limit=25");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { count: number; directives: Array<{ id: string; updated_at: string }> };
+    expect(body.count).toBe(1);
+    expect(body.directives[0]).toMatchObject({
+      id: "11111111-2222-4333-8444-555555555555",
+      name: "no_pii_verbatim",
+      active: true,
+      applies_to: ["reflect", "retain"],
+      severity: "hard",
+    });
+    expect(body.directives[0]!.updated_at).toBe("2026-06-19T00:00:00.000Z");
+    expect(mockListMemoryBankDirectives).toHaveBeenCalledWith(expect.anything(), {
+      bank_id: "openbrain",
+      active: true,
+      applies_to: "reflect",
+      severity: "hard",
+      limit: 25,
+    });
+  });
+
+  it("GET /memory-bank-directives/:id returns 404 for missing directives and validates ids", async () => {
+    const invalid = await app.request("/memory-bank-directives/not-a-uuid");
+    expect(invalid.status).toBe(400);
+
+    mockGetMemoryBankDirective.mockResolvedValueOnce(null);
+    const missing = await app.request("/memory-bank-directives/11111111-2222-4333-8444-555555555555");
+    expect(missing.status).toBe(404);
+    const missingBody = (await missing.json()) as { error: string };
+    expect(missingBody.error).toContain("Directive not found");
+  });
+
+  it("POST /memory-bank-directives is admin protected and creates a directive", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
+
+    const denied = await app.request("/memory-bank-directives", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "source_boundary", rule_text: "Preserve source boundaries." }),
+    });
+    expect(denied.status).toBe(401);
+
+    const createdAt = new Date("2026-06-19T00:00:00Z");
+    mockInsertMemoryBankDirective.mockResolvedValueOnce({
+      id: "11111111-2222-4333-8444-555555555555",
+      bank_id: "openbrain",
+      name: "source_boundary",
+      rule_text: "Preserve source boundaries.",
+      applies_to: ["reflect"],
+      severity: "hard",
+      active: true,
+      priority: 10,
+      revision: 1,
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+
+    const allowed = await app.request("/memory-bank-directives", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenBrain-Admin-Key": "test-admin-key" },
+      body: JSON.stringify({
+        bank_id: "openbrain",
+        name: "source_boundary",
+        rule_text: "Preserve source boundaries.",
+        applies_to: ["reflect"],
+        severity: "hard",
+        priority: 10,
+      }),
+    });
+
+    expect(allowed.status).toBe(200);
+    expect(mockInsertMemoryBankDirective).toHaveBeenCalledWith(expect.anything(), {
+      bank_id: "openbrain",
+      name: "source_boundary",
+      rule_text: "Preserve source boundaries.",
+      applies_to: ["reflect"],
+      severity: "hard",
+      active: undefined,
+      priority: 10,
+      revision: undefined,
+    });
+  });
+
+  it("PATCH /memory-bank-directives/:id requires admin API key when configured", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
+
+    const denied = await app.request("/memory-bank-directives/11111111-2222-4333-8444-555555555555", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active: false }),
+    });
+
+    expect(denied.status).toBe(401);
+  });
+
+  it("PATCH /memory-bank-directives/:id validates payloads and returns 404", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
+
+    const invalid = await app.request("/memory-bank-directives/11111111-2222-4333-8444-555555555555", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-OpenBrain-Admin-Key": "test-admin-key" },
+      body: JSON.stringify({ rule_text: "" }),
+    });
+    expect(invalid.status).toBe(400);
+
+    const fractionalPriority = await app.request("/memory-bank-directives/11111111-2222-4333-8444-555555555555", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-OpenBrain-Admin-Key": "test-admin-key" },
+      body: JSON.stringify({ priority: 1.5 }),
+    });
+    expect(fractionalPriority.status).toBe(400);
+    const fractionalPriorityBody = (await fractionalPriority.json()) as { error: string };
+    expect(fractionalPriorityBody.error).toContain("priority must be an integer");
+    expect(mockUpdateMemoryBankDirective).not.toHaveBeenCalled();
+
+    mockUpdateMemoryBankDirective.mockResolvedValueOnce(null);
+    const missing = await app.request("/memory-bank-directives/11111111-2222-4333-8444-555555555555", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-OpenBrain-Admin-Key": "test-admin-key" },
+      body: JSON.stringify({ active: false }),
+    });
+    expect(missing.status).toBe(404);
+  });
+
+  it("DELETE /memory-bank-directives/:id is admin protected and soft-deactivates the directive", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
+
+    const denied = await app.request("/memory-bank-directives/11111111-2222-4333-8444-555555555555", { method: "DELETE" });
+    expect(denied.status).toBe(401);
+
+    mockDeactivateMemoryBankDirective.mockResolvedValueOnce({
+      id: "11111111-2222-4333-8444-555555555555",
+      bank_id: "openbrain",
+      name: "source_boundary",
+      rule_text: "Preserve source boundaries.",
+      applies_to: ["reflect"],
+      severity: "hard",
+      active: false,
+      priority: 10,
+      revision: 2,
+      created_at: new Date("2026-06-19T00:00:00Z"),
+      updated_at: new Date("2026-06-19T00:01:00Z"),
+    });
+
+    const allowed = await app.request("/memory-bank-directives/11111111-2222-4333-8444-555555555555", {
+      method: "DELETE",
+      headers: { "X-OpenBrain-Admin-Key": "test-admin-key" },
+    });
+    expect(allowed.status).toBe(200);
+    const body = (await allowed.json()) as { active: boolean; revision: number };
+    expect(body.active).toBe(false);
+    expect(body.revision).toBe(2);
+    expect(mockDeactivateMemoryBankDirective).toHaveBeenCalledWith(expect.anything(), "11111111-2222-4333-8444-555555555555");
+  });
+
 });

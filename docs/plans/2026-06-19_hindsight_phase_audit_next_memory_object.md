@@ -44,10 +44,12 @@ Observed live row counts on 2026-06-19:
 | `memory_banks` | 1 |
 | `consolidation_jobs` | 48 |
 
-Important schema finding:
+Important schema finding, corrected during H.1 implementation:
 
-- `memory_banks` has `default_directive_ids`, but there is **no live `memory_bank_directives` / `directives` table**.
-- This leaves directives as implicit IDs rather than first-class, inspectable memory objects.
+- `memory_banks` has `default_directive_ids`.
+- The live schema already includes a first-class `directives` table with seeded directive rows.
+- There is no `memory_bank_directives` table, and H.1 deliberately did **not** add one.
+- The missing layer was the editable/auditable CRUD + admin API surface over the existing `directives` model.
 
 ## Current Hindsight-class object map
 
@@ -59,8 +61,8 @@ Important schema finding:
 | Experiences | implemented but sparse | `experiences`, 30 rows |
 | Memory graph | implemented | `memory_links`, 179 rows |
 | Memory banks | partially implemented | `memory_banks`, 1 row |
-| Directives / memory policy | **schema gap** | `memory_banks.default_directive_ids` exists, directive table missing |
-| Directive runtime UI/editor | missing | no first-class CRUD surface |
+| Directives / memory policy | implemented schema, CRUD added in H.1 | existing `directives` table; `/memory-bank-directives` API aliases the model |
+| Directive runtime UI/editor | API-ready | frontend API helpers added; full visual editor remains a future UI slice |
 
 ## Highest-leverage next memory-object slice
 
@@ -70,33 +72,16 @@ Implement directives as editable, auditable memory objects before adding more ra
 
 Why this is next:
 
-1. The schema already hints at directives via `memory_banks.default_directive_ids`.
-2. `/reflect` already uses bank mission/directive context conceptually, but directives are not first-class rows.
-3. Ryan wants editable source docs, provenance, decisions, handoffs, links, revisions, and audit/reindex controls in the canonical DB. Directives are the missing policy layer for those behaviors.
+1. The schema already contains the canonical `directives` model and seeded policy rows.
+2. `/reflect` already uses bank mission/directive context conceptually, but there was no admin CRUD/API surface for operators.
+3. Ryan wants editable source docs, provenance, decisions, handoffs, links, revisions, and audit/reindex controls in the canonical DB. Directives are the policy layer for those behaviors.
 4. This is additive and low-risk: it does not require replacing recall, re-embedding, or changing existing memory rows.
 
-### Proposed schema
+### Corrected schema stance
 
-Migration `018-memory-bank-directives.sql`:
+Do **not** create a duplicate `memory_bank_directives` table. Use the existing `directives` table from `011-memory-bank-core.sql` as canonical, and expose it through the operator-friendly `/memory-bank-directives` route family.
 
-```sql
-CREATE TABLE IF NOT EXISTS memory_bank_directives (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  bank_id TEXT NOT NULL REFERENCES memory_banks(id),
-  name TEXT NOT NULL,
-  directive_type TEXT NOT NULL DEFAULT 'retention',
-  content TEXT NOT NULL,
-  priority INT NOT NULL DEFAULT 50,
-  active BOOLEAN NOT NULL DEFAULT true,
-  project TEXT,
-  created_by TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE(bank_id, name)
-);
-```
-
-Potential directive types:
+Potential directive types / `applies_to` targets:
 
 - `retention`
 - `privacy`
@@ -112,7 +97,7 @@ Add routes:
 
 | Method/path | Purpose |
 |---|---|
-| `POST /memory-bank-directives` | Create directive row |
+| `POST /memory-bank-directives` | Create directive row in existing `directives` table |
 | `GET /memory-bank-directives` | List active directives filtered by bank/project/type |
 | `GET /memory-bank-directives/:id` | Fetch directive |
 | `PATCH /memory-bank-directives/:id` | Edit content/priority/active flag |
@@ -153,7 +138,7 @@ Do **not** add more heuristic reranking before directive/runtime context is firs
 
 A good next slice ends with:
 
-- `memory_bank_directives` exists in repo migrations and live DB.
+- The existing `directives` table remains canonical; no duplicate directive table is created.
 - Directive CRUD routes are tested and smoke-tested.
 - `getMemoryBankContext()` returns actual active directive rows.
 - `/reflect` includes those directives in its source context.
