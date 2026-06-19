@@ -5,6 +5,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import { CheckCircle2, Database, FileText, GitCompare, Layers3, Pencil, RefreshCw, Save, Search, Upload, X } from "lucide-react";
 
 import { getDocument, getRevisionDiff, getStoredAdminApiKey, importUrlDocument, listDocumentChunks, listDocumentRevisions, listDocuments, reindexDocument, setStoredAdminApiKey, updateDocument, uploadDocument } from "./api";
+import { DirectiveAdminPanel } from "./DirectiveAdminPanel";
 import { buildDocumentUpdatePayload, buildLineDiffRows, createDocumentDraft, isDocumentDraftDirty, type DocumentDraft } from "./editorState";
 import type { DocumentDetail, DocumentSummary } from "./types";
 import { Badge } from "./components/ui/badge";
@@ -268,6 +269,8 @@ export default function App() {
         </Card>
 
         <div className="grid gap-4">
+          <DirectiveAdminPanel />
+
           <Card>
             <CardHeader>
               <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
