@@ -33,6 +33,7 @@ import {
   getDocumentRevision,
   deleteDocument,
   replaceDocumentChunks,
+  extractAndLinkChunkEntities,
   listDocumentChunks,
   searchDocumentChunks,
   searchDocumentChunksByEntity,
@@ -88,6 +89,7 @@ import {
   type TemporalRecallRow,
 } from "../db/queries.js";
 import { getEmbedder } from "../embedder/index.js";
+import type { Embedder } from "../embedder/types.js";
 import { hasSpecificityMarker, applyRecencyBoost, overfetchLimit } from "./recency_boost.js";
 import {
   shouldExpand,
@@ -106,6 +108,7 @@ import {
 } from "./entity_ranking.js";
 import { extractEntities } from "./entity_extraction.js";
 import { guardExperienceRetainDirectives } from "./experience_guard.js";
+import { chunkMarkdown } from "../import/markdown.js";
 
 const HYDE_MODEL = process.env.OPENBRAIN_HYDE_MODEL ?? "smollm2:1.7b";
 const HYDE_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
@@ -179,6 +182,30 @@ function serializeOptionalTimestamp(value: Date | string | null | undefined): st
   if (value instanceof Date) return value.toISOString();
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+}
+
+
+async function regenerateDocumentChunks(pool: pg.Pool, embedder: Embedder, document: DocumentRow): Promise<number> {
+  const markdownChunks = chunkMarkdown(document.content);
+  const chunkInputs = await Promise.all(
+    markdownChunks.map(async (chunk, index) => ({
+      chunk_index: index,
+      content: chunk.content,
+      embedding: await embedder.generateEmbedding(chunk.content),
+      metadata: chunk.metadata ?? {},
+      token_count: chunk.token_count,
+      char_start: chunk.char_start,
+      char_end: chunk.char_end,
+    }))
+  );
+  const chunks = await replaceDocumentChunks(pool, document.id, chunkInputs);
+  for (const chunk of chunks) {
+    const entities = extractEntities(chunk.content, chunk.metadata as { people?: string[]; topics?: string[] } | undefined);
+    if (entities.length > 0) {
+      await extractAndLinkChunkEntities(pool, chunk.id, entities);
+    }
+  }
+  return chunks.length;
 }
 
 function serializeDocument(document: DocumentRow) {
@@ -3102,6 +3129,9 @@ export function createApi(): Hono {
         edit_reason: body.edit_reason,
         updated_by: body.updated_by,
       });
+      if (body.content !== undefined) {
+        await regenerateDocumentChunks(pool, embedder, result);
+      }
 
       return c.json(serializeDocument(result));
     } catch (err) {
@@ -3254,8 +3284,6 @@ export function createApi(): Hono {
         }))
       );
       const results = await replaceDocumentChunks(pool, id, chunkInputs);
-
-      const { extractAndLinkChunkEntities } = await import("../db/queries.js");
       for (const chunk of results) {
         const entities = extractEntities(chunk.content, chunk.metadata as { people?: string[]; topics?: string[] } | undefined);
         if (entities.length > 0) {

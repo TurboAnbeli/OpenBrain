@@ -1811,6 +1811,7 @@ describe("REST API Routes", () => {
       created_at: updatedAt,
       updated_at: updatedAt,
     });
+    mockReplaceDocumentChunks.mockResolvedValueOnce([]);
 
     const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678", {
       method: "PATCH",
@@ -1831,6 +1832,63 @@ describe("REST API Routes", () => {
     const patchArg = mockUpdateDocument.mock.calls[0]![2];
     expect(patchArg.edit_reason).toBe("manual correction");
     expect(patchArg.updated_by).toBe("ryan");
+  });
+
+  it("PATCH /documents/:id regenerates document chunks and embeddings when content changes", async () => {
+    const updatedAt = new Date("2026-06-19T12:00:00Z");
+    mockUpdateDocument.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      title: "Updated source",
+      source_type: "markdown",
+      source_uri: "file:///tmp/source.md",
+      content: "# Updated source\n\nAlpha beta gamma.\n\n## Searchable section\n\nNeedleTerm123 now belongs in retrieval.",
+      metadata: { tags: ["updated"] },
+      project: "one-brain",
+      created_by: "ryan",
+      status: "active",
+      created_at: updatedAt,
+      updated_at: updatedAt,
+    });
+    mockReplaceDocumentChunks.mockResolvedValueOnce([
+      {
+        id: "chunk-0",
+        document_id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        chunk_index: 0,
+        content: "# Updated source\n\nAlpha beta gamma.\n\n## Searchable section\n\nNeedleTerm123 now belongs in retrieval.",
+        metadata: { heading: "root" },
+        token_count: 10,
+        char_start: 0,
+        char_end: 96,
+        created_at: updatedAt,
+        updated_at: updatedAt,
+      },
+    ]);
+
+    const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "# Updated source\n\nAlpha beta gamma.\n\n## Searchable section\n\nNeedleTerm123 now belongs in retrieval.",
+        edit_reason: "regenerate retrieval artifacts",
+        updated_by: "ryan",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockGenerateEmbedding).toHaveBeenCalledWith(expect.stringContaining("NeedleTerm123"));
+    expect(mockReplaceDocumentChunks).toHaveBeenCalledWith(
+      expect.anything(),
+      "a1b2c3d4-1234-5678-9abc-def012345678",
+      expect.arrayContaining([
+        expect.objectContaining({
+          chunk_index: 0,
+          content: expect.stringContaining("NeedleTerm123"),
+          embedding: [0.1, 0.2, 0.3],
+          metadata: expect.objectContaining({ heading: expect.any(String) }),
+        }),
+      ])
+    );
+    expect(mockExtractAndLinkChunkEntities).toHaveBeenCalledWith(expect.anything(), "chunk-0", expect.any(Array));
   });
 
   it("PATCH /documents/:id validates UUID and returns 404 when the document is missing", async () => {
