@@ -2238,6 +2238,159 @@ describe("REST API Routes", () => {
     expect(mockUpdateDocumentWithChunks).not.toHaveBeenCalled();
   });
 
+
+  it("POST /documents/upload ingests a markdown file and creates document with chunks", async () => {
+    const updatedAt = new Date("2026-06-19T15:00:00Z");
+    mockInsertDocument.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      title: "uploaded-doc.md",
+      source_type: "markdown",
+      source_uri: "file:///uploads/uploaded-doc.md",
+      content: "# Uploaded\n\nThis was uploaded.",
+      metadata: {},
+      project: "one-brain",
+      created_by: "ryan",
+      status: "active",
+      created_at: updatedAt,
+      updated_at: updatedAt,
+    });
+    mockUpdateDocumentWithChunks.mockResolvedValueOnce({
+      document: {
+        id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        title: "uploaded-doc.md",
+        source_type: "markdown",
+        source_uri: "file:///uploads/uploaded-doc.md",
+        content: "# Uploaded\n\nThis was uploaded.",
+        metadata: {},
+        project: "one-brain",
+        created_by: "ryan",
+        status: "active",
+        created_at: updatedAt,
+        updated_at: updatedAt,
+      },
+      chunks: [
+        {
+          id: "chunk-upload-0",
+          document_id: "a1b2c3d4-1234-5678-9abc-def012345678",
+          chunk_index: 0,
+          content: "# Uploaded\n\nThis was uploaded.",
+          metadata: { heading: "root" },
+          token_count: 5,
+          char_start: 0,
+          char_end: 32,
+          created_at: updatedAt,
+          updated_at: updatedAt,
+        },
+      ],
+    });
+    mockExtractAndLinkChunkEntities.mockResolvedValueOnce([]);
+
+    const formData = new FormData();
+    formData.append("file", new Blob(["# Uploaded\n\nThis was uploaded."], { type: "text/markdown" }), "uploaded-doc.md");
+    formData.append("project", "one-brain");
+    formData.append("created_by", "ryan");
+
+    const res = await app.request("/documents/upload", {
+      method: "POST",
+      body: formData,
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { id: string; title: string; chunk_count: number };
+    expect(body.title).toBe("uploaded-doc.md");
+    expect(body.chunk_count).toBe(1);
+    expect(mockInsertDocument).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ source_type: "markdown" })
+    );
+  });
+
+  it("POST /documents/import-url fetches a URL and creates a document with chunks", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("# Imported\n\nFrom the web.", { status: 200, headers: { "Content-Type": "text/markdown" } }));
+    const updatedAt = new Date("2026-06-19T15:10:00Z");
+    mockInsertDocument.mockResolvedValueOnce({
+      id: "b2c3d4e5-6789-0abc-def0-123456789012",
+      title: "Imported Page",
+      source_type: "markdown",
+      source_uri: "https://example.com/page.md",
+      content: "# Imported\n\nFrom the web.",
+      metadata: { imported_from: "https://example.com/page.md" },
+      project: "one-brain",
+      created_by: "importer",
+      status: "active",
+      created_at: updatedAt,
+      updated_at: updatedAt,
+    });
+    mockUpdateDocumentWithChunks.mockResolvedValueOnce({
+      document: {
+        id: "b2c3d4e5-6789-0abc-def0-123456789012",
+        title: "Imported Page",
+        source_type: "markdown",
+        source_uri: "https://example.com/page.md",
+        content: "# Imported\n\nFrom the web.",
+        metadata: { imported_from: "https://example.com/page.md" },
+        project: "one-brain",
+        created_by: "importer",
+        status: "active",
+        created_at: updatedAt,
+        updated_at: updatedAt,
+      },
+      chunks: [
+        {
+          id: "chunk-import-0",
+          document_id: "b2c3d4e5-6789-0abc-def0-123456789012",
+          chunk_index: 0,
+          content: "# Imported\n\nFrom the web.",
+          metadata: {},
+          token_count: 5,
+          char_start: 0,
+          char_end: 28,
+          created_at: updatedAt,
+          updated_at: updatedAt,
+        },
+      ],
+    });
+    mockExtractAndLinkChunkEntities.mockResolvedValueOnce([]);
+
+    const res = await app.request("/documents/import-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: "https://example.com/page.md",
+        title: "Imported Page",
+        project: "one-brain",
+        created_by: "importer",
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { id: string; title: string; source_uri: string };
+    expect(body.title).toBe("Imported Page");
+    expect(body.source_uri).toBe("https://example.com/page.md");
+  });
+
+  it("POST /documents/import-url returns 400 for missing URL", async () => {
+    const res = await app.request("/documents/import-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "No URL" }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("POST /documents/upload returns 400 for missing file", async () => {
+    const formData = new FormData();
+    formData.append("project", "one-brain");
+
+    const res = await app.request("/documents/upload", {
+      method: "POST",
+      body: formData,
+    });
+
+    expect(res.status).toBe(400);
+  });
+
   it("DELETE /documents/:id soft deletes a document", async () => {
     mockDeleteDocument.mockResolvedValueOnce({ deleted: true, id: "a1b2c3d4-1234-5678-9abc-def012345678" });
 

@@ -3238,6 +3238,100 @@ export function createApi(): Hono {
     }
   });
 
+  app.post("/documents/upload", async (c) => {
+    const body = await c.req.parseBody();
+    const file = body["file"];
+    if (!file || !(file instanceof File)) {
+      return c.json({ error: "file is required and must be a file upload" }, 400);
+    }
+    const project = typeof body["project"] === "string" ? body["project"] : undefined;
+    const createdBy = typeof body["created_by"] === "string" ? body["created_by"] : undefined;
+    const content = await file.text();
+    const title = file.name.replace(/\.[^/.]+$/, "") || "untitled";
+
+    try {
+      const document = await insertDocument(pool, {
+        title,
+        source_type: "markdown",
+        source_uri: `file:///uploads/${file.name}`,
+        content,
+        project: project ?? "default",
+        created_by: createdBy ?? "upload",
+      });
+
+      let chunkInputs: DocumentChunkInput[];
+      try {
+        chunkInputs = await buildDocumentChunkInputs(embedder, content);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[api] Document upload reindex failed:", message);
+        return c.json(
+          { error: "Document created but reindex failed", detail: message, reindexed: false, ...serializeDocument(document) },
+          201,
+        );
+      }
+      const { document: updated, chunks } = await updateDocumentWithChunks(pool, document.id, { content }, chunkInputs);
+      await linkDocumentChunkEntities(pool, chunks);
+      return c.json({ ...serializeDocumentUpdateResponse(updated, true, chunks.length) }, 201);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Document upload failed:", message);
+      return c.json({ error: "Failed to upload document", detail: message }, 502);
+    }
+  });
+
+  app.post("/documents/import-url", async (c) => {
+    const body = await c.req.json<{ url: string; title?: string; project?: string; created_by?: string }>();
+    if (!body.url || typeof body.url !== "string") {
+      return c.json({ error: "url is required" }, 400);
+    }
+
+    let fetchedContent: string;
+    try {
+      const response = await fetch(body.url, { signal: AbortSignal.timeout(30_000) });
+      if (!response.ok) {
+        return c.json({ error: `Failed to fetch URL: ${response.status} ${response.statusText}` }, 502);
+      }
+      fetchedContent = await response.text();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: "Failed to fetch URL", detail: message }, 502);
+    }
+
+    const title = body.title ?? new URL(body.url).pathname.split("/").pop() ?? "imported-document";
+
+    try {
+      const document = await insertDocument(pool, {
+        title,
+        source_type: "markdown",
+        source_uri: body.url,
+        content: fetchedContent,
+        project: body.project ?? "default",
+        created_by: body.created_by ?? "import",
+      });
+
+      let chunkInputs: DocumentChunkInput[];
+      try {
+        chunkInputs = await buildDocumentChunkInputs(embedder, fetchedContent);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[api] Document import reindex failed:", message);
+        return c.json(
+          { error: "Document created but reindex failed", detail: message, reindexed: false, ...serializeDocument(document) },
+          201,
+        );
+      }
+      const { document: updated, chunks } = await updateDocumentWithChunks(pool, document.id, { content: fetchedContent }, chunkInputs);
+      await linkDocumentChunkEntities(pool, chunks);
+      return c.json({ ...serializeDocumentUpdateResponse(updated, true, chunks.length) }, 201);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Document import failed:", message);
+      return c.json({ error: "Failed to import document", detail: message }, 502);
+    }
+  });
+
+
   app.post("/documents/search", async (c) => {
     const body = await c.req.json<{
       query: string;

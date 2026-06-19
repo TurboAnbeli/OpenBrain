@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import CodeMirror from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
-import { CheckCircle2, Database, FileText, GitCompare, Layers3, Pencil, RefreshCw, Save, Search, X } from "lucide-react";
+import { CheckCircle2, Database, FileText, GitCompare, Layers3, Pencil, RefreshCw, Save, Search, Upload, X } from "lucide-react";
 
-import { getDocument, getRevisionDiff, listDocumentChunks, listDocumentRevisions, listDocuments, reindexDocument, updateDocument } from "./api";
+import { getDocument, getRevisionDiff, importUrlDocument, listDocumentChunks, listDocumentRevisions, listDocuments, reindexDocument, updateDocument, uploadDocument } from "./api";
 import { buildDocumentUpdatePayload, buildLineDiffRows, createDocumentDraft, isDocumentDraftDirty, type DocumentDraft } from "./editorState";
 import type { DocumentDetail, DocumentSummary } from "./types";
 import { Badge } from "./components/ui/badge";
@@ -143,6 +143,31 @@ export default function App() {
     },
   });
 
+  const [importUrl, setImportUrl] = useState("");
+  const [showImport, setShowImport] = useState(false);
+
+  const uploadMutation = useMutation({
+    mutationFn: (file: File) => uploadDocument(file, project || undefined, undefined),
+    onSuccess: async () => {
+      setSaveMessage("File uploaded and indexed.");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["documents"] }),
+      ]);
+    },
+  });
+
+  const importUrlMutation = useMutation({
+    mutationFn: () => importUrlDocument(importUrl, undefined, project || undefined, undefined),
+    onSuccess: async () => {
+      setSaveMessage("URL imported and indexed.");
+      setImportUrl("");
+      setShowImport(false);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["documents"] }),
+      ]);
+    },
+  });
+
   return (
     <div className="min-h-screen px-6 py-6 text-zinc-100">
       <header className="mx-auto mb-6 flex max-w-7xl flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -153,11 +178,46 @@ export default function App() {
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">One Brain Document Editor</h1>
           <p className="mt-1 text-sm text-zinc-400">Direct PostgreSQL-backed editor for source docs, chunks, revisions, and diff metrics.</p>
         </div>
-        <Button onClick={() => void documentsQuery.refetch()} disabled={documentsQuery.isFetching}>
-          <RefreshCw className="mr-2 h-4 w-4" /> Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button onClick={() => void documentsQuery.refetch()} disabled={documentsQuery.isFetching}>
+            <RefreshCw className="mr-2 h-4 w-4" /> Refresh
+          </Button>
+          <label className="inline-flex cursor-pointer items-center justify-center rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-100 transition hover:border-violet-500 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50" title="Upload a markdown file">
+            <Upload className="mr-2 h-4 w-4" /> Upload
+            <input
+              type="file"
+              accept=".md,.markdown,.txt"
+              className="hidden"
+              disabled={uploadMutation.isPending}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) uploadMutation.mutate(file);
+                e.target.value = "";
+              }}
+            />
+          </label>
+          <Button onClick={() => setShowImport((v) => !v)}>
+            <FileText className="mr-2 h-4 w-4" /> Import URL
+          </Button>
+        </div>
       </header>
 
+        {showImport ? (
+          <div className="mx-auto mb-4 flex max-w-7xl items-center gap-2">
+            <Input
+              placeholder="https://example.com/doc.md"
+              value={importUrl}
+              onChange={(e) => setImportUrl(e.target.value)}
+              className="max-w-lg"
+              onKeyDown={(e) => { if (e.key === "Enter") importUrlMutation.mutate(); }}
+            />
+            <Button onClick={() => importUrlMutation.mutate()} disabled={!importUrl || importUrlMutation.isPending}>
+              {importUrlMutation.isPending ? "Importing..." : "Import"}
+            </Button>
+            <Button onClick={() => { setShowImport(false); setImportUrl(""); }}>Cancel</Button>
+            {importUrlMutation.isError ? <span className="text-sm text-red-300">{String(importUrlMutation.error)}</span> : null}
+          </div>
+        ) : null}
       <main className="mx-auto grid max-w-7xl gap-4 lg:grid-cols-[390px_1fr]">
         <Card className="min-h-[calc(100vh-9rem)]">
           <CardHeader>

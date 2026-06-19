@@ -71,3 +71,29 @@ export function reindexDocument(id: string) {
     headers: { "Content-Type": "application/json" },
   });
 }
+
+export interface UploadResult {
+  reindexed: boolean;
+  chunk_count?: number;
+  id: string;
+  title: string;
+  source_uri: string | null;
+  content: string;
+  updated_at: string;
+}
+
+export function uploadDocument(file: File, project?: string, createdBy?: string) {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (project) formData.append("project", project);
+  if (createdBy) formData.append("created_by", createdBy);
+  return requestJson<UploadResult>("/documents/upload", { method: "POST", body: formData });
+}
+
+export function importUrlDocument(url: string, title?: string, project?: string, createdBy?: string) {
+  return requestJson<UploadResult>("/documents/import-url", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, title, project, created_by: createdBy }),
+  });
+}
