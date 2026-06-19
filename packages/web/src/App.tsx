@@ -301,16 +301,22 @@ export default function App() {
                     className={`w-full rounded-lg border p-3 text-left text-sm transition ${selectedRevision === revision.revision_number ? "border-violet-500 bg-violet-500/10" : "border-zinc-800 hover:border-zinc-700"}`}
                   >
                     <div className="flex items-center justify-between">
-                      <span>Revision {revision.revision_number}</span>
+                      <span className="font-medium">Rev {revision.revision_number}</span>
                       <Badge>{revision.status}</Badge>
                     </div>
-                    <div className="mt-1 text-zinc-500">{revision.edit_reason ?? "No edit reason"}</div>
-                    <div className="mt-1 text-xs text-zinc-600">{formatDate(revision.created_at)}</div>
+                    {revision.edit_reason ? <div className="mt-1 text-zinc-300">{revision.edit_reason}</div> : null}
+                    <div className="mt-1 flex items-center gap-2 text-xs text-zinc-500">
+                      <span>{revision.created_by ?? "unknown"}</span>
+                      <span>·</span>
+                      <span>{formatDate(revision.created_at)}</span>
+                    </div>
                   </button>
                 ))}
                 {diffQuery.data ? (
                   <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-sm text-zinc-300">
-                    <div className="font-medium text-zinc-100">Diff metrics</div>
+                    <div className="font-medium text-zinc-100">Revision {diffQuery.data.revision.revision_number} → Current</div>
+                    {diffQuery.data.revision.edit_reason ? <div className="mt-1 text-xs text-zinc-400">Reason: {diffQuery.data.revision.edit_reason}</div> : null}
+                    {diffQuery.data.revision.created_by ? <div className="text-xs text-zinc-500">By {diffQuery.data.revision.created_by}</div> : null}
                     <div className="mt-2 grid grid-cols-2 gap-2">
                       <span>+{diffQuery.data.diff.added_lines} lines</span>
                       <span>-{diffQuery.data.diff.removed_lines} lines</span>
