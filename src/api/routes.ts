@@ -3198,6 +3198,46 @@ export function createApi(): Hono {
     }
   });
 
+  app.post("/documents/:id/reindex", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
+
+    try {
+      const document = await getDocument(pool, id);
+      if (!document) {
+        return c.json({ error: `Document not found: ${id}` }, 404);
+      }
+
+      let chunkInputs: DocumentChunkInput[];
+      try {
+        chunkInputs = await buildDocumentChunkInputs(embedder, document.content);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[api] Document reindex failed:", message);
+        return c.json(
+          { error: "Failed to reindex document", detail: message, reindexed: false },
+          502
+        );
+      }
+
+      const { document: updated, chunks } = await updateDocumentWithChunks(pool, id, {
+        content: document.content,
+        edit_reason: "manual reindex",
+      }, chunkInputs);
+      await linkDocumentChunkEntities(pool, chunks);
+      return c.json(serializeDocumentUpdateResponse(updated, true, chunks.length));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Document reindex failed:", message);
+      return c.json(
+        { error: "Failed to reindex document", detail: message, reindexed: false },
+        502
+      );
+    }
+  });
+
   app.post("/documents/search", async (c) => {
     const body = await c.req.json<{
       query: string;

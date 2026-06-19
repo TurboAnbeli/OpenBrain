@@ -2125,6 +2125,119 @@ describe("REST API Routes", () => {
     expect(body.diff.title_changed).toBe(true);
   });
 
+
+  it("POST /documents/:id/reindex regenerates chunks and embeddings for an existing document", async () => {
+    const updatedAt = new Date("2026-06-19T14:00:00Z");
+    mockGetDocument.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      title: "Reindex target",
+      source_type: "markdown",
+      source_uri: "file:///vault/reindex.md",
+      content: "# Reindex test\n\nFresh NeedleReindex content.",
+      metadata: { tags: ["stale"] },
+      project: "one-brain",
+      created_by: "ryan",
+      status: "active",
+      created_at: updatedAt,
+      updated_at: updatedAt,
+    });
+    mockUpdateDocumentWithChunks.mockResolvedValueOnce({
+      document: {
+        id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        title: "Reindex target",
+        source_type: "markdown",
+        source_uri: "file:///vault/reindex.md",
+        content: "# Reindex test\n\nFresh NeedleReindex content.",
+        metadata: { tags: ["stale"] },
+        project: "one-brain",
+        created_by: "ryan",
+        status: "active",
+        created_at: updatedAt,
+        updated_at: updatedAt,
+      },
+      chunks: [
+        {
+          id: "chunk-reindex-0",
+          document_id: "a1b2c3d4-1234-5678-9abc-def012345678",
+          chunk_index: 0,
+          content: "# Reindex test\n\nFresh NeedleReindex content.",
+          metadata: { heading: "root" },
+          token_count: 8,
+          char_start: 0,
+          char_end: 44,
+          created_at: updatedAt,
+          updated_at: updatedAt,
+        },
+      ],
+    });
+    mockExtractAndLinkChunkEntities.mockResolvedValueOnce([]);
+
+    const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678/reindex", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { reindexed: boolean; chunk_count: number };
+    expect(body.reindexed).toBe(true);
+    expect(body.chunk_count).toBe(1);
+    expect(mockGenerateEmbedding).toHaveBeenCalledWith(
+      expect.stringContaining("NeedleReindex")
+    );
+    expect(mockUpdateDocumentWithChunks).toHaveBeenCalledWith(
+      expect.anything(),
+      "a1b2c3d4-1234-5678-9abc-def012345678",
+      expect.objectContaining({ content: expect.stringContaining("NeedleReindex") }),
+      expect.arrayContaining([
+        expect.objectContaining({
+          chunk_index: 0,
+          content: expect.stringContaining("NeedleReindex"),
+          embedding: [0.1, 0.2, 0.3],
+        }),
+      ])
+    );
+  });
+
+  it("POST /documents/:id/reindex returns 404 for missing document", async () => {
+    mockGetDocument.mockResolvedValueOnce(null);
+
+    const res = await app.request("/documents/00000000-0000-0000-0000-000000000000/reindex", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("POST /documents/:id/reindex returns 502 when embedder is unavailable", async () => {
+    const updatedAt = new Date("2026-06-19T14:05:00Z");
+    mockGetDocument.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      title: "Reindex embedder-fail",
+      source_type: "markdown",
+      source_uri: null,
+      content: "Content that will fail embedding.",
+      metadata: {},
+      project: "one-brain",
+      created_by: "ryan",
+      status: "active",
+      created_at: updatedAt,
+      updated_at: updatedAt,
+    });
+    mockGenerateEmbedding.mockRejectedValueOnce(new Error("embedder offline"));
+
+    const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678/reindex", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error: string; reindexed: boolean };
+    expect(body.error).toBe("Failed to reindex document");
+    expect(body.reindexed).toBe(false);
+    expect(mockUpdateDocumentWithChunks).not.toHaveBeenCalled();
+  });
+
   it("DELETE /documents/:id soft deletes a document", async () => {
     mockDeleteDocument.mockResolvedValueOnce({ deleted: true, id: "a1b2c3d4-1234-5678-9abc-def012345678" });
 

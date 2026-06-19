@@ -4,7 +4,7 @@ import CodeMirror from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
 import { CheckCircle2, Database, FileText, GitCompare, Layers3, Pencil, RefreshCw, Save, Search, X } from "lucide-react";
 
-import { getDocument, getRevisionDiff, listDocumentChunks, listDocumentRevisions, listDocuments, updateDocument } from "./api";
+import { getDocument, getRevisionDiff, listDocumentChunks, listDocumentRevisions, listDocuments, reindexDocument, updateDocument } from "./api";
 import { buildDocumentUpdatePayload, buildLineDiffRows, createDocumentDraft, isDocumentDraftDirty, type DocumentDraft } from "./editorState";
 import type { DocumentDetail, DocumentSummary } from "./types";
 import { Badge } from "./components/ui/badge";
@@ -127,6 +127,22 @@ export default function App() {
     },
   });
 
+  const reindexMutation = useMutation({
+    mutationFn: () => {
+      if (!activeDocumentId) throw new Error("No active document selected");
+      return reindexDocument(activeDocumentId);
+    },
+    onSuccess: async (result) => {
+      setSaveMessage(result.reindexed ? `Reindexed: ${result.chunk_count ?? 0} chunks refreshed.` : "Reindex skipped — document unchanged.");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["documents"] }),
+        queryClient.invalidateQueries({ queryKey: ["document", activeDocumentId] }),
+        queryClient.invalidateQueries({ queryKey: ["document-chunks", activeDocumentId] }),
+        queryClient.invalidateQueries({ queryKey: ["document-revisions", activeDocumentId] }),
+      ]);
+    },
+  });
+
   return (
     <div className="min-h-screen px-6 py-6 text-zinc-100">
       <header className="mx-auto mb-6 flex max-w-7xl flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -180,7 +196,17 @@ export default function App() {
                 <div className="flex flex-wrap items-center gap-2">
                   {detailQuery.data ? <Badge>{detailQuery.data.source_type}</Badge> : null}
                   {detailQuery.data && !isEditing ? (
-                    <Button onClick={() => setIsEditing(true)}><Pencil className="mr-2 h-4 w-4" /> Edit</Button>
+                    <>
+                      <Button onClick={() => setIsEditing(true)}><Pencil className="mr-2 h-4 w-4" /> Edit</Button>
+                      <Button
+                        onClick={() => reindexMutation.mutate()}
+                        disabled={reindexMutation.isPending}
+                        className="border-zinc-600 text-zinc-300"
+                        title="Regenerate search chunks and embeddings for this document"
+                      >
+                        <RefreshCw className="mr-2 h-4 w-4" /> {reindexMutation.isPending ? "Reindexing..." : "Reindex"}
+                      </Button>
+                    </>
                   ) : null}
                   {detailQuery.data && isEditing ? (
                     <>
@@ -209,6 +235,7 @@ export default function App() {
             <CardContent>
               {detailQuery.isError ? <p className="text-sm text-red-300">{String(detailQuery.error)}</p> : null}
               {saveMutation.isError ? <p className="mb-3 text-sm text-red-300">{String(saveMutation.error)}</p> : null}
+              {reindexMutation.isError ? <p className="mb-3 text-sm text-red-300">Reindex failed: {String(reindexMutation.error)}</p> : null}
               {saveMessage ? <p className="mb-3 text-sm text-emerald-300">{saveMessage}</p> : null}
               {detailQuery.data ? (
                 <div className="grid gap-4">

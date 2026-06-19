@@ -56,3 +56,18 @@ export function getRevisionDiff(id: string, revisionNumber: number) {
 export function listDocumentChunks(id: string) {
   return requestJson<{ document_id: string; count: number; chunks: DocumentChunk[] }>(`/documents/${id}/chunks`);
 }
+
+export interface ReindexResult {
+  reindexed: boolean;
+  chunk_count?: number;
+  id: string;
+  title: string;
+  updated_at: string;
+}
+
+export function reindexDocument(id: string) {
+  return requestJson<ReindexResult>(`/documents/${id}/reindex`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+}
