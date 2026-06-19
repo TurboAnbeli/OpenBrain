@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import CodeMirror from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
-import { AlertTriangle, Database, FileText, GitCompare, Layers3, Pencil, RefreshCw, Save, Search, X } from "lucide-react";
+import { CheckCircle2, Database, FileText, GitCompare, Layers3, Pencil, RefreshCw, Save, Search, X } from "lucide-react";
 
 import { getDocument, getRevisionDiff, listDocumentChunks, listDocumentRevisions, listDocuments, updateDocument } from "./api";
 import { buildDocumentUpdatePayload, buildLineDiffRows, createDocumentDraft, isDocumentDraftDirty, type DocumentDraft } from "./editorState";
@@ -117,7 +117,7 @@ export default function App() {
       setDraft(createDocumentDraft(updated));
       setIsEditing(false);
       setSelectedRevision(null);
-      setSaveMessage("Saved. A revision was recorded before the update.");
+      setSaveMessage("Saved. Revision history and search chunks were refreshed.");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["documents"] }),
         queryClient.invalidateQueries({ queryKey: ["document", updated.id] }),
@@ -219,9 +219,9 @@ export default function App() {
                         Title
                         <Input value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} />
                       </label>
-                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
-                        <div className="flex items-center gap-2 font-medium"><AlertTriangle className="h-4 w-4" /> Save behavior</div>
-                        <p className="mt-1 text-amber-100/80">Saving updates the source document and records a revision. Existing chunks/search embeddings are not regenerated yet.</p>
+                      <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
+                        <div className="flex items-center gap-2 font-medium"><CheckCircle2 className="h-4 w-4" /> Save behavior</div>
+                        <p className="mt-1 text-emerald-100/80">Saving records a revision, regenerates document chunks, and refreshes search embeddings automatically.</p>
                       </div>
                       <CodeMirror
                         value={draft.content}
