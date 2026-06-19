@@ -65,6 +65,7 @@ const mockReplaceDocumentChunks = vi.fn();
 const mockListDocumentChunks = vi.fn();
 const mockSearchDocumentChunks = vi.fn();
 const mockSearchDocumentChunksByEntity = vi.fn().mockResolvedValue([]);
+const mockGetDocumentChunkEmbedderVersionStats = vi.fn().mockResolvedValue([]);
 const mockInsertConsolidatedObservation = vi.fn();
 const mockGetConsolidatedObservation = vi.fn();
 const mockSearchConsolidatedObservations = vi.fn();
@@ -121,6 +122,7 @@ vi.mock("../../db/queries.js", () => ({
   listDocumentChunks: (...args: any[]) => mockListDocumentChunks(...args),
   searchDocumentChunks: (...args: any[]) => mockSearchDocumentChunks(...args),
   searchDocumentChunksByEntity: (...args: any[]) => mockSearchDocumentChunksByEntity(...args),
+  getDocumentChunkEmbedderVersionStats: (...args: any[]) => mockGetDocumentChunkEmbedderVersionStats(...args),
   insertConsolidatedObservation: (...args: any[]) => mockInsertConsolidatedObservation(...args),
   getConsolidatedObservation: (...args: any[]) => mockGetConsolidatedObservation(...args),
   searchConsolidatedObservations: (...args: any[]) => mockSearchConsolidatedObservations(...args),
@@ -2525,6 +2527,86 @@ describe("REST API Routes", () => {
   });
 
 
+
+  it("GET /embedder/info reports stored document chunk embedder versions", async () => {
+    mockGetDocumentChunkEmbedderVersionStats.mockResolvedValueOnce([
+      { embedder_version: "legacy-embedder", count: 2 },
+      { embedder_version: "test-embedder", count: 1 },
+    ]);
+
+    const res = await app.request("/embedder/info");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      version: string;
+      chunk_embedder_versions: Array<{ embedder_version: string; count: number }>;
+      reindex_required: boolean;
+    };
+
+    expect(body.version).toBe("test-embedder");
+    expect(body.chunk_embedder_versions).toEqual([
+      { embedder_version: "legacy-embedder", count: 2 },
+      { embedder_version: "test-embedder", count: 1 },
+    ]);
+    expect(body.reindex_required).toBe(true);
+  });
+
+  it("POST /embedder/switch blocks incompatible stored chunk versions unless forced", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
+    mockGetDocumentChunkEmbedderVersionStats.mockResolvedValueOnce([
+      { embedder_version: "legacy-embedder", count: 2 },
+    ]);
+
+    const blocked = await app.request("/embedder/switch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenBrain-Admin-Key": "test-admin-key" },
+      body: JSON.stringify({ provider: "ollama" }),
+    });
+    expect(blocked.status).toBe(409);
+    const blockedBody = (await blocked.json()) as { error: string; reindex_required: boolean };
+    expect(blockedBody.error).toContain("Stored vectors are not compatible");
+    expect(blockedBody.reindex_required).toBe(true);
+
+    mockGetDocumentChunkEmbedderVersionStats.mockResolvedValueOnce([
+      { embedder_version: "legacy-embedder", count: 2 },
+    ]);
+    const forced = await app.request("/embedder/switch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenBrain-Admin-Key": "test-admin-key" },
+      body: JSON.stringify({ provider: "ollama", force: true }),
+    });
+    expect(forced.status).toBe(200);
+    const forcedBody = (await forced.json()) as { forced: boolean; reindex_required: boolean };
+    expect(forcedBody.forced).toBe(true);
+    expect(forcedBody.reindex_required).toBe(true);
+  });
+
+  it("builds document chunk metadata with the producing embedder version", async () => {
+    mockUpdateDocumentWithChunks.mockResolvedValueOnce({
+      document: {
+        id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        title: "Doc",
+        source_type: "markdown",
+        source_uri: null,
+        content: "# Updated",
+        metadata: {},
+        project: "default",
+        created_by: "test",
+        status: "active",
+        created_at: new Date(),
+        updated_at: new Date(),
+      },
+      chunks: [],
+    });
+
+    const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Doc", content: "# Updated" }),
+    });
+    expect(res.status).toBe(200);
+    const chunkInputs = mockUpdateDocumentWithChunks.mock.calls[0]![3];
+    expect(chunkInputs[0].metadata.embedder_version).toBe("test-embedder");
+  });
   it("GET /embedder/info returns current provider and dimensions", async () => {
     mockGenerateEmbedding.mockResolvedValueOnce([0.1, 0.2, 0.3]);
     const res = await app.request("/embedder/info");

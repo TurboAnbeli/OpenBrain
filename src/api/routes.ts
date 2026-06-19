@@ -38,6 +38,7 @@ import {
   listDocumentChunks,
   searchDocumentChunks,
   searchDocumentChunksByEntity,
+  getDocumentChunkEmbedderVersionStats,
   insertConsolidatedObservation,
   getConsolidatedObservation,
   searchConsolidatedObservations,
@@ -76,6 +77,7 @@ import {
   type DocumentChunkRow,
   type DocumentChunkSearchResult,
   type DocumentChunkEntityOverlapResult,
+  type EmbedderVersionStat,
   type ConsolidatedObservationRow,
   type ConsolidatedObservationSearchResult,
   type MentalModelRow,
@@ -252,12 +254,16 @@ async function buildDocumentChunkInputs(embedder: Embedder, content: string): Pr
       chunk_index: index,
       content: chunk.content,
       embedding: await embedder.generateEmbedding(chunk.content),
-      metadata: chunk.metadata ?? {},
+      metadata: { ...(chunk.metadata ?? {}), embedder_version: embedder.getVersion() },
       token_count: chunk.token_count,
       char_start: chunk.char_start,
       char_end: chunk.char_end,
     }))
   );
+}
+
+function incompatibleChunkVersions(stats: EmbedderVersionStat[], targetVersion: string): EmbedderVersionStat[] {
+  return stats.filter((stat) => stat.count > 0 && stat.embedder_version !== targetVersion);
 }
 
 async function linkDocumentChunkEntities(pool: pg.Pool, chunks: DocumentChunkRow[]): Promise<void> {
@@ -1036,28 +1042,35 @@ export function createApi(): Hono {
   app.get("/embedder/info", async (c) => {
     const embedder = getEmbedder();
     const provider = (process.env.EMBEDDER_PROVIDER ?? "ollama").toLowerCase();
+    const version = embedder.getVersion();
+    const chunkEmbedderVersions = await getDocumentChunkEmbedderVersionStats(pool);
+    const incompatibleVersions = incompatibleChunkVersions(chunkEmbedderVersions, version);
     try {
       const probe = await embedder.generateEmbedding("probe");
       return c.json({
         provider,
-        version: embedder.getVersion(),
+        version,
         dimensions: probe.length,
         available_providers: getEmbedderProviders(),
+        chunk_embedder_versions: chunkEmbedderVersions,
+        reindex_required: incompatibleVersions.length > 0,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({
         provider,
-        version: embedder.getVersion(),
+        version,
         dimensions: null,
         available_providers: getEmbedderProviders(),
+        chunk_embedder_versions: chunkEmbedderVersions,
+        reindex_required: incompatibleVersions.length > 0,
         error: message,
       }, 503);
     }
   });
 
   app.post("/embedder/switch", async (c) => {
-    const body = await c.req.json<{ provider: string }>();
+    const body = await c.req.json<{ provider: string; force?: boolean }>();
     if (!body.provider || typeof body.provider !== "string") {
       return c.json({ error: "provider is required" }, 400);
     }
@@ -1073,11 +1086,35 @@ export function createApi(): Hono {
     try {
       const embedder = getEmbedder();
       const probe = await embedder.generateEmbedding("switch probe");
+      const version = embedder.getVersion();
+      const chunkEmbedderVersions = await getDocumentChunkEmbedderVersionStats(pool);
+      const incompatibleVersions = incompatibleChunkVersions(chunkEmbedderVersions, version);
+      const reindexRequired = incompatibleVersions.length > 0;
+
+      if (reindexRequired && body.force !== true) {
+        process.env.EMBEDDER_PROVIDER = oldProvider;
+        resetEmbedder();
+        return c.json({
+          error: "Stored vectors are not compatible with the requested embedder; reindex or pass force=true",
+          previous_provider: oldProvider,
+          requested_provider: body.provider.toLowerCase(),
+          version,
+          dimensions: probe.length,
+          chunk_embedder_versions: chunkEmbedderVersions,
+          incompatible_versions: incompatibleVersions,
+          reindex_required: true,
+          rolled_back_to: oldProvider,
+        }, 409);
+      }
+
       return c.json({
         previous_provider: oldProvider,
         current_provider: body.provider.toLowerCase(),
-        version: embedder.getVersion(),
+        version,
         dimensions: probe.length,
+        chunk_embedder_versions: chunkEmbedderVersions,
+        reindex_required: reindexRequired,
+        forced: body.force === true,
       });
     } catch (err) {
       // Roll back on failure

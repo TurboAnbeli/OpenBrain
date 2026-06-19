@@ -172,6 +172,11 @@ export interface DocumentChunkInput {
   char_end?: number;
 }
 
+export interface EmbedderVersionStat {
+  embedder_version: string;
+  count: number;
+}
+
 export interface DocumentChunkRow {
   id: string;
   document_id: string;
@@ -1705,6 +1710,17 @@ export async function replaceDocumentChunks(
   } finally {
     client.release();
   }
+}
+
+export async function getDocumentChunkEmbedderVersionStats(pool: pg.Pool): Promise<EmbedderVersionStat[]> {
+  const { rows } = await pool.query<{ embedder_version: string; count: string }>(
+    `SELECT COALESCE(NULLIF(metadata->>'embedder_version', ''), 'unknown') AS embedder_version,
+            count(*)::text AS count
+       FROM document_chunks
+      GROUP BY 1
+      ORDER BY count(*) DESC, embedder_version ASC`
+  );
+  return rows.map((row) => ({ embedder_version: row.embedder_version, count: Number(row.count) }));
 }
 
 export async function listDocumentChunks(
