@@ -32,6 +32,8 @@ vi.mock("../../embedder/index.js", () => ({
     extractMetadata: mockExtractMetadata,
     getVersion: () => "test-embedder",
   }),
+  resetEmbedder: vi.fn(),
+  getEmbedderProviders: () => ["ollama", "openrouter", "azure-openai", "llama-server"],
 }));
 
 // Mock query functions
@@ -2377,6 +2379,29 @@ describe("REST API Routes", () => {
     });
 
     expect(res.status).toBe(400);
+  });
+
+
+  it("GET /embedder/info returns current provider and dimensions", async () => {
+    mockGenerateEmbedding.mockResolvedValueOnce([0.1, 0.2, 0.3]);
+    const res = await app.request("/embedder/info");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { provider: string; version: string; dimensions: number; available_providers: string[] };
+    expect(["ollama", "openrouter", "azure-openai", "llama-server"]).toContain(body.provider);
+    expect(typeof body.version).toBe("string");
+    expect(body.dimensions).toBe(3);
+    expect(body.available_providers).toContain("ollama");
+  });
+
+  it("POST /embedder/switch validates provider and returns 400 for unknown", async () => {
+    const res = await app.request("/embedder/switch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "nonexistent" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("Unknown provider");
   });
 
   it("POST /documents/upload returns 400 for missing file", async () => {

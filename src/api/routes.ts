@@ -91,7 +91,7 @@ import {
   type MemoryLinkExpansionRow,
   type TemporalRecallRow,
 } from "../db/queries.js";
-import { getEmbedder } from "../embedder/index.js";
+import { getEmbedder, resetEmbedder, getEmbedderProviders } from "../embedder/index.js";
 import type { Embedder } from "../embedder/types.js";
 import { hasSpecificityMarker, applyRecencyBoost, overfetchLimit } from "./recency_boost.js";
 import {
@@ -960,6 +960,61 @@ export function createApi(): Hono {
   });
 
   // ─── Health Check ────────────────────────────────────────────────
+
+  app.get("/embedder/info", async (c) => {
+    const embedder = getEmbedder();
+    const provider = (process.env.EMBEDDER_PROVIDER ?? "ollama").toLowerCase();
+    try {
+      const probe = await embedder.generateEmbedding("probe");
+      return c.json({
+        provider,
+        version: embedder.getVersion(),
+        dimensions: probe.length,
+        available_providers: getEmbedderProviders(),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({
+        provider,
+        version: embedder.getVersion(),
+        dimensions: null,
+        available_providers: getEmbedderProviders(),
+        error: message,
+      }, 503);
+    }
+  });
+
+  app.post("/embedder/switch", async (c) => {
+    const body = await c.req.json<{ provider: string }>();
+    if (!body.provider || typeof body.provider !== "string") {
+      return c.json({ error: "provider is required" }, 400);
+    }
+    const available = getEmbedderProviders();
+    if (!available.includes(body.provider.toLowerCase())) {
+      return c.json({ error: `Unknown provider: ${body.provider}. Available: ${available.join(", ")}` }, 400);
+    }
+
+    const oldProvider = (process.env.EMBEDDER_PROVIDER ?? "ollama").toLowerCase();
+    process.env.EMBEDDER_PROVIDER = body.provider.toLowerCase();
+    resetEmbedder();
+
+    try {
+      const embedder = getEmbedder();
+      const probe = await embedder.generateEmbedding("switch probe");
+      return c.json({
+        previous_provider: oldProvider,
+        current_provider: body.provider.toLowerCase(),
+        version: embedder.getVersion(),
+        dimensions: probe.length,
+      });
+    } catch (err) {
+      // Roll back on failure
+      process.env.EMBEDDER_PROVIDER = oldProvider;
+      resetEmbedder();
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: "Failed to initialize new embedder", detail: message, rolled_back_to: oldProvider }, 502);
+    }
+  });
 
   app.get("/health", (c) =>
     c.json({ status: "healthy", service: "open-brain-api" })

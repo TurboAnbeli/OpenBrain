@@ -34,3 +34,11 @@ export function getEmbedder(): Embedder {
 
   return _embedder;
 }
+
+export function resetEmbedder(): void {
+  _embedder = null;
+}
+
+export function getEmbedderProviders(): string[] {
+  return ["ollama", "openrouter", "azure-openai", "llama-server"];
+}
