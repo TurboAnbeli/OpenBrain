@@ -42,7 +42,10 @@
     "web:typecheck": "pnpm --filter @openbrain/web typecheck",
     "web:deploy:check": "deploy/on-prem/caddy/install-openbrain-caddy.sh --check",
     "web:healthcheck": "deploy/on-prem/caddy/openbrain-web-healthcheck.sh",
-    "web:test": "pnpm --filter @openbrain/web test"
+    "web:test": "pnpm --filter @openbrain/web test",
+    "api:deploy:check": "deploy/on-prem/systemd/install-openbrain-api-service.sh --check",
+    "api:restart": "deploy/on-prem/systemd/restart-openbrain-api.sh",
+    "api:healthcheck": "deploy/on-prem/systemd/openbrain-api-healthcheck.sh"
   },
   "engines": {
     "node": ">=22.0.0"

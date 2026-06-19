@@ -24,9 +24,18 @@ systemctl --user enable --now openbrain-api.service
 
 ```sh
 systemctl --user status openbrain-api.service
-curl -s http://127.0.0.1:8000/health
+pnpm run api:healthcheck
 curl -s http://127.0.0.1:8080/health
 ```
+
+## Repo-managed checks and restart
+
+```sh
+pnpm run api:deploy:check
+pnpm run api:restart
+```
+
+`api:restart` runs `pnpm build`, reloads the user unit, restarts `openbrain-api.service`, and then calls `openbrain-api-healthcheck.sh`. The healthcheck validates `/health`, `/embedder/info`, and `/documents?limit=1` without requiring admin credentials.
 
 ## Notes
 

@@ -164,6 +164,8 @@ describe("REST API Routes", () => {
 
   beforeEach(() => {
     vi.unstubAllEnvs();
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "");
+    vi.stubEnv("OPENBRAIN_ADMIN_TOKEN", "");
     vi.clearAllMocks();
     mockInsertRecallRoutingTelemetry.mockResolvedValue({
       id: "tel-123",
