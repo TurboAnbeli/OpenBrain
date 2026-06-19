@@ -19,6 +19,7 @@ import {
   getDocument,
   getDocumentBySourceUri,
   updateDocument,
+  updateDocumentWithChunks,
   listDocumentRevisions,
   getDocumentRevision,
   deleteDocument,
@@ -1767,3 +1768,101 @@ describe("findConsolidationCandidates", () => {
     expect(result).toEqual([]);
   });
 });
+
+
+  it("updateDocumentWithChunks commits document and chunks atomically", async () => {
+    const { pool, mockConnect } = createMockPool();
+    const client = await mockConnect();
+    const existing = {
+      id: "doc-456",
+      title: "Atomic doc",
+      source_type: "markdown",
+      source_uri: "file:///vault/atomic.md",
+      content: "Old content",
+      metadata: {},
+      project: "one-brain",
+      created_by: "ryan",
+      status: "active",
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+    const updated = { ...existing, content: "New chunked content" };
+    const chunk = {
+      id: "chunk-0",
+      document_id: "doc-456",
+      chunk_index: 0,
+      content: "New chunked content",
+      metadata: {},
+      token_count: 3,
+      char_start: 0,
+      char_end: 21,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+
+    client.query
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ rows: [existing], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ next_revision: 1 }] })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [updated], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [chunk], rowCount: 1 })
+      .mockResolvedValueOnce({});
+
+    const result = await updateDocumentWithChunks(pool, "doc-456", {
+      content: "New chunked content",
+      metadata: {},
+      edit_reason: "atomic reindex",
+      updated_by: "ryan",
+    }, [
+      { chunk_index: 0, content: "New chunked content", embedding: [0.1, 0.2], metadata: {}, token_count: 3, char_start: 0, char_end: 21 },
+    ]);
+
+    expect(result.document.content).toBe("New chunked content");
+    expect(result.chunks).toHaveLength(1);
+    expect(result.chunks[0]!.content).toBe("New chunked content");
+    const sqlCalls = client.query.mock.calls.map((c: any[]) => c[0] as string);
+    expect(sqlCalls[0]).toBe("BEGIN");
+    expect(sqlCalls.at(-1)).toBe("COMMIT");
+    expect(sqlCalls).not.toContain("ROLLBACK");
+  });
+
+  it("updateDocumentWithChunks rolls back when chunk insertion fails", async () => {
+    const { pool, mockConnect } = createMockPool();
+    const client = await mockConnect();
+    const existing = {
+      id: "doc-789",
+      title: "Rollback doc",
+      source_type: "markdown",
+      source_uri: null,
+      content: "Original",
+      metadata: {},
+      project: "one-brain",
+      created_by: "ryan",
+      status: "active",
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+
+    client.query
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ rows: [existing], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ next_revision: 1 }] })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ ...existing, content: "Updated" }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockRejectedValueOnce(new Error("chunk insert failure"))
+      .mockResolvedValueOnce({});
+
+    await expect(
+      updateDocumentWithChunks(pool, "doc-789", { content: "Updated" }, [
+        { chunk_index: 0, content: "Updated", embedding: [0.1], metadata: {}, token_count: 1, char_start: 0, char_end: 8 },
+      ])
+    ).rejects.toThrow("chunk insert failure");
+
+    const sqlCalls = client.query.mock.calls.map((c: any[]) => c[0] as string);
+    expect(sqlCalls[0]).toBe("BEGIN");
+    expect(sqlCalls.at(-1)).toBe("ROLLBACK");
+    expect(sqlCalls).not.toContain("COMMIT");
+  });

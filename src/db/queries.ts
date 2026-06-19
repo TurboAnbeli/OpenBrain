@@ -1518,6 +1518,130 @@ export async function deleteDocument(
   return { deleted: (rowCount ?? 0) > 0, id };
 }
 
+async function updateDocumentInTransaction(
+  client: pg.PoolClient,
+  key: string,
+  id: string,
+  patch: DocumentUpdateInput
+): Promise<DocumentRow> {
+  const existingResult = await client.query<DocumentRow>(
+    `SELECT id, title, source_type, source_uri,
+            pgp_sym_decrypt(content_enc, $2)::text AS content,
+            metadata, project, created_by, bank_id, document_kind,
+            session_id, task_id, intent, event_started_at, event_ended_at,
+            status, created_at, updated_at
+     FROM documents
+     WHERE id = $1 AND status != 'deleted'
+     FOR UPDATE`,
+    [id, key]
+  );
+
+  if (!existingResult.rowCount || existingResult.rowCount === 0) {
+    throw new Error(`Document not found: ${id}`);
+  }
+
+  const existing = existingResult.rows[0]!;
+  const nextRevisionResult = await client.query<{ next_revision: number }>(
+    `SELECT COALESCE(MAX(revision_number), 0) + 1 AS next_revision
+     FROM document_revisions
+     WHERE document_id = $1`,
+    [id]
+  );
+  const nextRevision = nextRevisionResult.rows[0]?.next_revision ?? 1;
+
+  await client.query(
+    `INSERT INTO document_revisions
+       (document_id, revision_number, title, source_uri, content_enc, metadata, status, edit_reason, created_by)
+     VALUES ($1, $2, $3, $4, pgp_sym_encrypt($5, $10), $6::jsonb, $7, $8, $9)`,
+    [
+      id,
+      nextRevision,
+      existing.title,
+      existing.source_uri ?? null,
+      existing.content,
+      JSON.stringify(existing.metadata ?? {}),
+      existing.status,
+      patch.edit_reason ?? null,
+      patch.updated_by ?? null,
+      key,
+    ]
+  );
+
+  const newTitle = patch.title ?? existing.title;
+  const newSourceUri = patch.source_uri !== undefined ? patch.source_uri : existing.source_uri ?? null;
+  const newContent = patch.content ?? existing.content;
+  const newMetadata = patch.metadata ?? existing.metadata ?? {};
+  const newStatus = patch.status ?? existing.status;
+
+  const { rows, rowCount } = await client.query<DocumentRow>(
+    `UPDATE documents
+     SET title = $2,
+         source_uri = $3,
+         content_enc = pgp_sym_encrypt($4, $7),
+         metadata = $5::jsonb,
+         status = $6,
+         fts = to_tsvector('english', $4),
+         updated_at = now()
+     WHERE id = $1
+     RETURNING id, title, source_type, source_uri,
+               pgp_sym_decrypt(content_enc, $7)::text AS content,
+               metadata, project, created_by, bank_id, document_kind,
+               session_id, task_id, intent, event_started_at, event_ended_at,
+               status, created_at, updated_at`,
+    [
+      id,
+      newTitle,
+      newSourceUri,
+      newContent,
+      JSON.stringify(newMetadata),
+      newStatus,
+      key,
+    ]
+  );
+
+  if (!rowCount || rowCount === 0) {
+    throw new Error(`Document not found: ${id}`);
+  }
+
+  return rows[0]!;
+}
+
+async function replaceDocumentChunksInTransaction(
+  client: pg.PoolClient,
+  key: string,
+  documentId: string,
+  chunks: DocumentChunkInput[]
+): Promise<DocumentChunkRow[]> {
+  const results: DocumentChunkRow[] = [];
+  await client.query("DELETE FROM document_chunks WHERE document_id = $1", [documentId]);
+
+  for (const chunk of chunks) {
+    const embeddingStr = `[${chunk.embedding.join(",")}]`;
+    const { rows } = await client.query<DocumentChunkRow>(
+      `INSERT INTO document_chunks
+         (document_id, chunk_index, content_enc, embedding, metadata, token_count, char_start, char_end, fts)
+       VALUES ($1, $2, pgp_sym_encrypt($3, $9), $4::vector, $5::jsonb, $6, $7, $8, to_tsvector('english', $3))
+       RETURNING id, document_id, chunk_index,
+                 pgp_sym_decrypt(content_enc, $9)::text AS content,
+                 metadata, token_count, char_start, char_end, created_at, updated_at`,
+      [
+        documentId,
+        chunk.chunk_index,
+        chunk.content,
+        embeddingStr,
+        JSON.stringify(chunk.metadata ?? {}),
+        chunk.token_count ?? null,
+        chunk.char_start ?? null,
+        chunk.char_end ?? null,
+        key,
+      ]
+    );
+    results.push(rows[0]!);
+  }
+
+  return results;
+}
+
 export async function updateDocument(
   pool: pg.Pool,
   id: string,
@@ -1528,88 +1652,32 @@ export async function updateDocument(
 
   try {
     await client.query("BEGIN");
-
-    const existingResult = await client.query<DocumentRow>(
-      `SELECT id, title, source_type, source_uri,
-              pgp_sym_decrypt(content_enc, $2)::text AS content,
-              metadata, project, created_by, bank_id, document_kind,
-              session_id, task_id, intent, event_started_at, event_ended_at,
-              status, created_at, updated_at
-       FROM documents
-       WHERE id = $1 AND status != 'deleted'
-       FOR UPDATE`,
-      [id, key]
-    );
-
-    if (!existingResult.rowCount || existingResult.rowCount === 0) {
-      throw new Error(`Document not found: ${id}`);
-    }
-
-    const existing = existingResult.rows[0]!;
-    const nextRevisionResult = await client.query<{ next_revision: number }>(
-      `SELECT COALESCE(MAX(revision_number), 0) + 1 AS next_revision
-       FROM document_revisions
-       WHERE document_id = $1`,
-      [id]
-    );
-    const nextRevision = nextRevisionResult.rows[0]?.next_revision ?? 1;
-
-    await client.query(
-      `INSERT INTO document_revisions
-         (document_id, revision_number, title, source_uri, content_enc, metadata, status, edit_reason, created_by)
-       VALUES ($1, $2, $3, $4, pgp_sym_encrypt($5, $10), $6::jsonb, $7, $8, $9)`,
-      [
-        id,
-        nextRevision,
-        existing.title,
-        existing.source_uri ?? null,
-        existing.content,
-        JSON.stringify(existing.metadata ?? {}),
-        existing.status,
-        patch.edit_reason ?? null,
-        patch.updated_by ?? null,
-        key,
-      ]
-    );
-
-    const newTitle = patch.title ?? existing.title;
-    const newSourceUri = patch.source_uri !== undefined ? patch.source_uri : existing.source_uri ?? null;
-    const newContent = patch.content ?? existing.content;
-    const newMetadata = patch.metadata ?? existing.metadata ?? {};
-    const newStatus = patch.status ?? existing.status;
-
-    const { rows, rowCount } = await client.query<DocumentRow>(
-      `UPDATE documents
-       SET title = $2,
-           source_uri = $3,
-           content_enc = pgp_sym_encrypt($4, $7),
-           metadata = $5::jsonb,
-           status = $6,
-           fts = to_tsvector('english', $4),
-           updated_at = now()
-       WHERE id = $1
-       RETURNING id, title, source_type, source_uri,
-                 pgp_sym_decrypt(content_enc, $7)::text AS content,
-                 metadata, project, created_by, bank_id, document_kind,
-                 session_id, task_id, intent, event_started_at, event_ended_at,
-                 status, created_at, updated_at`,
-      [
-        id,
-        newTitle,
-        newSourceUri,
-        newContent,
-        JSON.stringify(newMetadata),
-        newStatus,
-        key,
-      ]
-    );
-
-    if (!rowCount || rowCount === 0) {
-      throw new Error(`Document not found: ${id}`);
-    }
-
+    const document = await updateDocumentInTransaction(client, key, id, patch);
     await client.query("COMMIT");
-    return rows[0]!;
+    return document;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function updateDocumentWithChunks(
+  pool: pg.Pool,
+  id: string,
+  patch: DocumentUpdateInput,
+  chunks: DocumentChunkInput[]
+): Promise<{ document: DocumentRow; chunks: DocumentChunkRow[] }> {
+  const client = await pool.connect();
+  const key = getCipherKey();
+
+  try {
+    await client.query("BEGIN");
+    const document = await updateDocumentInTransaction(client, key, id, patch);
+    const replacedChunks = await replaceDocumentChunksInTransaction(client, key, id, chunks);
+    await client.query("COMMIT");
+    return { document, chunks: replacedChunks };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -1625,36 +1693,10 @@ export async function replaceDocumentChunks(
 ): Promise<DocumentChunkRow[]> {
   const client = await pool.connect();
   const key = getCipherKey();
-  const results: DocumentChunkRow[] = [];
 
   try {
     await client.query("BEGIN");
-    await client.query("DELETE FROM document_chunks WHERE document_id = $1", [documentId]);
-
-    for (const chunk of chunks) {
-      const embeddingStr = `[${chunk.embedding.join(",")}]`;
-      const { rows } = await client.query<DocumentChunkRow>(
-        `INSERT INTO document_chunks
-           (document_id, chunk_index, content_enc, embedding, metadata, token_count, char_start, char_end, fts)
-         VALUES ($1, $2, pgp_sym_encrypt($3, $9), $4::vector, $5::jsonb, $6, $7, $8, to_tsvector('english', $3))
-         RETURNING id, document_id, chunk_index,
-                   pgp_sym_decrypt(content_enc, $9)::text AS content,
-                   metadata, token_count, char_start, char_end, created_at, updated_at`,
-        [
-          documentId,
-          chunk.chunk_index,
-          chunk.content,
-          embeddingStr,
-          JSON.stringify(chunk.metadata ?? {}),
-          chunk.token_count ?? null,
-          chunk.char_start ?? null,
-          chunk.char_end ?? null,
-          key,
-        ]
-      );
-      results.push(rows[0]!);
-    }
-
+    const results = await replaceDocumentChunksInTransaction(client, key, documentId, chunks);
     await client.query("COMMIT");
     return results;
   } catch (error) {

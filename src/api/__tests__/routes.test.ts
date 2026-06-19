@@ -55,6 +55,7 @@ const mockListDocuments = vi.fn();
 const mockGetDocument = vi.fn();
 const mockGetDocumentBySourceUri = vi.fn();
 const mockUpdateDocument = vi.fn();
+const mockUpdateDocumentWithChunks = vi.fn();
 const mockListDocumentRevisions = vi.fn();
 const mockGetDocumentRevision = vi.fn();
 const mockDeleteDocument = vi.fn();
@@ -110,6 +111,7 @@ vi.mock("../../db/queries.js", () => ({
   getDocument: (...args: any[]) => mockGetDocument(...args),
   getDocumentBySourceUri: (...args: any[]) => mockGetDocumentBySourceUri(...args),
   updateDocument: (...args: any[]) => mockUpdateDocument(...args),
+  updateDocumentWithChunks: (...args: any[]) => mockUpdateDocumentWithChunks(...args),
   listDocumentRevisions: (...args: any[]) => mockListDocumentRevisions(...args),
   getDocumentRevision: (...args: any[]) => mockGetDocumentRevision(...args),
   deleteDocument: (...args: any[]) => mockDeleteDocument(...args),
@@ -1798,20 +1800,22 @@ describe("REST API Routes", () => {
 
   it("PATCH /documents/:id updates source content and records revisions through the query layer", async () => {
     const updatedAt = new Date();
-    mockUpdateDocument.mockResolvedValueOnce({
-      id: "a1b2c3d4-1234-5678-9abc-def012345678",
-      title: "Updated source",
-      source_type: "markdown",
-      source_uri: "file:///tmp/source.md",
-      content: "Updated source body",
-      metadata: { tags: ["updated"] },
-      project: "one-brain",
-      created_by: "ryan",
-      status: "active",
-      created_at: updatedAt,
-      updated_at: updatedAt,
+    mockUpdateDocumentWithChunks.mockResolvedValueOnce({
+      document: {
+        id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        title: "Updated source",
+        source_type: "markdown",
+        source_uri: "file:///tmp/source.md",
+        content: "Updated source body",
+        metadata: { tags: ["updated"] },
+        project: "one-brain",
+        created_by: "ryan",
+        status: "active",
+        created_at: updatedAt,
+        updated_at: updatedAt,
+      },
+      chunks: [],
     });
-    mockReplaceDocumentChunks.mockResolvedValueOnce([]);
 
     const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678", {
       method: "PATCH",
@@ -1829,40 +1833,43 @@ describe("REST API Routes", () => {
     const body = (await res.json()) as { title: string; content: string };
     expect(body.title).toBe("Updated source");
     expect(body.content).toBe("Updated source body");
-    const patchArg = mockUpdateDocument.mock.calls[0]![2];
+    const patchArg = mockUpdateDocumentWithChunks.mock.calls[0]![2];
     expect(patchArg.edit_reason).toBe("manual correction");
     expect(patchArg.updated_by).toBe("ryan");
+    expect(mockUpdateDocument).not.toHaveBeenCalled();
   });
 
   it("PATCH /documents/:id regenerates document chunks and embeddings when content changes", async () => {
     const updatedAt = new Date("2026-06-19T12:00:00Z");
-    mockUpdateDocument.mockResolvedValueOnce({
-      id: "a1b2c3d4-1234-5678-9abc-def012345678",
-      title: "Updated source",
-      source_type: "markdown",
-      source_uri: "file:///tmp/source.md",
-      content: "# Updated source\n\nAlpha beta gamma.\n\n## Searchable section\n\nNeedleTerm123 now belongs in retrieval.",
-      metadata: { tags: ["updated"] },
-      project: "one-brain",
-      created_by: "ryan",
-      status: "active",
-      created_at: updatedAt,
-      updated_at: updatedAt,
-    });
-    mockReplaceDocumentChunks.mockResolvedValueOnce([
-      {
-        id: "chunk-0",
-        document_id: "a1b2c3d4-1234-5678-9abc-def012345678",
-        chunk_index: 0,
+    mockUpdateDocumentWithChunks.mockResolvedValueOnce({
+      document: {
+        id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        title: "Updated source",
+        source_type: "markdown",
+        source_uri: "file:///tmp/source.md",
         content: "# Updated source\n\nAlpha beta gamma.\n\n## Searchable section\n\nNeedleTerm123 now belongs in retrieval.",
-        metadata: { heading: "root" },
-        token_count: 10,
-        char_start: 0,
-        char_end: 96,
+        metadata: { tags: ["updated"] },
+        project: "one-brain",
+        created_by: "ryan",
+        status: "active",
         created_at: updatedAt,
         updated_at: updatedAt,
       },
-    ]);
+      chunks: [
+        {
+          id: "chunk-0",
+          document_id: "a1b2c3d4-1234-5678-9abc-def012345678",
+          chunk_index: 0,
+          content: "# Updated source\n\nAlpha beta gamma.\n\n## Searchable section\n\nNeedleTerm123 now belongs in retrieval.",
+          metadata: { heading: "root" },
+          token_count: 10,
+          char_start: 0,
+          char_end: 96,
+          created_at: updatedAt,
+          updated_at: updatedAt,
+        },
+      ],
+    });
 
     const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678", {
       method: "PATCH",
@@ -1876,9 +1883,10 @@ describe("REST API Routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockGenerateEmbedding).toHaveBeenCalledWith(expect.stringContaining("NeedleTerm123"));
-    expect(mockReplaceDocumentChunks).toHaveBeenCalledWith(
+    expect(mockUpdateDocumentWithChunks).toHaveBeenCalledWith(
       expect.anything(),
       "a1b2c3d4-1234-5678-9abc-def012345678",
+      expect.objectContaining({ content: expect.stringContaining("NeedleTerm123") }),
       expect.arrayContaining([
         expect.objectContaining({
           chunk_index: 0,
@@ -1888,7 +1896,140 @@ describe("REST API Routes", () => {
         }),
       ])
     );
+    expect(mockReplaceDocumentChunks).not.toHaveBeenCalled();
     expect(mockExtractAndLinkChunkEntities).toHaveBeenCalledWith(expect.anything(), "chunk-0", expect.any(Array));
+  });
+
+  it("PATCH /documents/:id prepares embeddings before mutating document content", async () => {
+    const updatedAt = new Date("2026-06-19T13:00:00Z");
+    mockGenerateEmbedding.mockRejectedValueOnce(new Error("embedder unavailable"));
+
+    const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "# Updated source\n\nEmbeddingFailureTerm should not commit before embedding succeeds.",
+        edit_reason: "prove embedding happens before commit",
+        updated_by: "ryan",
+      }),
+    });
+
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error: string; detail: string; reindexed?: boolean };
+    expect(body.error).toBe("Failed to reindex document");
+    expect(body.detail).toContain("embedder unavailable");
+    expect(body.reindexed).toBe(false);
+    expect(mockUpdateDocument).not.toHaveBeenCalled();
+    expect(mockUpdateDocumentWithChunks).not.toHaveBeenCalled();
+    expect(mockReplaceDocumentChunks).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /documents/:id commits document edits and regenerated chunks atomically", async () => {
+    const updatedAt = new Date("2026-06-19T13:05:00Z");
+    mockUpdateDocumentWithChunks.mockResolvedValueOnce({
+      document: {
+        id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        title: "Atomic updated source",
+        source_type: "markdown",
+        source_uri: "file:///tmp/source.md",
+        content: "# Atomic update\n\nAtomicNeedleTerm now belongs in retrieval.",
+        metadata: { tags: ["atomic"] },
+        project: "one-brain",
+        created_by: "ryan",
+        status: "active",
+        created_at: updatedAt,
+        updated_at: updatedAt,
+      },
+      chunks: [
+        {
+          id: "chunk-atomic-0",
+          document_id: "a1b2c3d4-1234-5678-9abc-def012345678",
+          chunk_index: 0,
+          content: "# Atomic update\n\nAtomicNeedleTerm now belongs in retrieval.",
+          metadata: { heading: "root" },
+          token_count: 7,
+          char_start: 0,
+          char_end: 58,
+          created_at: updatedAt,
+          updated_at: updatedAt,
+        },
+      ],
+    });
+
+    const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: "Atomic updated source",
+        content: "# Atomic update\n\nAtomicNeedleTerm now belongs in retrieval.",
+        metadata: { tags: ["atomic"] },
+        edit_reason: "atomic edit and reindex",
+        updated_by: "ryan",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { title: string; reindexed?: boolean; chunk_count?: number };
+    expect(body.title).toBe("Atomic updated source");
+    expect(body.reindexed).toBe(true);
+    expect(body.chunk_count).toBe(1);
+    expect(mockGenerateEmbedding).toHaveBeenCalledWith(expect.stringContaining("AtomicNeedleTerm"));
+    expect(mockUpdateDocumentWithChunks).toHaveBeenCalledWith(
+      expect.anything(),
+      "a1b2c3d4-1234-5678-9abc-def012345678",
+      expect.objectContaining({
+        title: "Atomic updated source",
+        content: expect.stringContaining("AtomicNeedleTerm"),
+        edit_reason: "atomic edit and reindex",
+        updated_by: "ryan",
+      }),
+      expect.arrayContaining([
+        expect.objectContaining({
+          chunk_index: 0,
+          content: expect.stringContaining("AtomicNeedleTerm"),
+          embedding: [0.1, 0.2, 0.3],
+        }),
+      ])
+    );
+    expect(mockUpdateDocument).not.toHaveBeenCalled();
+    expect(mockReplaceDocumentChunks).not.toHaveBeenCalled();
+    expect(mockExtractAndLinkChunkEntities).toHaveBeenCalledWith(expect.anything(), "chunk-atomic-0", expect.any(Array));
+  });
+
+  it("PATCH /documents/:id does not reindex metadata-only edits", async () => {
+    const updatedAt = new Date("2026-06-19T13:10:00Z");
+    mockUpdateDocument.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      title: "Metadata-only source",
+      source_type: "markdown",
+      source_uri: "file:///tmp/source.md",
+      content: "Unchanged content",
+      metadata: { tags: ["metadata-only"] },
+      project: "one-brain",
+      created_by: "ryan",
+      status: "active",
+      created_at: updatedAt,
+      updated_at: updatedAt,
+    });
+
+    const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        metadata: { tags: ["metadata-only"] },
+        edit_reason: "metadata correction",
+        updated_by: "ryan",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { reindexed?: boolean; chunk_count?: number };
+    expect(body.reindexed).toBe(false);
+    expect(body.chunk_count).toBeUndefined();
+    expect(mockUpdateDocument).toHaveBeenCalled();
+    expect(mockUpdateDocumentWithChunks).not.toHaveBeenCalled();
+    expect(mockGenerateEmbedding).not.toHaveBeenCalled();
+    expect(mockReplaceDocumentChunks).not.toHaveBeenCalled();
   });
 
   it("PATCH /documents/:id validates UUID and returns 404 when the document is missing", async () => {

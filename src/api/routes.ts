@@ -29,6 +29,7 @@ import {
   getDocument,
   getDocumentBySourceUri,
   updateDocument,
+  updateDocumentWithChunks,
   listDocumentRevisions,
   getDocumentRevision,
   deleteDocument,
@@ -71,6 +72,8 @@ import {
   type DocumentSummaryRow,
   type DocumentRevisionRow,
   type DocumentStatus,
+  type DocumentChunkInput,
+  type DocumentChunkRow,
   type DocumentChunkSearchResult,
   type DocumentChunkEntityOverlapResult,
   type ConsolidatedObservationRow,
@@ -185,9 +188,9 @@ function serializeOptionalTimestamp(value: Date | string | null | undefined): st
 }
 
 
-async function regenerateDocumentChunks(pool: pg.Pool, embedder: Embedder, document: DocumentRow): Promise<number> {
-  const markdownChunks = chunkMarkdown(document.content);
-  const chunkInputs = await Promise.all(
+async function buildDocumentChunkInputs(embedder: Embedder, content: string): Promise<DocumentChunkInput[]> {
+  const markdownChunks = chunkMarkdown(content);
+  return Promise.all(
     markdownChunks.map(async (chunk, index) => ({
       chunk_index: index,
       content: chunk.content,
@@ -198,14 +201,23 @@ async function regenerateDocumentChunks(pool: pg.Pool, embedder: Embedder, docum
       char_end: chunk.char_end,
     }))
   );
-  const chunks = await replaceDocumentChunks(pool, document.id, chunkInputs);
+}
+
+async function linkDocumentChunkEntities(pool: pg.Pool, chunks: DocumentChunkRow[]): Promise<void> {
   for (const chunk of chunks) {
     const entities = extractEntities(chunk.content, chunk.metadata as { people?: string[]; topics?: string[] } | undefined);
     if (entities.length > 0) {
       await extractAndLinkChunkEntities(pool, chunk.id, entities);
     }
   }
-  return chunks.length;
+}
+
+function serializeDocumentUpdateResponse(document: DocumentRow, reindexed: boolean, chunkCount?: number) {
+  return {
+    ...serializeDocument(document),
+    reindexed,
+    ...(chunkCount === undefined ? {} : { chunk_count: chunkCount }),
+  };
 }
 
 function serializeDocument(document: DocumentRow) {
@@ -3119,21 +3131,37 @@ export function createApi(): Hono {
       return c.json({ error: "status must be active, archived, or deleted" }, 400);
     }
 
+    const patch = {
+      title: body.title,
+      source_uri: body.source_uri,
+      content: body.content,
+      metadata: body.metadata,
+      status: body.status,
+      edit_reason: body.edit_reason,
+      updated_by: body.updated_by,
+    };
+
     try {
-      const result = await updateDocument(pool, id, {
-        title: body.title,
-        source_uri: body.source_uri,
-        content: body.content,
-        metadata: body.metadata,
-        status: body.status,
-        edit_reason: body.edit_reason,
-        updated_by: body.updated_by,
-      });
       if (body.content !== undefined) {
-        await regenerateDocumentChunks(pool, embedder, result);
+        let chunkInputs: DocumentChunkInput[];
+        try {
+          chunkInputs = await buildDocumentChunkInputs(embedder, body.content);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error("[api] Document reindex failed before update:", message);
+          return c.json(
+            { error: "Failed to reindex document", detail: message, reindexed: false },
+            502
+          );
+        }
+
+        const { document, chunks } = await updateDocumentWithChunks(pool, id, patch, chunkInputs);
+        await linkDocumentChunkEntities(pool, chunks);
+        return c.json(serializeDocumentUpdateResponse(document, true, chunks.length));
       }
 
-      return c.json(serializeDocument(result));
+      const result = await updateDocument(pool, id, patch);
+      return c.json(serializeDocumentUpdateResponse(result, false));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("not found")) {
@@ -3141,7 +3169,7 @@ export function createApi(): Hono {
       }
       console.error("[api] Document update failed:", message);
       return c.json(
-        { error: "Failed to update document", detail: message },
+        { error: body.content !== undefined ? "Failed to update and reindex document" : "Failed to update document", detail: message, reindexed: false },
         502
       );
     }
