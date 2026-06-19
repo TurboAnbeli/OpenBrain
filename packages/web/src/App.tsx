@@ -4,7 +4,7 @@ import CodeMirror from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
 import { CheckCircle2, Database, FileText, GitCompare, Layers3, Pencil, RefreshCw, Save, Search, Upload, X } from "lucide-react";
 
-import { getDocument, getRevisionDiff, importUrlDocument, listDocumentChunks, listDocumentRevisions, listDocuments, reindexDocument, updateDocument, uploadDocument } from "./api";
+import { getDocument, getRevisionDiff, getStoredAdminApiKey, importUrlDocument, listDocumentChunks, listDocumentRevisions, listDocuments, reindexDocument, setStoredAdminApiKey, updateDocument, uploadDocument } from "./api";
 import { buildDocumentUpdatePayload, buildLineDiffRows, createDocumentDraft, isDocumentDraftDirty, type DocumentDraft } from "./editorState";
 import type { DocumentDetail, DocumentSummary } from "./types";
 import { Badge } from "./components/ui/badge";
@@ -66,6 +66,7 @@ export default function App() {
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState<DocumentDraft>(emptyDraft);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [adminKeyInput, setAdminKeyInput] = useState(() => getStoredAdminApiKey() ?? "");
   const queryClient = useQueryClient();
 
   const filters = useMemo(() => ({ q: query || undefined, project: project || undefined, status: "active", limit: 25 }), [query, project]);
@@ -178,7 +179,28 @@ export default function App() {
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">One Brain Document Editor</h1>
           <p className="mt-1 text-sm text-zinc-400">Direct PostgreSQL-backed editor for source docs, chunks, revisions, and diff metrics.</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/70 px-2 py-1" title="Used for protected write/admin actions only">
+            <Input
+              type="password"
+              placeholder="Admin API key"
+              value={adminKeyInput}
+              onChange={(event) => setAdminKeyInput(event.target.value)}
+              onBlur={() => setStoredAdminApiKey(adminKeyInput)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") setStoredAdminApiKey(adminKeyInput);
+              }}
+              className="h-8 w-40 border-zinc-700 bg-zinc-900 text-xs"
+            />
+            <Button
+              onClick={() => {
+                setStoredAdminApiKey(adminKeyInput);
+                setSaveMessage(adminKeyInput.trim() ? "Admin key saved for protected actions." : "Admin key cleared.");
+              }}
+            >
+              Save Key
+            </Button>
+          </div>
           <Button onClick={() => void documentsQuery.refetch()} disabled={documentsQuery.isFetching}>
             <RefreshCw className="mr-2 h-4 w-4" /> Refresh
           </Button>

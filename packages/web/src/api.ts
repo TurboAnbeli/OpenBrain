@@ -2,6 +2,39 @@ import type { DocumentChunk, DocumentDetail, DocumentRevision, DocumentSummary, 
 
 const API_BASE = import.meta.env.VITE_OPENBRAIN_API_URL ?? "/web/api";
 
+const ADMIN_API_KEY_STORAGE_KEY = "openbrain_admin_api_key";
+let adminApiKeyFallback: string | undefined;
+
+export function getStoredAdminApiKey(): string | undefined {
+  try {
+    const stored = globalThis.sessionStorage?.getItem(ADMIN_API_KEY_STORAGE_KEY)?.trim();
+    if (stored) return stored;
+  } catch {
+    // sessionStorage may be unavailable in tests, SSR, or hardened browser contexts.
+  }
+  return adminApiKeyFallback;
+}
+
+export function setStoredAdminApiKey(key: string): void {
+  const trimmed = key.trim();
+  adminApiKeyFallback = trimmed || undefined;
+  try {
+    if (trimmed) {
+      globalThis.sessionStorage?.setItem(ADMIN_API_KEY_STORAGE_KEY, trimmed);
+    } else {
+      globalThis.sessionStorage?.removeItem(ADMIN_API_KEY_STORAGE_KEY);
+    }
+  } catch {
+    // Keep the in-memory fallback so non-browser tests still exercise header wiring.
+  }
+}
+
+function adminHeaders(base: Record<string, string> = {}): Record<string, string> {
+  const key = getStoredAdminApiKey();
+  return key ? { ...base, "X-OpenBrain-Admin-Key": key } : base;
+}
+
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, init);
   if (!response.ok) {
@@ -38,7 +71,7 @@ export function getDocument(id: string) {
 export function updateDocument(id: string, payload: UpdateDocumentInput) {
   return requestJson<DocumentDetail>(`/documents/${id}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: adminHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
   });
 }
@@ -68,7 +101,7 @@ export interface ReindexResult {
 export function reindexDocument(id: string) {
   return requestJson<ReindexResult>(`/documents/${id}/reindex`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: adminHeaders({ "Content-Type": "application/json" }),
   });
 }
 
@@ -87,13 +120,13 @@ export function uploadDocument(file: File, project?: string, createdBy?: string)
   formData.append("file", file);
   if (project) formData.append("project", project);
   if (createdBy) formData.append("created_by", createdBy);
-  return requestJson<UploadResult>("/documents/upload", { method: "POST", body: formData });
+  return requestJson<UploadResult>("/documents/upload", { method: "POST", headers: adminHeaders(), body: formData });
 }
 
 export function importUrlDocument(url: string, title?: string, project?: string, createdBy?: string) {
   return requestJson<UploadResult>("/documents/import-url", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: adminHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ url, title, project, created_by: createdBy }),
   });
 }

@@ -140,6 +140,63 @@ const SYNTHESIS_MODEL =
 const SYNTHESIS_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const ADMIN_UUID_SEGMENT = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const ADMIN_PROTECTED_ROUTES: Array<{ method: string; pattern: RegExp }> = [
+  { method: "POST", pattern: /^\/embedder\/switch$/ },
+  { method: "POST", pattern: /^\/documents$/ },
+  { method: "POST", pattern: /^\/documents\/upload$/ },
+  { method: "POST", pattern: /^\/documents\/import-url$/ },
+  { method: "PATCH", pattern: new RegExp(`^/documents/${ADMIN_UUID_SEGMENT}$`, "i") },
+  { method: "DELETE", pattern: new RegExp(`^/documents/${ADMIN_UUID_SEGMENT}$`, "i") },
+  { method: "POST", pattern: new RegExp(`^/documents/${ADMIN_UUID_SEGMENT}/reindex$`, "i") },
+  { method: "PUT", pattern: new RegExp(`^/documents/${ADMIN_UUID_SEGMENT}/chunks$`, "i") },
+];
+
+function configuredAdminApiKey(): string | undefined {
+  for (const candidate of [process.env.OPENBRAIN_ADMIN_API_KEY, process.env.OPENBRAIN_ADMIN_TOKEN]) {
+    const trimmed = candidate?.trim();
+    if (trimmed && trimmed.length > 0) return trimmed;
+  }
+  return undefined;
+}
+
+function timingSafeStringEqual(left: string, right: string): boolean {
+  const max = Math.max(left.length, right.length);
+  let diff = left.length ^ right.length;
+  for (let i = 0; i < max; i += 1) {
+    diff |= (left.charCodeAt(i) || 0) ^ (right.charCodeAt(i) || 0);
+  }
+  return diff === 0;
+}
+
+function extractAdminApiKeys(headers: Headers): string[] {
+  const candidates: string[] = [];
+  const direct = headers.get("x-openbrain-admin-key")?.trim();
+  if (direct) candidates.push(direct);
+
+  const authorization = headers.get("authorization")?.trim();
+  const bearer = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  if (bearer) candidates.push(bearer);
+  return candidates;
+}
+
+function pathVariants(path: string): string[] {
+  try {
+    const decoded = decodeURIComponent(path);
+    return decoded === path ? [path] : [path, decoded];
+  } catch {
+    return [path];
+  }
+}
+
+function isAdminProtectedRequest(method: string, path: string): boolean {
+  const upperMethod = method.toUpperCase();
+  return pathVariants(path).some((candidate) =>
+    ADMIN_PROTECTED_ROUTES.some((route) => route.method === upperMethod && route.pattern.test(candidate))
+  );
+}
+
 const DOCUMENT_KINDS: DocumentKind[] = [
   "article",
   "handoff",
@@ -949,6 +1006,21 @@ export function createApi(): Hono {
   // Middleware
   app.use("*", cors());
   app.use("*", logger());
+  app.use("*", async (c, next) => {
+    const adminKey = configuredAdminApiKey();
+    const path = new URL(c.req.url).pathname;
+    if (!adminKey || !isAdminProtectedRequest(c.req.method, path)) {
+      return next();
+    }
+
+    const providedKeys = extractAdminApiKeys(c.req.raw.headers);
+    if (providedKeys.some((providedKey) => timingSafeStringEqual(providedKey, adminKey))) {
+      return next();
+    }
+
+    c.header("WWW-Authenticate", 'Bearer realm="OpenBrain Admin"');
+    return c.json({ error: "admin authentication required" }, 401);
+  });
 
   // Global error handler — return structured JSON for all errors
   app.onError((err, c) => {

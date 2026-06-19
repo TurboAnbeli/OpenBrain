@@ -163,6 +163,7 @@ describe("REST API Routes", () => {
   const app = createApi();
 
   beforeEach(() => {
+    vi.unstubAllEnvs();
     vi.clearAllMocks();
     mockInsertRecallRoutingTelemetry.mockResolvedValue({
       id: "tel-123",
@@ -188,6 +189,146 @@ describe("REST API Routes", () => {
     expect(body.status).toBe("healthy");
   });
 
+
+  // ─── Admin Auth ────────────────────────────────────────────────────
+
+  it("keeps health open when admin API key is configured", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
+
+    const res = await app.request("/health");
+
+    expect(res.status).toBe(200);
+  });
+
+  it("requires admin API key for document creation and accepts bearer token", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
+
+    const denied = await app.request("/documents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Auth test", source_type: "markdown", content: "# Auth" }),
+    });
+    expect(denied.status).toBe(401);
+    const deniedBody = (await denied.json()) as { error: string };
+    expect(deniedBody.error).toBe("admin authentication required");
+
+    mockInsertDocument.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      title: "Auth test",
+      source_type: "markdown",
+      source_uri: null,
+      content: "# Auth",
+      metadata: {},
+      project: "default",
+      created_by: "test",
+      status: "active",
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
+
+    const allowed = await app.request("/documents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer test-admin-key" },
+      body: JSON.stringify({ title: "Auth test", source_type: "markdown", content: "# Auth" }),
+    });
+    expect(allowed.status).toBe(200);
+  });
+
+  it("requires admin API key for document reindex/upload/import and accepts x-header key", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
+
+    const reindexDenied = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678/reindex", { method: "POST" });
+    expect(reindexDenied.status).toBe(401);
+
+    const uploadDenied = await app.request("/documents/upload", { method: "POST", body: new FormData() });
+    expect(uploadDenied.status).toBe(401);
+
+    const importDenied = await app.request("/documents/import-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(importDenied.status).toBe(401);
+
+    const importAllowed = await app.request("/documents/import-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenBrain-Admin-Key": "test-admin-key" },
+      body: JSON.stringify({}),
+    });
+    expect(importAllowed.status).toBe(400);
+  });
+
+  it("requires admin API key for embedder switch", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
+
+    const denied = await app.request("/embedder/switch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "nonexistent" }),
+    });
+    expect(denied.status).toBe(401);
+
+    const allowed = await app.request("/embedder/switch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer test-admin-key" },
+      body: JSON.stringify({ provider: "nonexistent" }),
+    });
+    expect(allowed.status).toBe(400);
+  });
+
+
+
+  it("protects percent-encoded admin routes before handler dispatch", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
+
+    const encodedDocuments = await app.request("/%64ocuments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Bypass", source_type: "markdown", content: "# bypass" }),
+    });
+    expect(encodedDocuments.status).toBe(401);
+
+    const encodedSwitch = await app.request("/embedder/%73witch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "nonexistent" }),
+    });
+    expect(encodedSwitch.status).toBe(401);
+  });
+
+  it("honors OPENBRAIN_ADMIN_TOKEN fallback when the primary key is blank", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "   ");
+    vi.stubEnv("OPENBRAIN_ADMIN_TOKEN", "fallback-key");
+
+    const denied = await app.request("/embedder/switch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "nonexistent" }),
+    });
+    expect(denied.status).toBe(401);
+
+    const allowed = await app.request("/embedder/switch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenBrain-Admin-Key": "fallback-key" },
+      body: JSON.stringify({ provider: "nonexistent" }),
+    });
+    expect(allowed.status).toBe(400);
+  });
+
+  it("accepts authorization bearer when x-admin header is present but stale", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
+
+    const allowed = await app.request("/embedder/switch", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-OpenBrain-Admin-Key": "stale-key",
+        Authorization: "Bearer test-admin-key",
+      },
+      body: JSON.stringify({ provider: "nonexistent" }),
+    });
+    expect(allowed.status).toBe(400);
+  });
   // ─── POST /memories ────────────────────────────────────────────────
 
   it("POST /memories accepts project and supersedes", async () => {
