@@ -8,6 +8,7 @@ import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { secureHeaders } from "hono/secure-headers";
+import { etag } from "hono/etag";
 // ─── In-memory rate limiter ──────────────────────────────────
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
@@ -1176,6 +1177,7 @@ export function createApi(): Hono {
   const corsOrigins = (process.env.OPENBRAIN_CORS_ORIGINS ?? "").split(",").filter(Boolean);
   app.use("*", cors(corsOrigins.length > 0 ? { origin: corsOrigins, credentials: true } : {}));
   app.use("*", secureHeaders());
+  app.use("*", etag());
 // Body size limit: reject oversized payloads before parsing
   app.use("*", async (c, next) => {
     const contentLength = c.req.header("content-length");
@@ -1196,6 +1198,17 @@ export function createApi(): Hono {
     const reqId = c.req.header("x-request-id") || crypto.randomUUID();
     c.header("X-Request-ID", reqId);
     await next();
+  });
+
+  // Request timeout: abort handlers that take longer than 30 seconds
+  app.use("*", async (c, next) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
+    try {
+      await next();
+    } finally {
+      clearTimeout(timeout);
+    }
   });
 
   // Rate limiting for expensive endpoints
