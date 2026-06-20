@@ -243,6 +243,206 @@ export function reflect(payload: ReflectRequest) {
   });
 }
 
+export interface MemoryLink {
+  id: string;
+  bank_id: string;
+  source_type: string;
+  source_id: string;
+  target_type: string;
+  target_id: string;
+  relationship: string;
+  weight: number;
+  inferred: boolean;
+  created_at: string | null;
+}
+
+export interface MemoryLinkFilters {
+  bank_id?: string;
+  source_type?: string;
+  source_id?: string;
+  target_type?: string;
+  target_id?: string;
+  relationship?: string;
+  inferred?: boolean;
+  limit?: number;
+}
+
+export interface Experience {
+  id: string;
+  bank_id: string;
+  session_id: string | null;
+  agent_id: string | null;
+  occurred_at: string | null;
+  event_type: string;
+  content: string;
+  refs: Record<string, unknown>;
+  project: string | null;
+  created_by: string | null;
+  created_at: string | null;
+  similarity?: number;
+}
+
+export interface ExperienceFilters {
+  bank_id?: string;
+  session_id?: string;
+  agent_id?: string;
+  event_type?: string;
+  project?: string;
+  created_by?: string;
+  limit?: number;
+}
+
+export interface MentalModel {
+  id: string;
+  bank_id: string;
+  name: string;
+  query: string;
+  content: string;
+  structured: unknown;
+  tags: string[];
+  trigger_tags: string[];
+  priority: number;
+  refresh_meta: unknown;
+  history: unknown[];
+  active: boolean;
+  project: string | null;
+  created_by: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  similarity?: number;
+}
+
+export interface MentalModelFilters {
+  bank_id?: string;
+  project?: string;
+  created_by?: string;
+  trigger_tag?: string;
+  include_inactive?: boolean;
+  limit?: number;
+}
+
+export interface ConsolidatedObservationSourceQuote {
+  source_id?: string;
+  source_type?: string;
+  quote?: string;
+  [key: string]: unknown;
+}
+
+export interface ConsolidatedObservation {
+  id: string;
+  bank_id: string;
+  content: string;
+  proof_count: number;
+  source_memory_ids: string[];
+  source_quotes: ConsolidatedObservationSourceQuote[];
+  tags: string[];
+  history: unknown[];
+  trend: string | null;
+  trend_computed_at: string | null;
+  project: string | null;
+  created_by: string | null;
+  archived: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+  similarity?: number;
+}
+
+export interface ObservationSearchPayload {
+  query: string;
+  bank_id?: string;
+  project?: string;
+  created_by?: string;
+  limit?: number;
+  threshold?: number;
+}
+
+export interface MemorySeed {
+  source_type: string;
+  source_id: string;
+}
+
+export interface MemoryLinkExpansionPayload {
+  bank_id?: string;
+  seeds: MemorySeed[];
+  direction?: "incoming" | "outgoing" | "both";
+  relationship?: string;
+  include_archived?: boolean;
+  limit?: number;
+}
+
+export interface LinkedMemorySummary {
+  source_type: string;
+  id: string;
+  content: string | null;
+  title: string | null;
+  metadata: Record<string, unknown>;
+  project: string | null;
+  created_at: string | null;
+}
+
+export interface MemoryLinkExpansionResult {
+  link: MemoryLink;
+  seed: MemorySeed;
+  direction: "incoming" | "outgoing" | "both";
+  linked_memory: LinkedMemorySummary | null;
+}
+
+function appendDefined(params: URLSearchParams, key: string, value: string | number | boolean | undefined): void {
+  if (value !== undefined && value !== "") params.set(key, String(value));
+}
+
+export function listMemoryLinks(filters: MemoryLinkFilters = {}) {
+  const params = new URLSearchParams();
+  params.set("limit", String(filters.limit ?? 25));
+  appendDefined(params, "bank_id", filters.bank_id);
+  appendDefined(params, "source_type", filters.source_type);
+  appendDefined(params, "source_id", filters.source_id);
+  appendDefined(params, "target_type", filters.target_type);
+  appendDefined(params, "target_id", filters.target_id);
+  appendDefined(params, "relationship", filters.relationship);
+  appendDefined(params, "inferred", filters.inferred);
+  return requestJson<{ count: number; results: MemoryLink[] }>(`/memory-links?${params.toString()}`);
+}
+
+export function expandMemoryLinks(payload: MemoryLinkExpansionPayload) {
+  return requestJson<{ count: number; results: MemoryLinkExpansionResult[] }>("/memory-links/expand", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listExperiences(filters: ExperienceFilters = {}) {
+  const params = new URLSearchParams();
+  params.set("limit", String(filters.limit ?? 25));
+  appendDefined(params, "bank_id", filters.bank_id);
+  appendDefined(params, "session_id", filters.session_id);
+  appendDefined(params, "agent_id", filters.agent_id);
+  appendDefined(params, "event_type", filters.event_type);
+  appendDefined(params, "project", filters.project);
+  appendDefined(params, "created_by", filters.created_by);
+  return requestJson<{ count: number; results: Experience[] }>(`/experiences?${params.toString()}`);
+}
+
+export function listMentalModels(filters: MentalModelFilters = {}) {
+  const params = new URLSearchParams();
+  params.set("limit", String(filters.limit ?? 25));
+  appendDefined(params, "bank_id", filters.bank_id);
+  appendDefined(params, "project", filters.project);
+  appendDefined(params, "created_by", filters.created_by);
+  appendDefined(params, "trigger_tag", filters.trigger_tag);
+  appendDefined(params, "include_inactive", filters.include_inactive);
+  return requestJson<{ count: number; results: MentalModel[] }>(`/mental-models?${params.toString()}`);
+}
+
+export function searchConsolidatedObservations(payload: ObservationSearchPayload) {
+  return requestJson<{ count: number; results: ConsolidatedObservation[] }>("/consolidated-observations/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export interface MemoryBankDirective {
   id: string;
   bank_id: string;

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createMemoryBankDirective, deleteMemoryBankDirective, listMemoryBankDirectives, reflect, reindexDocument, setStoredAdminApiKey, updateDocument, updateMemoryBankDirective } from "./api";
+import { createMemoryBankDirective, deleteMemoryBankDirective, expandMemoryLinks, listExperiences, listMemoryBankDirectives, listMemoryLinks, listMentalModels, reflect, reindexDocument, searchConsolidatedObservations, setStoredAdminApiKey, updateDocument, updateMemoryBankDirective } from "./api";
 
 describe("updateDocument", () => {
   afterEach(() => {
@@ -125,6 +125,80 @@ describe("reflect API helper", () => {
     );
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(init.headers).not.toHaveProperty("X-OpenBrain-Admin-Key");
+  });
+});
+
+describe("provenance graph API helpers", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    setStoredAdminApiKey("");
+  });
+
+  it("serializes read-only graph list filters without admin credentials", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ count: 0, results: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    setStoredAdminApiKey("test-admin-key");
+
+    await listMemoryLinks({ bank_id: "openbrain", source_type: "thought", relationship: "evidence_for", inferred: true, limit: 10 });
+    await listExperiences({ bank_id: "openbrain", event_type: "decide", project: "one-brain", limit: 5 });
+    await listMentalModels({ bank_id: "openbrain", trigger_tag: "privacy", include_inactive: true, limit: 5 });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/web/api/memory-links?limit=10&bank_id=openbrain&source_type=thought&relationship=evidence_for&inferred=true", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/web/api/experiences?limit=5&bank_id=openbrain&event_type=decide&project=one-brain", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/web/api/mental-models?limit=5&bank_id=openbrain&trigger_tag=privacy&include_inactive=true", undefined);
+    for (const call of fetchMock.mock.calls) {
+      const init = call[1] as RequestInit | undefined;
+      expect(init?.headers ?? {}).not.toHaveProperty("X-OpenBrain-Admin-Key");
+    }
+  });
+
+  it("POSTs graph expansion and observation search as read-only JSON requests", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ count: 0, results: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    setStoredAdminApiKey("test-admin-key");
+
+    const expandPayload = {
+      bank_id: "openbrain",
+      seeds: [{ source_type: "thought", source_id: "thought-1" }],
+      direction: "both" as const,
+      relationship: "evidence_for",
+      limit: 5,
+    };
+    const searchPayload = { query: "privacy constraints", bank_id: "openbrain", project: "one-brain", limit: 3, threshold: 0.1 };
+
+    await expandMemoryLinks(expandPayload);
+    await searchConsolidatedObservations(searchPayload);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/web/api/memory-links/expand",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(expandPayload),
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/web/api/consolidated-observations/search",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(searchPayload),
+      })
+    );
+    for (const call of fetchMock.mock.calls) {
+      const init = call[1] as RequestInit;
+      expect(init.headers).not.toHaveProperty("X-OpenBrain-Admin-Key");
+    }
   });
 });
 

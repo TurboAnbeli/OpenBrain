@@ -7,6 +7,7 @@ import { CheckCircle2, Database, FileText, GitCompare, Layers3, Pencil, RefreshC
 import { getDocument, getRevisionDiff, getStoredAdminApiKey, importUrlDocument, listDocumentChunks, listDocumentRevisions, listDocuments, reindexDocument, setStoredAdminApiKey, updateDocument, uploadDocument } from "./api";
 import { DirectiveAdminPanel } from "./DirectiveAdminPanel";
 import { ReflectPlaygroundPanel } from "./ReflectPlaygroundPanel";
+import { ProvenanceBrowserPanel } from "./ProvenanceBrowserPanel";
 import { buildDocumentUpdatePayload, buildLineDiffRows, createDocumentDraft, isDocumentDraftDirty, type DocumentDraft } from "./editorState";
 import type { DocumentDetail, DocumentSummary } from "./types";
 import { Badge } from "./components/ui/badge";
@@ -272,6 +273,7 @@ export default function App() {
         <div className="grid gap-4">
           <DirectiveAdminPanel />
           <ReflectPlaygroundPanel />
+          <ProvenanceBrowserPanel />
 
           <Card>
             <CardHeader>
