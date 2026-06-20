@@ -135,7 +135,7 @@ import {
 } from "../config/search.js";
 
 import { upgradeWebSocket } from "@hono/node-server";
-import { registerWsClient, broadcastWsEvent, wsEvent } from "./ws-broadcaster.js";
+import { registerWsClient, broadcastWsEvent, wsEvent, wsDebugLog } from "./ws-broadcaster.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -1259,10 +1259,10 @@ export function createApi(): Hono {
     return {
       onOpen(_evt, ws) {
         const unregister = registerWsClient(ws);
-        console.log("[ws] Client connected");
+        wsDebugLog("[ws] Client connected");
         (ws.raw as unknown as { on?: (event: string, cb: () => void) => void })?.on?.("close", () => {
           unregister();
-          console.log("[ws] Client disconnected");
+          wsDebugLog("[ws] Client disconnected");
         });
       },
       onMessage(_evt, ws) {
@@ -1277,7 +1277,7 @@ export function createApi(): Hono {
         }
       },
       onClose(_evt, _ws) {
-        console.log("[ws] Client closed");
+        wsDebugLog("[ws] Client closed");
       },
       onError(_evt, _ws) {
         console.error("[ws] Client error");

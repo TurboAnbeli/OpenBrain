@@ -30,6 +30,12 @@ interface ManagedClient {
 
 const clients = new Set<ManagedClient>();
 
+export function wsDebugLog(message: string): void {
+  if (process.env.OPENBRAIN_WS_DEBUG === "true") {
+    console.debug(message);
+  }
+}
+
 /** Register a newly-connected client. Returns an unsubscribe function. */
 export function registerWsClient(ws: WSContext | ManagedClient): () => void {
   const client: ManagedClient = {
@@ -63,7 +69,7 @@ export function broadcastWsEvent(event: WsEvent): void {
     }
   }
   if (liveCount > 0) {
-    console.log(`[ws] Broadcast ${event.type} for ${event.document_id} to ${liveCount} client(s)`);
+    wsDebugLog(`[ws] Broadcast ${event.type} for ${event.document_id} to ${liveCount} client(s)`);
   }
 }
 
