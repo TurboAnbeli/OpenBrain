@@ -154,6 +154,8 @@ const ADMIN_PROTECTED_ROUTES: Array<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /^\/documents\/reindex-all$/ },
   { method: "POST", pattern: /^\/documents\/upload$/ },
   { method: "POST", pattern: /^\/documents\/import-url$/ },
+  { method: "GET", pattern: /^\/documents\/export-all$/ },
+  { method: "GET", pattern: new RegExp(`^/documents/${ADMIN_UUID_SEGMENT}/export$`, "i") },
   { method: "PATCH", pattern: new RegExp(`^/documents/${ADMIN_UUID_SEGMENT}$`, "i") },
   { method: "DELETE", pattern: new RegExp(`^/documents/${ADMIN_UUID_SEGMENT}$`, "i") },
   { method: "POST", pattern: /^\/memory-bank-directives$/ },

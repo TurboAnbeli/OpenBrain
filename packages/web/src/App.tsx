@@ -29,36 +29,38 @@ function formatDate(value: string | null) {
 
 function DocumentRow({ document, selected, onSelect, onExport }: { document: DocumentSummary; selected: boolean; onSelect: () => void; onExport: () => void }) {
   return (
-    <button
-      type="button"
-      onClick={onSelect}
+    <div
       className={`w-full rounded-lg border p-3 text-left transition ${
         selected ? "border-violet-500 bg-violet-500/10" : "border-zinc-800 bg-zinc-950/60 hover:border-zinc-700 hover:bg-zinc-900/80"
       }`}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="line-clamp-1 font-medium text-zinc-100">{document.title}</div>
-          <div className="mt-1 text-xs text-zinc-500">{document.source_uri ?? document.source_type}</div>
-        </div>
-        <Badge>{document.status}</Badge>
+      <div className="flex items-start gap-3">
+        <button type="button" onClick={onSelect} className="min-w-0 flex-1 text-left">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="line-clamp-1 font-medium text-zinc-100">{document.title}</div>
+              <div className="mt-1 truncate text-xs text-zinc-500">{document.source_uri ?? document.source_type}</div>
+            </div>
+            <Badge>{document.status}</Badge>
+          </div>
+          <p className="mt-3 line-clamp-2 text-sm text-zinc-400">{document.content_preview}</p>
+          <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-500">
+            <span>{document.content_char_count.toLocaleString()} chars</span>
+            <span>• {document.chunk_count} chunks</span>
+            <span>• {document.revision_count} revisions</span>
+            <span>• {formatDate(document.updated_at)}</span>
+          </div>
+        </button>
         <button
           type="button"
-          onClick={(e) => { e.stopPropagation(); onExport(); }}
+          onClick={onExport}
           className="shrink-0 rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 transition hover:border-violet-500 hover:text-violet-300"
           title="Export as markdown"
         >
           <Download className="h-3.5 w-3.5" />
         </button>
       </div>
-      <p className="mt-3 line-clamp-2 text-sm text-zinc-400">{document.content_preview}</p>
-      <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-500">
-        <span>{document.content_char_count.toLocaleString()} chars</span>
-        <span>• {document.chunk_count} chunks</span>
-        <span>• {document.revision_count} revisions</span>
-        <span>• {formatDate(document.updated_at)}</span>
-      </div>
-    </button>
+    </div>
   );
 }
 

@@ -189,8 +189,11 @@ export async function scorePairs(
   if (outputKeys.length === 0) {
     throw new Error("ONNX model produced no outputs");
   }
-  const firstOutput = (outputs as any)[outputKeys[0]!];
-  const logits = firstOutput.data as Float32Array;
+  const firstOutput = outputs[outputKeys[0]!];
+  if (!firstOutput || !(firstOutput.data instanceof Float32Array)) {
+    throw new Error("ONNX model produced an unexpected output tensor");
+  }
+  const logits = firstOutput.data;
 
   const scores: number[] = [];
   for (let i = 0; i < batchSize; i++) {

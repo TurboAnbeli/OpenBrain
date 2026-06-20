@@ -594,7 +594,7 @@ export interface ExportAllBundle {
 }
 
 export function exportDocument(id: string): Promise<Response> {
-  return fetch(`${API_BASE}/documents/${id}/export`);
+  return fetch(`${API_BASE}/documents/${id}/export`, { headers: adminHeaders() });
 }
 
 export async function exportAllDocuments(): Promise<ExportAllBundle> {
