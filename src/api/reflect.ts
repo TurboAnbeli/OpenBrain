@@ -11,21 +11,10 @@
  * /api/generate endpoint.
  */
 
+import { qualityGate } from "./quality-gate.js";
 import type { SynthesisMemoryBankContext } from "./synthesize.js";
 
-const REFUSE_PATTERNS = [
-  /as an ai/i,
-  /i (cannot|can't|don'?t know|am unable)/i,
-  /i do not have (access|information|context)/i,
-  /i('m| am) sorry/i,
-  /please provide/i,
-  /insufficient (information|context|data)/i,
-];
 
-function qualityGate(text: string): boolean {
-  if (text.length < 20 || text.length > 4000) return false;
-  return !REFUSE_PATTERNS.some((p) => p.test(text));
-}
 
 export interface ReflectCascadeEntry {
   id: string;
@@ -115,7 +104,7 @@ export async function reflectAnswer(
     if (!response.ok) return null;
     const data = (await response.json()) as { response?: string };
     const text = (data.response ?? "").trim();
-    return qualityGate(text) ? text : null;
+    return qualityGate(text, 4000) ? text : null;
   } catch {
     return null;
   } finally {

@@ -1,16 +1,5 @@
-const REFUSE_PATTERNS = [
-  /as an ai/i,
-  /i (cannot|can't|don'?t know|am unable)/i,
-  /i do not have (access|information|context)/i,
-  /i('m| am) sorry/i,
-  /please provide/i,
-  /insufficient (information|context|data)/i,
-];
+import { qualityGate } from "./quality-gate.js";
 
-function qualityGate(text: string): boolean {
-  if (text.length < 20 || text.length > 2000) return false;
-  return !REFUSE_PATTERNS.some((p) => p.test(text));
-}
 
 export interface SynthesisDirectiveContext {
   id?: string;
