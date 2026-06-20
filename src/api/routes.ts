@@ -1192,6 +1192,11 @@ export function createApi(): Hono {
       c.header("Cache-Control", "no-store");
     }
   });
+  app.use("*", async (c, next) => {
+    const reqId = c.req.header("x-request-id") || crypto.randomUUID();
+    c.header("X-Request-ID", reqId);
+    await next();
+  });
 
   // Rate limiting for expensive endpoints
   const rateLimitedPaths = ["/reflect", "/embedder/switch", "/documents/search", "/recall"];
@@ -1321,7 +1326,7 @@ export function createApi(): Hono {
   });
 
   app.get("/health", (c) =>
-    c.json({ status: "healthy", service: "open-brain-api" })
+    c.json({ status: "healthy", service: "open-brain-api", version: "1.0.0" })
   );
   // ─── WebSocket real-time updates ────────────────────────────────
   app.get("/ws", upgradeWebSocket((_c) => {

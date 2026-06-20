@@ -585,7 +585,7 @@ export default function App() {
               Save Key
             </Button>
           </div>
-          <Button onClick={() => void documentsQuery.refetch()} disabled={documentsQuery.isFetching}>
+          <Button onClick={() => void documentsQuery.refetch()} disabled={documentsQuery.isFetching} aria-label="Refresh document list">
             <RefreshCw className="mr-2 h-4 w-4" /> Refresh
           </Button>
           <label className="inline-flex cursor-pointer items-center justify-center rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-100 transition hover:border-violet-500 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50" title="Upload a markdown file">
@@ -602,10 +602,10 @@ export default function App() {
               }}
             />
           </label>
-          <Button onClick={() => setShowImport((v) => !v)}>
+          <Button onClick={() => setShowImport((v) => !v)} aria-label="Import document">
             <FileText className="mr-2 h-4 w-4" /> Import URL
           </Button>
-          <Button onClick={handleExportAll}>
+          <Button onClick={handleExportAll} aria-label="Export all documents">
             <Download className="mr-2 h-4 w-4" /> Export All
           </Button>
         </div>
