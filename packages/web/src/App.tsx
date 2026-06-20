@@ -554,6 +554,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen px-3 py-4 text-zinc-100 sm:px-6 sm:py-6">
+            <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded focus:bg-emerald-600 focus:px-4 focus:py-2 focus:text-white focus:outline-none">Skip to content</a>
       <header className="mx-auto mb-4 flex max-w-7xl flex-col gap-3 sm:mb-6 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex items-center gap-3 text-sm uppercase tracking-[0.3em] text-violet-300">
