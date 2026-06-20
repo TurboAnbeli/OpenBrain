@@ -27,6 +27,29 @@ function formatDate(value: string | null) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 
+function safeDownloadName(name: string, extension: string): string {
+  const stem = (name || "document").replace(/[^a-zA-Z0-9_-]/g, "_");
+  return `${stem}.${extension}`;
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  try {
+    link.click();
+  } finally {
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function DocumentRow({ document, selected, onSelect, onExport }: { document: DocumentSummary; selected: boolean; onSelect: () => void; onExport: () => void }) {
   return (
     <div
@@ -110,6 +133,19 @@ const MOBILE_TABS: { id: MobileTab; label: string; icon: React.ReactNode }[] = [
   { id: "provenance", label: "Provenance", icon: <GitCompare className="h-4 w-4" /> },
 ];
 
+type WebSocketInvalidation = {
+  type: WsEventType;
+  queryKeys: readonly (readonly string[])[];
+};
+
+const WEBSOCKET_INVALIDATIONS: readonly WebSocketInvalidation[] = [
+  { type: "document_updated", queryKeys: [["documents"], ["document"]] },
+  { type: "document_created", queryKeys: [["documents"]] },
+  { type: "document_deleted", queryKeys: [["documents"], ["document"]] },
+  { type: "document_reindexed", queryKeys: [["documents"], ["document"], ["document-revisions"]] },
+  { type: "revision_added", queryKeys: [["document-revisions"], ["document"]] },
+];
+
 export default function App() {
   const [mobileTab, setMobileTab] = useState<MobileTab>("document");
   const [query, setQuery] = useState("");
@@ -126,14 +162,7 @@ export default function App() {
   // Wire WebSocket events to TanStack Query cache invalidation
   useEffect(() => {
     const unsubs: (() => void)[] = [];
-    const events: Array<{ type: WsEventType; queryKeys: (string[])[] }> = [
-      { type: "document_updated", queryKeys: [["documents"], ["document"]] },
-      { type: "document_created", queryKeys: [["documents"]] },
-      { type: "document_deleted", queryKeys: [["documents"], ["document"]] },
-      { type: "document_reindexed", queryKeys: [["documents"], ["document"], ["document-revisions"]] },
-      { type: "revision_added", queryKeys: [["document-revisions"], ["document"]] },
-    ];
-    for (const evt of events) {
+    for (const evt of WEBSOCKET_INVALIDATIONS) {
       unsubs.push(wsSubscribe(evt.type, () => {
         for (const key of evt.queryKeys) {
           queryClient.invalidateQueries({ queryKey: key });
@@ -254,16 +283,9 @@ export default function App() {
         throw new Error(`${response.status} ${response.statusText}: ${text}`);
       }
       const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = (docTitle || "document").replace(/[^a-zA-Z0-9_-]/g, "_") + ".md";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, safeDownloadName(docTitle, "md"));
     } catch (err) {
-      setExportError(err instanceof Error ? err.message : String(err));
+      setExportError(errorMessage(err));
     }
   };
 
@@ -273,16 +295,9 @@ export default function App() {
       const bundle = await exportAllDocuments();
       const json = JSON.stringify(bundle, null, 2);
       const blob = new Blob([json], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `openbrain-export-${new Date().toISOString().slice(0, 10)}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, `openbrain-export-${new Date().toISOString().slice(0, 10)}.json`);
     } catch (err) {
-      setExportError(err instanceof Error ? err.message : String(err));
+      setExportError(errorMessage(err));
     }
   };
 

@@ -17,7 +17,6 @@ import * as path from "path";
 let session: ort.InferenceSession | null = null;
 let vocab: Map<string, number> | null = null;
 let specialTokens: { [key: string]: number } = {};
-let tokenizerConfig: any = null;
 let loadedModelName: string | null = null;
 
 const CLS_TOKEN = "[CLS]";
@@ -60,11 +59,6 @@ function loadTokenizerJson(tokenizerPath: string): void {
       vocab.set(t.content, t.id);
     }
   }
-}
-
-function loadTokenizerConfig(configPath: string): void {
-  const raw = fs.readFileSync(configPath, "utf-8");
-  tokenizerConfig = JSON.parse(raw);
 }
 
 function wordPieceTokenize(text: string): number[] {
@@ -140,13 +134,9 @@ function encodeSequence(query: string, passage: string, maxLength: number): { in
 export async function loadCrossEncoder(opts: CrossEncoderOptions): Promise<void> {
   const modelDir = opts.modelPath ?? opts.model ?? "./models";
   const tokenizerJsonPath = path.join(modelDir, "tokenizer.json");
-  const tokenizerConfigPath = path.join(modelDir, "tokenizer_config.json");
   const modelPath = path.join(modelDir, "model.onnx");
 
   loadTokenizerJson(tokenizerJsonPath);
-  if (fs.existsSync(tokenizerConfigPath)) {
-    loadTokenizerConfig(tokenizerConfigPath);
-  }
 
   session = await ort.InferenceSession.create(modelPath);
   loadedModelName = modelDir;
@@ -206,7 +196,6 @@ export async function scorePairs(
 export function unloadCrossEncoder(): void {
   session = null;
   vocab = null;
-  tokenizerConfig = null;
   specialTokens = {};
   loadedModelName = null;
 }
