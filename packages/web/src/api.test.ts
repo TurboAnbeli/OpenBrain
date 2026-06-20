@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createMemoryBankDirective, deleteMemoryBankDirective, expandMemoryLinks, listExperiences, listMemoryBankDirectives, listMemoryLinks, listMentalModels, reflect, reindexDocument, searchConsolidatedObservations, setStoredAdminApiKey, updateDocument, updateMemoryBankDirective } from "./api";
+import { createMemoryBankDirective, deleteMemoryBankDirective, expandMemoryLinks, exportAllDocuments, exportDocument, listExperiences, listMemoryBankDirectives, listMemoryLinks, listMentalModels, reflect, reindexDocument, searchConsolidatedObservations, setStoredAdminApiKey, updateDocument, updateMemoryBankDirective } from "./api";
 
 describe("updateDocument", () => {
   afterEach(() => {
@@ -68,6 +68,49 @@ describe("updateDocument", () => {
           "Content-Type": "application/json",
           "X-OpenBrain-Admin-Key": "test-admin-key",
         }),
+      })
+    );
+  });
+
+});
+
+describe("document export API helpers", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    setStoredAdminApiKey("");
+  });
+
+  it("sends the stored admin API key for document export helpers", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/export-all")) {
+        return new Response(JSON.stringify({ version: 1, exported_at: "2026-06-20T00:00:00Z", documents: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("# Exported", {
+        status: 200,
+        headers: { "content-type": "text/markdown" },
+      });
+    });
+    setStoredAdminApiKey("test-admin-key");
+
+    await exportDocument("doc-1");
+    await exportAllDocuments();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/web/api/documents/doc-1/export",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "X-OpenBrain-Admin-Key": "test-admin-key" }),
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/web/api/documents/export-all",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "X-OpenBrain-Admin-Key": "test-admin-key" }),
       })
     );
   });

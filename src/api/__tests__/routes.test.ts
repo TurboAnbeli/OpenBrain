@@ -274,6 +274,61 @@ describe("REST API Routes", () => {
     expect(importAllowed.status).toBe(400);
   });
 
+  it("requires admin API key for full document export endpoints and preserves download headers", async () => {
+    vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
+
+    const exportAllDenied = await app.request("/documents/export-all");
+    expect(exportAllDenied.status).toBe(401);
+
+    const exportOneDenied = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678/export");
+    expect(exportOneDenied.status).toBe(401);
+
+    const now = new Date("2026-06-20T00:00:00Z");
+    mockListDocuments.mockResolvedValueOnce([
+      {
+        id: "a1b2c3d4-1234-5678-9abc-def012345678",
+        title: "Exported",
+        source_type: "markdown",
+        source_uri: null,
+        metadata: {},
+        project: "default",
+        created_by: "test",
+        status: "active",
+        created_at: now,
+        updated_at: now,
+      },
+    ]);
+
+    const exportAllAllowed = await app.request("/documents/export-all", {
+      headers: { "X-OpenBrain-Admin-Key": "test-admin-key" },
+    });
+    expect(exportAllAllowed.status).toBe(200);
+    expect(exportAllAllowed.headers.get("content-disposition")).toContain("openbrain-export.json");
+    expect(exportAllAllowed.headers.get("content-type")).toContain("application/json");
+
+    mockGetDocument.mockResolvedValueOnce({
+      id: "a1b2c3d4-1234-5678-9abc-def012345678",
+      title: "Exported",
+      source_type: "markdown",
+      source_uri: null,
+      content: "# Exported\nBody",
+      metadata: {},
+      project: "default",
+      created_by: "test",
+      status: "active",
+      created_at: now,
+      updated_at: now,
+    });
+
+    const exportOneAllowed = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678/export", {
+      headers: { "X-OpenBrain-Admin-Key": "test-admin-key" },
+    });
+    expect(exportOneAllowed.status).toBe(200);
+    expect(exportOneAllowed.headers.get("content-disposition")).toContain("Exported.md");
+    expect(exportOneAllowed.headers.get("content-type")).toContain("text/markdown");
+    expect(await exportOneAllowed.text()).toBe("# Exported\nBody");
+  });
+
   it("requires admin API key for embedder switch", async () => {
     vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
 
@@ -2141,7 +2196,6 @@ describe("REST API Routes", () => {
   });
 
   it("PATCH /documents/:id prepares embeddings before mutating document content", async () => {
-    const updatedAt = new Date("2026-06-19T13:00:00Z");
     mockGenerateEmbedding.mockRejectedValueOnce(new Error("embedder unavailable"));
 
     const res = await app.request("/documents/a1b2c3d4-1234-5678-9abc-def012345678", {

@@ -48,13 +48,19 @@ interface ReflectResponse {
   bank_id: string;
   evidence_count: number;
   model_used: string;
-  answer: string;
+  answer: string | null;
   reflect_telemetry: Record<string, unknown>;
   cascade: Record<string, unknown>;
   mental_models: unknown[];
   observations: unknown[];
   raw_facts: unknown[];
   memory_bank: Record<string, unknown>;
+}
+
+interface MemoryCaptureResponse {
+  id: string;
+  captured_at?: string;
+  deduplicated?: boolean;
 }
 
 interface EvalCase {
@@ -118,13 +124,35 @@ const EVAL_CASES: EvalCase[] = [
 const BASE_URL = process.env.OPENBRAIN_API_URL ?? "http://127.0.0.1:8000";
 const ADMIN_KEY = process.env.OPENBRAIN_ADMIN_KEY ?? "";
 
-async function fetchJSON<T>(path: string, body?: unknown): Promise<T> {
+const MIN_CATEGORY_PASS_RATES: Record<string, number> = {
+  retain: 1.0,
+  recall: 1.0,
+  routing: 1.0,
+  negation: 0.5, // known gap: crypto can leak into one top-3 result; guard against worsening
+  paraphrase: 1.0,
+  reflect: 1.0,
+};
+
+const MAX_AVG_LATENCY_MS: Record<string, number> = {
+  retain: 2000,
+  recall: 1000,
+  routing: 1000,
+  negation: 1000,
+  paraphrase: 1000,
+  reflect: 20000, // includes local/cloud LLM synthesis warm-up variability
+};
+
+async function fetchJSON<T>(
+  path: string,
+  body?: unknown,
+  method?: "GET" | "POST" | "DELETE"
+): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (ADMIN_KEY) headers["X-OpenBrain-Admin-Key"] = ADMIN_KEY;
   const res = await fetch(`${BASE_URL}${path}`, {
-    method: body ? "POST" : "GET",
+    method: method ?? (body !== undefined ? "POST" : "GET"),
     headers,
-    body: body ? JSON.stringify(body) : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}: ${await res.text().catch(() => "")}`);
   return res.json() as Promise<T>;
@@ -135,8 +163,9 @@ async function fetchJSON<T>(path: string, body?: unknown): Promise<T> {
 /* ------------------------------------------------------------------ */
 
 const CATEGORIES = (process.env.RETRIEVAL_EVAL_CATEGORIES ?? "").split(",").filter(Boolean);
+const categoryIsActive = (category: string) => CATEGORIES.length === 0 || CATEGORIES.includes(category);
 const ACTIVE_CASES = CATEGORIES.length > 0
-  ? EVAL_CASES.filter((c) => CATEGORIES.includes(c.category))
+  ? EVAL_CASES.filter((c) => categoryIsActive(c.category))
   : EVAL_CASES;
 
 const skipIfNoAPI = process.env.SKIP_RETRIEVAL_EVAL === "true";
@@ -146,8 +175,69 @@ describe.skipIf(skipIfNoAPI)("Retrieval quality benchmark", () => {
   // Reflect involves LLM synthesis — needs longer timeout
   // vitest default testTimeout is 5000ms, we need 60s for reflect
 
+  // --- Retain: capture should immediately become recallable ---
+  describe.skipIf(!categoryIsActive("retain"))("retain", () => {
+    it("retain: capture -> recall roundtrip preserves a unique memory", async () => {
+      const token = `retain-quality-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const content = `OpenBrain retain quality sentinel ${token}: capture should be stored, embedded, and recallable immediately.`;
+      const start = performance.now();
+      let capturedId: string | null = null;
+      let deduplicated = false;
+
+      try {
+        const capture = await fetchJSON<MemoryCaptureResponse>("/memories", {
+          content,
+          source: "retrieval_eval",
+          project: "retrieval-eval",
+          metadata: {
+            type: "reference",
+            topics: ["retrieval_eval", "retain_quality"],
+            people: [],
+            action_items: [],
+            dates: [],
+          },
+        });
+        capturedId = capture.id;
+        deduplicated = capture.deduplicated === true;
+
+        const res = await fetchJSON<RecallResponse>("/recall", {
+          query: `retain quality sentinel ${token}`,
+          bank_id: "openbrain",
+          project: "retrieval-eval",
+          source_types: ["thought"],
+          include_documents: false,
+          include_observations: false,
+          include_experiences: false,
+          include_mental_models: false,
+          limit: 5,
+          threshold: 0,
+        });
+
+        const found = (res.results ?? []).some((r) => r.id === capturedId || r.content.includes(token));
+        const latency_ms = performance.now() - start;
+        results.push({
+          case_id: "retain-001",
+          category: "retain",
+          query: `retain quality sentinel ${token}`,
+          passed: found && !deduplicated,
+          metric: "retain_roundtrip",
+          value: found && !deduplicated ? 1 : 0,
+          details: deduplicated ? "Unexpectedly deduplicated unique sentinel" : found ? "Captured memory found by recall" : "Captured memory missing from recall",
+          latency_ms,
+        });
+
+        expect(deduplicated).toBe(false);
+        expect(found).toBe(true);
+      } finally {
+        if (capturedId && !deduplicated) {
+          await fetchJSON<{ status: string; id: string }>(`/memories/${capturedId}`, undefined, "DELETE");
+        }
+      }
+    });
+  });
+
   // --- Recall ---
-  describe("recall", () => {
+  describe.skipIf(!categoryIsActive("recall"))("recall", () => {
     const cases = ACTIVE_CASES.filter((c) => c.category === "recall");
     if (cases.length === 0) return;
 
@@ -166,29 +256,28 @@ describe.skipIf(skipIfNoAPI)("Retrieval quality benchmark", () => {
     });
   });
 
-  // --- Routing (advisory — logs mismatches, doesn't hard-fail) ---
-  describe("routing", () => {
+  // --- Routing ---
+  describe.skipIf(!categoryIsActive("routing"))("routing", () => {
     const cases = ACTIVE_CASES.filter((c) => c.category === "routing");
     if (cases.length === 0) return;
 
     it.each(cases)("routing: $id — $query", async ({ id, query, expected }) => {
       const start = performance.now();
-      const res = await fetchJSON<RecallResponse>("/recall", { query, bank_id: "openbrain", limit: 5 });
+      const res = await fetchJSON<RecallResponse>("/recall", { query, bank_id: "openbrain", limit: 5, source_router: "heuristic" });
       const latency_ms = performance.now() - start;
 
-      // Try to extract the route from telemetry
-      const actualRoute = (res.lanes as Record<string, string>)?.route ?? "unknown";
+      const lanes = res.lanes as { route?: string; source_router_decision?: { route?: string } };
+      const actualRoute = lanes.source_router_decision?.route ?? lanes.route ?? "unknown";
       const expectedRoute = expected.source_route ?? "balanced_mixed";
       const passed = actualRoute === expectedRoute;
 
       results.push({ case_id: id, category: "routing", query, passed, metric: "route_accuracy", value: passed ? 1 : 0, details: `Expected: ${expectedRoute}, Got: ${actualRoute}`, latency_ms });
-      if (!passed) console.warn(`[routing] ${id}: expected ${expectedRoute}, got ${actualRoute}`);
-      // Advisory: don't hard-fail on routing mismatches
+      expect(actualRoute).toBe(expectedRoute);
     });
   });
 
   // --- Negation ---
-  describe("negation", () => {
+  describe.skipIf(!categoryIsActive("negation"))("negation", () => {
     const cases = ACTIVE_CASES.filter((c) => c.category === "negation");
     if (cases.length === 0) return;
 
@@ -207,7 +296,7 @@ describe.skipIf(skipIfNoAPI)("Retrieval quality benchmark", () => {
   });
 
   // --- Paraphrase ---
-  describe("paraphrase", () => {
+  describe.skipIf(!categoryIsActive("paraphrase"))("paraphrase", () => {
     const cases = ACTIVE_CASES.filter((c) => c.category === "paraphrase");
     if (cases.length === 0) return;
 
@@ -227,7 +316,7 @@ describe.skipIf(skipIfNoAPI)("Retrieval quality benchmark", () => {
   });
 
   // --- Reflect ---
-  describe("reflect", () => {
+  describe.skipIf(!categoryIsActive("reflect"))("reflect", () => {
     const cases = ACTIVE_CASES.filter((c) => c.category === "reflect");
     if (cases.length === 0) return;
 
@@ -270,6 +359,15 @@ describe.skipIf(skipIfNoAPI)("Retrieval quality benchmark", () => {
       lines.push(`    avg metric: ${avgMetric.toFixed(3)}, avg latency: ${avgLatency.toFixed(0)}ms`);
       for (const r of catResults) {
         lines.push(`    ${r.passed ? "✓" : "✗"} ${r.case_id}: ${r.metric}=${r.value.toFixed(3)} (${r.latency_ms.toFixed(0)}ms) — ${r.details}`);
+      }
+
+      const minPassRate = MIN_CATEGORY_PASS_RATES[cat];
+      if (minPassRate !== undefined) {
+        expect(passRate).toBeGreaterThanOrEqual(minPassRate);
+      }
+      const maxAvgLatency = MAX_AVG_LATENCY_MS[cat];
+      if (maxAvgLatency !== undefined) {
+        expect(avgLatency).toBeLessThanOrEqual(maxAvgLatency);
       }
     }
 

@@ -293,7 +293,6 @@ describe("runConsolidationWorkerLoop", () => {
   });
 
   it("exits with code 1 when RSS exceeds memory cap", async () => {
-    const pool = mockPool();
     const originalExitCode = process.exitCode;
 
     // We can't easily mock process.memoryUsage, so we test indirectly:

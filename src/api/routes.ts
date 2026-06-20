@@ -3501,7 +3501,7 @@ export function createApi(): Hono {
       const filename = (result.title || "document").replace(/[^a-zA-Z0-9_-]/g, "_") + ".md";
       c.header("Content-Disposition", `attachment; filename="${filename}"`);
       c.header("Content-Type", "text/markdown; charset=utf-8");
-      return c.text(result.content);
+      return c.body(result.content, 200, { "Content-Type": "text/markdown; charset=utf-8" });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error("[api] Document export failed:", message);

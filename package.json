@@ -45,7 +45,10 @@
     "web:test": "pnpm --filter @openbrain/web test",
     "api:deploy:check": "deploy/on-prem/systemd/install-openbrain-api-service.sh --check",
     "api:restart": "deploy/on-prem/systemd/restart-openbrain-api.sh",
-    "api:healthcheck": "deploy/on-prem/systemd/openbrain-api-healthcheck.sh"
+    "api:healthcheck": "deploy/on-prem/systemd/openbrain-api-healthcheck.sh",
+    "opt:metrics": "node scripts/optimization-metrics.mjs",
+    "opt:metrics:check": "node scripts/optimization-metrics.mjs --check",
+    "typecheck:strict-unused": "tsc --noEmit --noUnusedLocals --noUnusedParameters --pretty false"
   },
   "engines": {
     "node": ">=22.0.0"

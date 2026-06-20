@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   extractEntities,
   extractQueryEntities,
-  type ExtractedEntity,
 } from "../entity_extraction.js";
 
 describe("extractEntities", () => {
