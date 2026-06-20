@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { GitBranch, Link2, Search, ShieldCheck } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Archive, GitBranch, Link2, Pencil, Search, ShieldCheck, X } from "lucide-react";
 
 import {
   expandMemoryLinks,
+  getStoredAdminApiKey,
   listExperiences,
   listMemoryLinks,
   listMentalModels,
   searchConsolidatedObservations,
+  updateConsolidatedObservation,
+  updateMentalModel,
   type ConsolidatedObservation,
   type MemoryLink,
   type MemoryLinkExpansionPayload,
@@ -89,7 +92,7 @@ function ExpansionCard({ result, onDocumentChunkClick }: { result: MemoryLinkExp
   );
 }
 
-function ObservationCard({ observation }: { observation: ConsolidatedObservation }) {
+function ObservationCard({ observation, adminKey, onArchive }: { observation: ConsolidatedObservation; adminKey: string | undefined; onArchive?: (id: string) => void }) {
   const sourceIds = observation.source_memory_ids ?? [];
   const quotes = observation.source_quotes ?? [];
   return (
@@ -99,6 +102,12 @@ function ObservationCard({ observation }: { observation: ConsolidatedObservation
         <div className="flex flex-wrap gap-2">
           {observation.trend ? <Badge>{observation.trend}</Badge> : null}
           <Badge>{observation.proof_count} proofs</Badge>
+          {observation.archived ? <Badge>archived</Badge> : null}
+          {adminKey && !observation.archived && onArchive ? (
+            <Button type="button" onClick={() => onArchive(observation.id)} className="border-amber-600/60 text-amber-200" aria-label={`Archive observation ${observation.id}`}>
+              <Archive className="mr-1 h-3 w-3" /> Archive
+            </Button>
+          ) : null}
         </div>
       </div>
       <p className="mt-2 whitespace-pre-wrap text-sm text-emerald-50">{observation.content}</p>
@@ -116,7 +125,37 @@ function ObservationCard({ observation }: { observation: ConsolidatedObservation
   );
 }
 
-function MentalModelCard({ model, onMentalModelClick }: { model: MentalModel; onMentalModelClick?: (id: string, query: string) => void }) {
+function MentalModelCard({ model, onMentalModelClick, adminKey, onEdit }: { model: MentalModel; onMentalModelClick?: (id: string, query: string) => void; adminKey: string | undefined; onEdit?: (model: MentalModel) => void }) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editName, setEditName] = useState(model.name);
+  const [editContent, setEditContent] = useState(model.content);
+  const [editActive, setEditActive] = useState(model.active);
+
+  if (isEditing) {
+    return (
+      <article className="rounded-lg border border-violet-500/40 bg-violet-500/10 p-3">
+        <div className="grid gap-2">
+          <label className="grid gap-1 text-sm text-zinc-300" htmlFor={`mental-model-name-${model.id}`}>
+            Mental model name
+            <Input id={`mental-model-name-${model.id}`} value={editName} onChange={(e) => setEditName(e.target.value)} />
+          </label>
+          <label className="grid gap-1 text-sm text-zinc-300" htmlFor={`mental-model-content-${model.id}`}>
+            Content
+            <textarea id={`mental-model-content-${model.id}`} value={editContent} onChange={(e) => setEditContent(e.target.value)} className="min-h-20 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none ring-violet-500/40 focus:border-violet-500 focus:ring-2" />
+          </label>
+          <label className="inline-flex items-center gap-2 text-sm text-zinc-300">
+            <input type="checkbox" checked={editActive} onChange={(e) => setEditActive(e.target.checked)} className="h-4 w-4 rounded border-zinc-700 bg-zinc-950 text-violet-500" />
+            Active
+          </label>
+          <div className="flex gap-2">
+            <Button type="button" onClick={() => onEdit?.({ ...model, name: editName, content: editContent, active: editActive })} aria-label={`Save mental model ${model.id}`}>Save</Button>
+            <Button type="button" onClick={() => { setIsEditing(false); setEditName(model.name); setEditContent(model.content); setEditActive(model.active); }} className="border-zinc-600 text-zinc-300">Cancel</Button>
+          </div>
+        </div>
+      </article>
+    );
+  }
+
   return (
     <article className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -132,6 +171,11 @@ function MentalModelCard({ model, onMentalModelClick }: { model: MentalModel; on
         <div className="flex flex-wrap gap-2">
           <Badge>{model.active ? "active" : "inactive"}</Badge>
           <Badge>priority {model.priority}</Badge>
+          {adminKey ? (
+            <Button type="button" onClick={() => setIsEditing(true)} className="border-zinc-600 text-zinc-300" aria-label={`Edit mental model ${model.id}`}>
+              <Pencil className="mr-1 h-3 w-3" /> Edit
+            </Button>
+          ) : null}
         </div>
       </div>
       <p className="mt-2 line-clamp-3 text-sm text-zinc-300">{model.content}</p>
@@ -148,6 +192,8 @@ export function ProvenanceBrowserPanel({ highlightedObservationId, onDocumentChu
   const [relationship, setRelationship] = useState("");
   const [observationQuery, setObservationQuery] = useState("");
   const trimmedBankId = bankId.trim() || "openbrain";
+  const adminKey = getStoredAdminApiKey();
+  const queryClient = useQueryClient();
   const linkFilters = useMemo(
     () => ({ bank_id: trimmedBankId, relationship: relationship.trim() || undefined, limit: 10 }),
     [trimmedBankId, relationship]
@@ -159,6 +205,14 @@ export function ProvenanceBrowserPanel({ highlightedObservationId, onDocumentChu
 
   const expandMutation = useMutation({ mutationFn: (payload: MemoryLinkExpansionPayload) => expandMemoryLinks(payload) });
   const observationSearchMutation = useMutation({ mutationFn: (payload: ObservationSearchPayload) => searchConsolidatedObservations(payload) });
+  const updateMentalModelMutation = useMutation({
+    mutationFn: (args: { id: string; payload: Parameters<typeof updateMentalModel>[1] }) => updateMentalModel(args.id, args.payload),
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["mental-models"] }); },
+  });
+  const archiveObservationMutation = useMutation({
+    mutationFn: (args: { id: string; payload: { archived: boolean } }) => updateConsolidatedObservation(args.id, args.payload),
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["consolidated-observations"] }); },
+  });
 
   useEffect(() => {
     if (highlightedObservationId) {
@@ -178,6 +232,14 @@ export function ProvenanceBrowserPanel({ highlightedObservationId, onDocumentChu
     }
   }
 
+  function handleEditMentalModel(model: MentalModel) {
+    updateMentalModelMutation.mutate({ id: model.id, payload: { name: model.name, content: model.content, active: model.active } });
+  }
+
+  function handleArchiveObservation(id: string) {
+    archiveObservationMutation.mutate({ id, payload: { archived: true } });
+  }
+
   function searchObservations(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const query = observationQuery.trim();
@@ -195,11 +257,13 @@ export function ProvenanceBrowserPanel({ highlightedObservationId, onDocumentChu
       <CardHeader>
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
-            <div className="flex items-center gap-2 text-sm text-zinc-400"><GitBranch className="h-4 w-4" /> Read-only graph inspection</div>
+            <div className="flex items-center gap-2 text-sm text-zinc-400"><GitBranch className="h-4 w-4" /> Graph inspection {adminKey ? "and editing" : ""}</div>
             <h2 className="mt-1 text-2xl font-semibold">Memory graph / provenance browser</h2>
-            <p className="mt-1 text-sm text-zinc-400">Inspect experiences, memory links, mental models, and observation evidence without running inference or writes.</p>
+            <p className="mt-1 text-sm text-zinc-400">Inspect experiences, memory links, mental models, and observation evidence{adminKey ? ". Edit controls require admin key." : " without running inference or writes."}</p>
           </div>
-          <Badge className="border-emerald-500/40 bg-emerald-500/10 text-emerald-200"><ShieldCheck className="mr-1 h-3 w-3" /> Read-only</Badge>
+          <Badge className={adminKey ? "border-amber-500/40 bg-amber-500/10 text-amber-200" : "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"}>
+            <ShieldCheck className="mr-1 h-3 w-3" /> {adminKey ? "Admin editing" : "Read-only"}
+          </Badge>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -232,6 +296,8 @@ export function ProvenanceBrowserPanel({ highlightedObservationId, onDocumentChu
         {linksQuery.isError ? <p role="alert" className="text-sm text-red-300">Memory link API error: {String(linksQuery.error)}</p> : null}
         {expandMutation.isError ? <p role="alert" className="text-sm text-red-300">Expansion failed: {String(expandMutation.error)}</p> : null}
         {observationSearchMutation.isError ? <p role="alert" className="text-sm text-red-300">Observation search failed: {String(observationSearchMutation.error)}</p> : null}
+        {updateMentalModelMutation.isError ? <p role="alert" className="text-sm text-red-300">Mental model update failed: {String(updateMentalModelMutation.error)}</p> : null}
+        {archiveObservationMutation.isError ? <p role="alert" className="text-sm text-red-300">Observation archive failed: {String(archiveObservationMutation.error)}</p> : null}
 
         <div className="grid gap-4 xl:grid-cols-2">
           <section className="space-y-2">
@@ -257,7 +323,7 @@ export function ProvenanceBrowserPanel({ highlightedObservationId, onDocumentChu
           <section className="space-y-2">
             <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-blue-300">Mental models</h3>
             <div className="grid gap-2">
-              {mentalModels.map((model) => <MentalModelCard key={model.id} model={model} onMentalModelClick={onMentalModelClick} />)}
+              {mentalModels.map((model) => <MentalModelCard key={model.id} model={model} onMentalModelClick={onMentalModelClick} adminKey={adminKey} onEdit={handleEditMentalModel} />)}
             </div>
           </section>
         ) : null}
@@ -267,7 +333,7 @@ export function ProvenanceBrowserPanel({ highlightedObservationId, onDocumentChu
           {observationSearchMutation.isPending ? <p className="text-sm text-zinc-400">Searching observations…</p> : null}
           {observations.length === 0 && observationSearchMutation.isSuccess ? <p className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-sm text-zinc-400">No observations matched.</p> : null}
           <div className="grid gap-2">
-            {observations.map((observation) => <ObservationCard key={observation.id} observation={observation} />)}
+            {observations.map((observation) => <ObservationCard key={observation.id} observation={observation} adminKey={adminKey} onArchive={handleArchiveObservation} />)}
           </div>
         </section>
       </CardContent>

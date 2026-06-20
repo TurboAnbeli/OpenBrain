@@ -522,3 +522,48 @@ export function deleteMemoryBankDirective(id: string) {
     headers: adminHeaders(),
   });
 }
+
+export interface MentalModelUpdateInput {
+  name?: string;
+  query?: string;
+  content?: string;
+  structured?: Record<string, unknown>;
+  tags?: string[];
+  trigger_tags?: string[];
+  priority?: number;
+  refresh_meta?: Record<string, unknown>;
+  history?: unknown[];
+  active?: boolean;
+  project?: string | null;
+  created_by?: string | null;
+}
+
+export function updateMentalModel(id: string, payload: MentalModelUpdateInput) {
+  return requestJson<MentalModel>(`/mental-models/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: adminHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(payload),
+  });
+}
+
+export interface ConsolidatedObservationUpdateInput {
+  content?: string;
+  proof_count?: number;
+  source_memory_ids?: string[];
+  source_quotes?: Record<string, string>;
+  tags?: string[];
+  history?: unknown[];
+  trend?: string | null;
+  trend_computed_at?: string | null;
+  project?: string | null;
+  archived?: boolean;
+  edit_reason?: string;
+}
+
+export function updateConsolidatedObservation(id: string, payload: ConsolidatedObservationUpdateInput) {
+  return requestJson<ConsolidatedObservation>(`/consolidated-observations/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: adminHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(payload),
+  });
+}
