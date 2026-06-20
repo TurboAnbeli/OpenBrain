@@ -137,6 +137,13 @@ import { registerWsClient, broadcastWsEvent, wsEvent } from "./ws-broadcaster.js
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Validate that `id` is a valid UUID; if not, return 400 from the Hono context. */
+function requireUuid(c: { json: (body: unknown, status: number) => Response }, id: string | undefined): Response | null {
+  if (!id || !UUID_RE.test(id)) {
+    return c.json({ error: "id must be a valid UUID" }, 400);
+  }
+  return null;
+}
 const ADMIN_UUID_SEGMENT = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const ADMIN_PROTECTED_ROUTES: Array<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /^\/embedder\/switch$/ },
@@ -1244,7 +1251,7 @@ export function createApi(): Hono {
     c.json({ status: "healthy", service: "open-brain-api" })
   );
   // ─── WebSocket real-time updates ────────────────────────────────
-  app.get("/ws", upgradeWebSocket((c) => {
+  app.get("/ws", upgradeWebSocket((_c) => {
     return {
       onOpen(_evt, ws) {
         const unregister = registerWsClient(ws);
@@ -1265,10 +1272,10 @@ export function createApi(): Hono {
           // ignore malformed messages
         }
       },
-      onClose(_evt, ws) {
+      onClose(_evt, _ws) {
         console.log("[ws] Client closed");
       },
-      onError(_evt, ws) {
+      onError(_evt, _ws) {
         console.error("[ws] Client error");
       },
     };
@@ -2134,9 +2141,7 @@ export function createApi(): Hono {
   app.put("/memories/:id", async (c) => {
     const id = c.req.param("id");
 
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
 
     const body = await c.req.json<{ content: string }>();
 
@@ -2177,9 +2182,7 @@ export function createApi(): Hono {
   app.delete("/memories/:id", async (c) => {
     const id = c.req.param("id");
 
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
 
     try {
       const result = await deleteThought(pool, id);
@@ -2416,9 +2419,7 @@ export function createApi(): Hono {
 
   app.get("/memory-links/:id", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
     try {
       const result = await getMemoryLink(pool, id);
       if (!result) {
@@ -2476,7 +2477,7 @@ export function createApi(): Hono {
 
   app.get("/memory-bank-directives/:id", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) return c.json({ error: "id must be a valid UUID" }, 400);
+    const badId = requireUuid(c, id); if (badId) return badId;
 
     try {
       const result = await getMemoryBankDirective(pool, id);
@@ -2491,7 +2492,7 @@ export function createApi(): Hono {
 
   app.patch("/memory-bank-directives/:id", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) return c.json({ error: "id must be a valid UUID" }, 400);
+    const badId = requireUuid(c, id); if (badId) return badId;
     const body = await c.req.json<Record<string, unknown>>();
     const validation = validateDirectiveUpdateBody(body);
     if (!validation.ok) return c.json({ error: validation.error }, 400);
@@ -2509,7 +2510,7 @@ export function createApi(): Hono {
 
   app.delete("/memory-bank-directives/:id", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) return c.json({ error: "id must be a valid UUID" }, 400);
+    const badId = requireUuid(c, id); if (badId) return badId;
 
     try {
       const result = await deactivateMemoryBankDirective(pool, id);
@@ -2654,7 +2655,7 @@ export function createApi(): Hono {
 
   app.get("/mental-models/:id", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) return c.json({ error: "id must be a valid UUID" }, 400);
+    const badId = requireUuid(c, id); if (badId) return badId;
 
     try {
       const result = await getMentalModel(pool, id);
@@ -2669,7 +2670,7 @@ export function createApi(): Hono {
 
   app.put("/mental-models/:id", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) return c.json({ error: "id must be a valid UUID" }, 400);
+    const badId = requireUuid(c, id); if (badId) return badId;
     const body = await c.req.json<{
       name?: string;
       query?: string;
@@ -2874,9 +2875,7 @@ export function createApi(): Hono {
 
   app.get("/experiences/:id", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
     try {
       const result = await getExperience(pool, id);
       if (!result) {
@@ -2921,9 +2920,7 @@ export function createApi(): Hono {
         return c.json({ error: "thought_ids must be an array of at least 2 UUIDs" }, 400);
       }
       for (const id of body.thought_ids) {
-        if (!UUID_RE.test(id)) {
-          return c.json({ error: `invalid UUID: ${id}` }, 400);
-        }
+        const badId = requireUuid(c, id); if (badId) return badId;
       }
       input.thought_ids = body.thought_ids;
     }
@@ -2935,9 +2932,7 @@ export function createApi(): Hono {
         return c.json({ error: "document_ids or source_uris must include at least one explicit source" }, 400);
       }
       for (const id of documentIds) {
-        if (!UUID_RE.test(id)) {
-          return c.json({ error: `invalid UUID: ${id}` }, 400);
-        }
+        const badId = requireUuid(c, id); if (badId) return badId;
       }
       input.document_ids = documentIds;
       input.source_uris = sourceUris;
@@ -2959,9 +2954,7 @@ export function createApi(): Hono {
 
   app.get("/consolidation-jobs/:id", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
     try {
       const job = await getConsolidationJob(pool, id);
       if (!job) {
@@ -2977,9 +2970,7 @@ export function createApi(): Hono {
 
   app.post("/consolidation-jobs/:id/run", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
     try {
       const result = await runConsolidationJob(pool, id, {
         embedder,
@@ -3009,9 +3000,7 @@ export function createApi(): Hono {
       return c.json({ error: "thought_ids must be an array of at least 2 UUIDs" }, 400);
     }
     for (const id of body.thought_ids) {
-      if (!UUID_RE.test(id)) {
-        return c.json({ error: `invalid UUID: ${id}` }, 400);
-      }
+      const badId = requireUuid(c, id); if (badId) return badId;
     }
 
     try {
@@ -3109,9 +3098,7 @@ export function createApi(): Hono {
       return c.json({ error: "source_memory_ids must be an array of UUIDs" }, 400);
     }
     for (const id of body.source_memory_ids ?? []) {
-      if (!UUID_RE.test(id)) {
-        return c.json({ error: `invalid UUID: ${id}` }, 400);
-      }
+      const badId = requireUuid(c, id); if (badId) return badId;
     }
 
     try {
@@ -3196,9 +3183,7 @@ export function createApi(): Hono {
 
   app.get("/consolidated-observations/:id", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
 
     try {
       const result = await getConsolidatedObservation(pool, id);
@@ -3218,9 +3203,7 @@ export function createApi(): Hono {
 
   app.put("/consolidated-observations/:id", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
 
     const body = await c.req.json<{
       content?: string;
@@ -3503,9 +3486,7 @@ export function createApi(): Hono {
 
   app.get("/documents/:id/export", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
 
     try {
       const result = await getDocument(pool, id);
@@ -3526,9 +3507,7 @@ export function createApi(): Hono {
 
   app.get("/documents/:id", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
 
     try {
       const result = await getDocument(pool, id);
@@ -3549,9 +3528,7 @@ export function createApi(): Hono {
 
   app.get("/documents/:id/revisions", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
 
     try {
       const document = await getDocument(pool, id);
@@ -3573,9 +3550,7 @@ export function createApi(): Hono {
 
   app.get("/documents/:id/revisions/:revision_number/diff", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
     const revisionNumber = parseBoundedInt(c.req.param("revision_number"), "revision_number", 1, 1000000, 1);
     if (!revisionNumber.ok) return c.json({ error: revisionNumber.error }, 400);
 
@@ -3604,9 +3579,7 @@ export function createApi(): Hono {
 
   app.patch("/documents/:id", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
 
     const body = await c.req.json<{
       title?: string;
@@ -3681,9 +3654,7 @@ export function createApi(): Hono {
 
   app.delete("/documents/:id", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
 
     try {
       const result = await deleteDocument(pool, id);
@@ -3701,9 +3672,7 @@ export function createApi(): Hono {
 
   app.post("/documents/:id/reindex", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
 
     try {
       const document = await getDocument(pool, id);
@@ -3928,9 +3897,7 @@ export function createApi(): Hono {
 
   app.put("/documents/:id/chunks", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
 
     const body = await c.req.json<{
       chunks: Array<{
@@ -4005,9 +3972,7 @@ export function createApi(): Hono {
 
   app.get("/documents/:id/chunks", async (c) => {
     const id = c.req.param("id");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "id must be a valid UUID" }, 400);
-    }
+    const badId = requireUuid(c, id); if (badId) return badId;
 
     try {
       const document = await getDocument(pool, id);
