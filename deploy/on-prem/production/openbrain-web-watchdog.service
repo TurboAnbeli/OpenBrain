@@ -1,0 +1,11 @@
+[Unit]
+Description=OpenBrain web endpoint watchdog
+Documentation=https://github.com/TurboAnbeli/OpenBrain
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/openbrain/openbrain-web-watchdog.sh
+User=root
+Group=root
