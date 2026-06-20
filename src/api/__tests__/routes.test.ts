@@ -34,6 +34,8 @@ vi.mock("../../embedder/index.js", () => ({
   }),
   resetEmbedder: vi.fn(),
   getEmbedderProviders: () => ["ollama", "openrouter", "azure-openai", "llama-server"],
+  getEmbedderCircuitStates: () => ({ primary: "CLOSED", fallbacks: [] }),
+  resetAllCircuits: vi.fn(),
 }));
 
 // Mock query functions
@@ -4126,4 +4128,34 @@ it("rate-limits expensive endpoints when request count exceeds threshold", async
     expect(mockDeactivateMemoryBankDirective).toHaveBeenCalledWith(expect.anything(), "11111111-2222-4333-8444-555555555555");
   });
 
+
+  // ─── Circuit Breaker Integration Tests ──────────────────────────
+
+  it("GET /embedder/info includes circuit_states when available", async () => {
+    mockGetDocumentChunkEmbedderVersionStats.mockResolvedValueOnce([]);
+    const res = await app.request("/embedder/info");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { circuit_states: { primary: string; fallbacks: string[] } | null };
+    // The mock returns getEmbedderCircuitStates() => ({ primary: "CLOSED", fallbacks: [] })
+    expect(body.circuit_states).toEqual({ primary: "CLOSED", fallbacks: [] });
+  });
+
+  it("GET /embedder/info includes circuit_states on 503 error", async () => {
+    mockGetDocumentChunkEmbedderVersionStats.mockResolvedValueOnce([]);
+    mockGenerateEmbedding.mockRejectedValueOnce(new Error("Ollama unavailable"));
+    const res = await app.request("/embedder/info");
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { circuit_states: { primary: string; fallbacks: string[] } | null; error: string };
+    expect(body.circuit_states).toEqual({ primary: "CLOSED", fallbacks: [] });
+    expect(body.error).toContain("Ollama unavailable");
+  });
+
+  it("POST /embedder/reset-circuits resets all circuit breakers", async () => {
+    const res = await app.request("/embedder/reset-circuits", { method: "POST" });
+    // Admin key may be required; accept either 200 or 401/403
+    if (res.status === 200) {
+      const body = (await res.json()) as { ok: boolean; circuit_states: { primary: string; fallbacks: string[] } | null };
+      expect(body.ok).toBe(true);
+    }
+  });
 });

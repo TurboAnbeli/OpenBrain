@@ -10,7 +10,7 @@ const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx"]);
 const BUDGETS = {
   prod_as_any_count: 0,
   prod_console_log_count: 40,
-  test_count: 431,
+  test_count: 453,
   web_dist_total_bytes: 1_030_000,
   web_dist_js_bytes: 1_000_000,
   web_dist_gzip_bytes: 330_000,

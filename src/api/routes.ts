@@ -137,7 +137,7 @@ import {
   type MemoryBankDirectiveInput,
   type MemoryBankDirectiveUpdateInput,
 } from "../db/queries.js";
-import { getEmbedder, resetEmbedder, getEmbedderProviders } from "../embedder/index.js";
+import { getEmbedder, resetEmbedder, getEmbedderProviders, getEmbedderCircuitStates, resetAllCircuits } from "../embedder/index.js";
 import type { Embedder } from "../embedder/types.js";
 import { hasSpecificityMarker, applyRecencyBoost, overfetchLimit } from "./recency_boost.js";
 import {
@@ -187,6 +187,7 @@ const ADMIN_PROTECTED_ROUTES: Array<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /^\/documents$/ },
   { method: "POST", pattern: /^\/documents\/reindex-stale$/ },
   { method: "POST", pattern: /^\/documents\/reindex-all$/ },
+  { method: "POST", pattern: /^\/embedder\/reset-circuits$/ },
   { method: "POST", pattern: /^\/documents\/upload$/ },
   { method: "POST", pattern: /^\/documents\/import-url$/ },
   { method: "GET", pattern: /^\/documents\/export-all$/ },
@@ -1267,6 +1268,7 @@ export function createApi(): Hono {
         available_providers: getEmbedderProviders(),
         chunk_embedder_versions: chunkEmbedderVersions,
         reindex_required: incompatibleVersions.length > 0,
+        circuit_states: getEmbedderCircuitStates(),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1277,6 +1279,7 @@ export function createApi(): Hono {
         available_providers: getEmbedderProviders(),
         chunk_embedder_versions: chunkEmbedderVersions,
         reindex_required: incompatibleVersions.length > 0,
+        circuit_states: getEmbedderCircuitStates(),
         error: message,
       }, 503);
     }
@@ -1333,9 +1336,15 @@ export function createApi(): Hono {
       // Roll back on failure
       process.env.EMBEDDER_PROVIDER = oldProvider;
       resetEmbedder();
+      resetAllCircuits();
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: "Failed to initialize new embedder", detail: message, rolled_back_to: oldProvider }, 502);
     }
+  });
+
+  app.post("/embedder/reset-circuits", async (c) => {
+    resetAllCircuits();
+    return c.json({ ok: true, circuit_states: getEmbedderCircuitStates() });
   });
 
   app.get("/health", (c) =>
