@@ -67,6 +67,20 @@ describe("directive editor state", () => {
     });
   });
 
+  it("builds payloads for the selected bank and falls back to openbrain", () => {
+    expect(buildDirectivePayload(baseDraft, " research ")).toEqual({
+      bank_id: "research",
+      name: "Reflect source guard",
+      rule_text: "Preserve explicit source boundaries.",
+      applies_to: ["reflect", "capture"],
+      severity: "required",
+      active: true,
+      priority: 10,
+    });
+
+    expect(buildDirectivePayload(baseDraft, "   ").bank_id).toBe("openbrain");
+  });
+
   it("validates required name, rule, applies_to, and integer priority", () => {
     expect(
       validateDirectiveDraft({

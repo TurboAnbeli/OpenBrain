@@ -38,6 +38,20 @@ const reflectDirective: MemoryBankDirective = {
   updated_at: "2026-01-02T00:00:00Z",
 };
 
+const inactiveRetainDirective: MemoryBankDirective = {
+  id: "dir-2",
+  bank_id: "openbrain",
+  name: "Retain source guard",
+  rule_text: "Keep retained experiences scoped to source boundaries.",
+  applies_to: ["retain", "custom_target"],
+  severity: "required",
+  active: false,
+  priority: 5,
+  revision: 1,
+  created_at: "2026-01-03T00:00:00Z",
+  updated_at: "2026-01-04T00:00:00Z",
+};
+
 function renderPanel() {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -73,14 +87,25 @@ describe("DirectiveAdminPanel", () => {
     vi.clearAllMocks();
   });
 
-  it("loads active openbrain directives and labels reflect impact", async () => {
+  it("lists all directives for the selected bank and labels lifecycle and application targets", async () => {
+    listMock.mockResolvedValue({ count: 2, directives: [reflectDirective, inactiveRetainDirective] });
+
     renderPanel();
 
-    expect(await screen.findByText("Reflect source guard")).toBeTruthy();
-    expect(listMock).toHaveBeenCalledWith({ bank_id: "openbrain", active: true, limit: 50 });
+    const reflectRow = (await screen.findByText("Reflect source guard")).closest("article");
+    const retainRow = (await screen.findByText("Retain source guard")).closest("article");
+    expect(reflectRow).toBeTruthy();
+    expect(retainRow).toBeTruthy();
+    expect(listMock).toHaveBeenCalledWith({ bank_id: "openbrain", limit: 50 });
     expect(screen.getByText("Active reflect directives are injected into POST /reflect on the next reflection.")).toBeTruthy();
-    expect(screen.getByText("Affects /reflect")).toBeTruthy();
-    expect(screen.getByText("Preserve explicit source boundaries.")).toBeTruthy();
+    expect(within(reflectRow as HTMLElement).getByText("Active")).toBeTruthy();
+    expect(within(reflectRow as HTMLElement).getByText("Affects /reflect")).toBeTruthy();
+    expect(within(reflectRow as HTMLElement).getByText("POST /reflect")).toBeTruthy();
+    expect(within(retainRow as HTMLElement).getByText("Inactive")).toBeTruthy();
+    expect(within(retainRow as HTMLElement).queryByText("Affects /reflect")).toBeNull();
+    expect(within(retainRow as HTMLElement).getByText("POST /experiences / retain guard")).toBeTruthy();
+    expect(within(retainRow as HTMLElement).getByText("custom_target")).toBeTruthy();
+    expect(screen.getByText("Keep retained experiences scoped to source boundaries.")).toBeTruthy();
   });
 
   it("does not label non-lowercase reflect targets as affecting /reflect", async () => {
@@ -97,7 +122,7 @@ describe("DirectiveAdminPanel", () => {
     listMock.mockResolvedValue({ count: 0, directives: [] });
     renderPanel();
 
-    expect(await screen.findByText("No active directives found."));
+    expect(await screen.findByText("No directives found for openbrain."));
     await user.click(screen.getByRole("button", { name: /new directive/i }));
     await user.type(screen.getByLabelText(/name/i), "  Reflect policy  ");
     await user.type(screen.getByLabelText(/rule text/i), "  Cite the source document.  ");
@@ -119,7 +144,7 @@ describe("DirectiveAdminPanel", () => {
     );
   });
 
-  it("edits and deactivates existing directives", async () => {
+  it("edits existing directives and requires inline confirmation before deactivation", async () => {
     const user = userEvent.setup();
     renderPanel();
 
@@ -145,29 +170,96 @@ describe("DirectiveAdminPanel", () => {
     );
 
     await user.click(within(row as HTMLElement).getByRole("button", { name: /deactivate reflect source guard/i }));
+    expect(deleteMock).not.toHaveBeenCalled();
+    expect(within(row as HTMLElement).getByText("Deactivate this directive?")).toBeTruthy();
+
+    await user.click(within(row as HTMLElement).getByRole("button", { name: /cancel deactivation for reflect source guard/i }));
+    expect(deleteMock).not.toHaveBeenCalled();
+    expect(within(row as HTMLElement).queryByText("Deactivate this directive?")).toBeNull();
+
+    await user.click(within(row as HTMLElement).getByRole("button", { name: /deactivate reflect source guard/i }));
+    await user.click(within(row as HTMLElement).getByRole("button", { name: /confirm deactivation for reflect source guard/i }));
     await waitFor(() => expect(deleteMock).toHaveBeenCalledWith("dir-1"));
   });
 
-  it("orders higher priority directives first", async () => {
+  it("reactivates inactive directives", async () => {
+    const user = userEvent.setup();
+    listMock.mockResolvedValue({ count: 1, directives: [inactiveRetainDirective] });
+    updateMock.mockResolvedValue({ ...inactiveRetainDirective, active: true });
+
+    renderPanel();
+
+    const row = (await screen.findByText("Retain source guard")).closest("article");
+    expect(row).toBeTruthy();
+    expect(within(row as HTMLElement).getByText("Inactive")).toBeTruthy();
+    await user.click(within(row as HTMLElement).getByRole("button", { name: /reactivate retain source guard/i }));
+
+    await waitFor(() => expect(updateMock).toHaveBeenCalledWith("dir-2", { active: true }));
+  });
+
+  it("uses the selected bank for listing and creating directives", async () => {
+    const user = userEvent.setup();
+    listMock.mockResolvedValue({ count: 0, directives: [] });
+    renderPanel();
+
+    expect(await screen.findByText("No directives found for openbrain."));
+    expect(listMock).toHaveBeenCalledWith({ bank_id: "openbrain", limit: 50 });
+
+    const bankInput = screen.getByLabelText(/memory bank/i);
+    await user.clear(bankInput);
+    await user.type(bankInput, " research ");
+    await user.click(screen.getByRole("button", { name: /load bank/i }));
+
+    await waitFor(() => expect(listMock).toHaveBeenCalledWith({ bank_id: "research", limit: 50 }));
+    expect(await screen.findByText("No directives found for research."));
+
+    await user.click(screen.getByRole("button", { name: /new directive/i }));
+    await user.type(screen.getByLabelText(/name/i), "Retain policy");
+    await user.type(screen.getByLabelText(/rule text/i), "Keep retain path scoped.");
+    await user.type(screen.getByLabelText(/applies to/i), "retain");
+    await user.click(screen.getByRole("button", { name: /create directive/i }));
+
+    await waitFor(() =>
+      expect(createMock).toHaveBeenCalledWith({
+        bank_id: "research",
+        name: "Retain policy",
+        rule_text: "Keep retain path scoped.",
+        applies_to: ["retain"],
+        severity: "required",
+        active: true,
+        priority: 0,
+      })
+    );
+  });
+
+  it("orders higher priority directives first, then name ascending", async () => {
+    const alphaPriorityDirective: MemoryBankDirective = {
+      ...reflectDirective,
+      id: "dir-alpha",
+      name: "Alpha directive",
+      priority: 20,
+    };
+    const betaPriorityDirective: MemoryBankDirective = {
+      ...reflectDirective,
+      id: "dir-beta",
+      name: "Beta directive",
+      priority: 20,
+    };
     const lowPriorityDirective: MemoryBankDirective = {
       ...reflectDirective,
       id: "dir-low",
       name: "Low priority directive",
       priority: 1,
     };
-    const highPriorityDirective: MemoryBankDirective = {
-      ...reflectDirective,
-      id: "dir-high",
-      name: "High priority directive",
-      priority: 20,
-    };
-    listMock.mockResolvedValue({ count: 2, directives: [lowPriorityDirective, highPriorityDirective] });
+    listMock.mockResolvedValue({ count: 3, directives: [lowPriorityDirective, betaPriorityDirective, alphaPriorityDirective] });
 
     renderPanel();
 
-    const lowPriorityName = await screen.findByText("Low priority directive");
-    const highPriorityName = screen.getByText("High priority directive");
-    expect(highPriorityName.compareDocumentPosition(lowPriorityName)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    const alphaPriorityName = await screen.findByText("Alpha directive");
+    const betaPriorityName = screen.getByText("Beta directive");
+    const lowPriorityName = screen.getByText("Low priority directive");
+    expect(alphaPriorityName.compareDocumentPosition(betaPriorityName)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(betaPriorityName.compareDocumentPosition(lowPriorityName)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
   it("surfaces API errors in the panel", async () => {

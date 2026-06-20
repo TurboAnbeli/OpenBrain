@@ -70,11 +70,15 @@ export function validateDirectiveDraft(draft: DirectiveDraft): string[] {
   return errors;
 }
 
-export function buildDirectivePayload(draft: DirectiveDraft): MemoryBankDirectiveInput {
+export function normalizeDirectiveBankId(bankId = DIRECTIVE_BANK_ID): string {
+  return bankId.trim() || DIRECTIVE_BANK_ID;
+}
+
+export function buildDirectivePayload(draft: DirectiveDraft, bankId = DIRECTIVE_BANK_ID): MemoryBankDirectiveInput {
   const priority = parseDirectivePriority(draft.priority);
 
   return {
-    bank_id: DIRECTIVE_BANK_ID,
+    bank_id: normalizeDirectiveBankId(bankId),
     name: draft.name.trim(),
     rule_text: draft.ruleText.trim(),
     applies_to: parseDirectiveAppliesTo(draft.appliesTo),
