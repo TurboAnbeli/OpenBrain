@@ -135,6 +135,7 @@ function CollapsibleSection({ title, icon, children, defaultOpen = false }: { ti
       <button
         type="button"
         onClick={() => setOpen(!open)}
+        aria-expanded={open}
         className="flex w-full items-center justify-between border-b border-zinc-800 px-4 py-3 text-left transition hover:bg-zinc-900/50"
       >
         <div className="flex items-center gap-2 font-medium text-zinc-100">
@@ -337,7 +338,7 @@ export default function App() {
       </CardHeader>
       <CardContent className="space-y-3">
         {documentsQuery.isLoading ? <p className="text-sm text-zinc-400">Loading documents…</p> : null}
-        {documentsQuery.isError ? <p className="text-sm text-red-300">{String(documentsQuery.error)}</p> : null}
+        {documentsQuery.isError ? <p className="text-sm text-red-300" role="alert">{String(documentsQuery.error)}</p> : null}
         {documentsQuery.data?.documents.map((document) => (
           <DocumentRow
             key={document.id}
@@ -419,9 +420,9 @@ export default function App() {
         </div>
       </CardHeader>
       <CardContent>
-        {detailQuery.isError ? <p className="text-sm text-red-300">{String(detailQuery.error)}</p> : null}
-        {saveMutation.isError ? <p className="mb-3 text-sm text-red-300">{String(saveMutation.error)}</p> : null}
-        {reindexMutation.isError ? <p className="mb-3 text-sm text-red-300">Reindex failed: {String(reindexMutation.error)}</p> : null}
+        {detailQuery.isError ? <p className="text-sm text-red-300" role="alert">{String(detailQuery.error)}</p> : null}
+        {saveMutation.isError ? <p className="mb-3 text-sm text-red-300" role="alert">{String(saveMutation.error)}</p> : null}
+        {reindexMutation.isError ? <p className="mb-3 text-sm text-red-300" role="alert">Reindex failed: {String(reindexMutation.error)}</p> : null}
         {saveMessage ? <p className="mb-3 text-sm text-emerald-300">{saveMessage}</p> : null}
         {detailQuery.data ? (
           <div className="grid gap-4">
@@ -624,8 +625,8 @@ export default function App() {
               </Button>
               <Button onClick={() => { setShowImport(false); setImportUrl(""); }}>Cancel</Button>
             </div>
-            {importUrlMutation.isError ? <span className="text-sm text-red-300">{String(importUrlMutation.error)}</span> : null}
-            {exportError ? <span className="text-sm text-red-300">{exportError}</span> : null}
+            {importUrlMutation.isError ? <span className="text-sm text-red-300" role="alert">{String(importUrlMutation.error)}</span> : null}
+            {exportError ? <span className="text-sm text-red-300" role="alert">{exportError}</span> : null}
           </div>
         ) : null}
 

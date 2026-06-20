@@ -7,6 +7,7 @@
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import { secureHeaders } from "hono/secure-headers";
 import type pg from "pg";
 
 import { getPool } from "../db/connection.js";
@@ -1136,7 +1137,10 @@ export function createApi(): Hono {
   const pool = getPool();
 
   // Middleware
-  app.use("*", cors());
+  // Configurable CORS: restrict to allowed origins or fall back to wildcard for development
+  const corsOrigins = (process.env.OPENBRAIN_CORS_ORIGINS ?? "").split(",").filter(Boolean);
+  app.use("*", cors(corsOrigins.length > 0 ? { origin: corsOrigins, credentials: true } : {}));
+  app.use("*", secureHeaders());
   app.use("*", logger());
   app.use("*", async (c, next) => {
     const adminKey = configuredAdminApiKey();
@@ -1154,11 +1158,14 @@ export function createApi(): Hono {
     return c.json({ error: "admin authentication required" }, 401);
   });
 
-  // Global error handler — return structured JSON for all errors
+  // Global error handler — sanitize internal details from 5xx responses
   app.onError((err, c) => {
     console.error("[api] Unhandled error:", err.message);
+    const safeMessage = err instanceof Error && err.message.length <= 120
+      ? err.message
+      : "Internal server error";
     return c.json(
-      { error: err.message, service: "open-brain-api" },
+      { error: safeMessage, service: "open-brain-api" },
       500
     );
   });

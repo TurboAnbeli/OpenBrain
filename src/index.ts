@@ -147,6 +147,8 @@ serve({ fetch: api.fetch, port: apiPort, hostname: apiHost, websocket: { server:
         console.log(auth.logLine);
 
         // Pass consumer identity to MCP server for audit logging
+        // NOTE: process.env is set per-request and could race under concurrent MCP sessions.
+        // A future refactor should thread consumerId through the MCP server context.
         if (auth.ok && auth.claims) {
           process.env.OPENBRAIN_CONSUMER_ID = (auth.claims.azp as string) ?? (auth.claims.client_id as string) ?? "oauth-unknown";
           process.env.OPENBRAIN_TRANSPORT = "http";
