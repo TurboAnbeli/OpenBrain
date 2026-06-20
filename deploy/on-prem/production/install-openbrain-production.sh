@@ -41,10 +41,13 @@ validate_source() {
   [[ -f "$SRC/package.json" ]] || { echo "missing package.json" >&2; exit 1; }
   [[ -f "$SRC/.env" ]] || { echo "missing source .env" >&2; exit 1; }
   [[ -f "$SRC/dist/index.js" ]] || { echo "missing dist/index.js; run pnpm build" >&2; exit 1; }
-  chmod +x "$SRC/deploy/on-prem/production/openbrain-production-healthcheck.sh" "$SRC/deploy/on-prem/production/openbrain-web-watchdog.sh" "$SRC/deploy/on-prem/production/install-openbrain-production.sh"
+  chmod +x "$SRC/deploy/on-prem/production/openbrain-production-healthcheck.sh" "$SRC/deploy/on-prem/production/openbrain-embedder-healthcheck.sh" "$SRC/deploy/on-prem/production/openbrain-web-watchdog.sh" "$SRC/deploy/on-prem/production/install-openbrain-production.sh" "$SRC/deploy/on-prem/production/install-openbrain-embedder-model.sh" "$SRC/deploy/on-prem/production/reindex-document-chunks-gguf.mjs"
   command -v node >/dev/null || { echo "node not found" >&2; exit 1; }
   if command -v systemd-analyze >/dev/null; then
-    systemd-analyze verify "$SRC/deploy/on-prem/production/openbrain-api.service" >/dev/null
+    systemd-analyze verify "$SRC/deploy/on-prem/production/openbrain-embedder.service" >/dev/null
+    if [[ -x /usr/local/lib/openbrain/openbrain-embedder-healthcheck.sh ]]; then
+      systemd-analyze verify "$SRC/deploy/on-prem/production/openbrain-api.service" >/dev/null
+    fi
   fi
 }
 
@@ -101,8 +104,11 @@ for raw in src.read_text().splitlines():
     if k == 'CIPHER_KEY_PATH': v='/etc/openbrain/cipher.key'
     elif k == 'API_HOST': v='127.0.0.1'
     elif k == 'MCP_HOST': v='127.0.0.1'
+    elif k == 'EMBEDDER_PROVIDER': v='llama-server'
+    elif k == 'LLAMA_SERVER_ENDPOINT': v='http://127.0.0.1:8096'
+    elif k == 'LLAMA_SERVER_EMBED_MODEL': v='google/embeddinggemma-300m'
     lines.append(f'{k}={v}')
-for k,v in {'API_PORT':'8000','MCP_PORT':'8080'}.items():
+for k,v in {'API_PORT':'8000','MCP_PORT':'8080','EMBEDDER_PROVIDER':'llama-server','LLAMA_SERVER_ENDPOINT':'http://127.0.0.1:8096','LLAMA_SERVER_EMBED_MODEL':'google/embeddinggemma-300m'}.items():
     if k not in seen: lines.append(f'{k}={v}')
 dst.write_text('\n'.join(lines).rstrip()+'\n')
 PY
@@ -131,18 +137,29 @@ install_units() {
     mv /etc/systemd/system/openbrain-api.service.d "/etc/openbrain/unit-backups/openbrain-api.service.d.$(date -u +%Y%m%dT%H%M%SZ)"
   fi
   install -m 0644 -o root -g root "$SRC/deploy/on-prem/production/openbrain-api.service" /etc/systemd/system/openbrain-api.service
+  install -m 0644 -o root -g root "$SRC/deploy/on-prem/production/openbrain-embedder.service" /etc/systemd/system/openbrain-embedder.service
   install -d -m 0755 -o root -g root /usr/local/lib/openbrain
   install -m 0755 -o root -g root "$SRC/deploy/on-prem/production/openbrain-production-healthcheck.sh" /usr/local/lib/openbrain/openbrain-production-healthcheck.sh
+  install -m 0755 -o root -g root "$SRC/deploy/on-prem/production/openbrain-embedder-healthcheck.sh" /usr/local/lib/openbrain/openbrain-embedder-healthcheck.sh
   install -m 0755 -o root -g root "$SRC/deploy/on-prem/production/openbrain-web-watchdog.sh" /usr/local/lib/openbrain/openbrain-web-watchdog.sh
+  install -m 0755 -o root -g root "$SRC/deploy/on-prem/production/install-openbrain-embedder-model.sh" /usr/local/lib/openbrain/install-openbrain-embedder-model.sh
+  install -m 0755 -o root -g root "$SRC/deploy/on-prem/production/reindex-document-chunks-gguf.mjs" /usr/local/lib/openbrain/reindex-document-chunks-gguf.mjs
   install -m 0644 -o root -g root "$SRC/deploy/on-prem/production/openbrain-web-watchdog.service" /etc/systemd/system/openbrain-web-watchdog.service
   install -m 0644 -o root -g root "$SRC/deploy/on-prem/production/openbrain-web-watchdog.timer" /etc/systemd/system/openbrain-web-watchdog.timer
   systemctl daemon-reload
+  if command -v systemd-analyze >/dev/null; then
+    systemd-analyze verify /etc/systemd/system/openbrain-embedder.service /etc/systemd/system/openbrain-api.service >/dev/null || true
+  fi
 }
 
 cutover() {
   systemctl stop openbrain-api.service 2>/dev/null || true
   legacy_user_systemctl stop openbrain-api.service 2>/dev/null || true
-  systemctl reset-failed openbrain-api.service 2>/dev/null || true
+  legacy_user_systemctl disable --now embeddinggemma-fp.service 2>/dev/null || true
+  /usr/local/lib/openbrain/install-openbrain-embedder-model.sh
+  systemctl reset-failed openbrain-embedder.service openbrain-api.service 2>/dev/null || true
+  systemctl enable --now openbrain-embedder.service
+  /usr/local/lib/openbrain/openbrain-embedder-healthcheck.sh
   systemctl enable --now openbrain-api.service
   if /usr/local/lib/openbrain/openbrain-production-healthcheck.sh; then
     legacy_user_systemctl disable openbrain-api.service 2>/dev/null || true
@@ -174,6 +191,7 @@ case "$MODE" in
     build_source
     stage_release
     stage_config
+    "$SRC/deploy/on-prem/production/install-openbrain-embedder-model.sh"
     install_units
     echo "OpenBrain production release staged at $(readlink -f "$RELEASE_ROOT/current")"
     ;;

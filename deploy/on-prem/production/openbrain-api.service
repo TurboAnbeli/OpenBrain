@@ -1,8 +1,8 @@
 [Unit]
 Description=OpenBrain API server (production system service)
 Documentation=https://github.com/TurboAnbeli/OpenBrain
-Wants=network-online.target postgresql.service ollama.service
-After=network-online.target postgresql.service ollama.service
+Wants=network-online.target postgresql.service ollama.service openbrain-embedder.service
+After=network-online.target postgresql.service ollama.service openbrain-embedder.service
 StartLimitIntervalSec=5min
 StartLimitBurst=5
 
@@ -15,6 +15,7 @@ EnvironmentFile=/etc/openbrain/openbrain.env
 Environment=NODE_ENV=production
 Environment=XDG_CACHE_HOME=/var/cache/openbrain
 Environment=TRANSFORMERS_CACHE=/var/cache/openbrain/transformers
+ExecStartPre=/usr/local/lib/openbrain/openbrain-embedder-healthcheck.sh
 ExecStart=/usr/bin/node /opt/openbrain/current/dist/index.js
 Restart=on-failure
 RestartSec=5s

@@ -1,0 +1,53 @@
+[Unit]
+Description=OpenBrain local GGUF embedding server (EmbeddingGemma Q8)
+Documentation=https://github.com/TurboAnbeli/OpenBrain
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=openbrain
+Group=openbrain
+ExecStart=/usr/local/lib/ollama/llama-server -m /opt/openbrain/models/embeddinggemma/embeddinggemma-300M-Q8_0.gguf --embedding --pooling mean --embd-normalize 2 --alias google/embeddinggemma-300m,embeddinggemma-300M-Q8_0.gguf --host 127.0.0.1 --port 8096 -c 4096 -b 2048 -ub 2048 -np 2 --no-warmup
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=45s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+
+StateDirectory=openbrain-embedder
+CacheDirectory=openbrain-embedder
+LogsDirectory=openbrain-embedder
+UMask=0027
+
+MemoryHigh=2G
+MemoryMax=3G
+CPUQuota=250%
+TasksMax=256
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/opt/openbrain/models/embeddinggemma
+ReadWritePaths=/var/lib/openbrain-embedder /var/cache/openbrain-embedder /var/log/openbrain-embedder
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

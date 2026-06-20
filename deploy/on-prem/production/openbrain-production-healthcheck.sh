@@ -5,6 +5,8 @@ set -euo pipefail
 
 base_url="${OPENBRAIN_API_BASE_URL:-http://127.0.0.1:8000}"
 require_embedder="${OPENBRAIN_REQUIRE_EMBEDDER:-1}"
+expected_embedder_dim="${OPENBRAIN_EXPECT_EMBEDDER_DIM:-768}"
+require_reindex_clear="${OPENBRAIN_REQUIRE_REINDEX_CLEAR:-1}"
 attempts="${OPENBRAIN_HEALTHCHECK_ATTEMPTS:-20}"
 delay="${OPENBRAIN_HEALTHCHECK_DELAY:-1}"
 
@@ -55,15 +57,22 @@ PY
 
 if [[ "$require_embedder" == "1" ]]; then
   fetch "/embedder/info" "$tmpdir/embedder.json"
-  python3 - "$tmpdir/embedder.json" <<'PY'
+  python3 - "$tmpdir/embedder.json" "$expected_embedder_dim" "$require_reindex_clear" <<'PY'
 import json, sys
 body=json.load(open(sys.argv[1]))
+expected=int(sys.argv[2])
+require_reindex_clear=sys.argv[3] == '1'
 if not body.get("provider"):
     raise SystemExit(f"embedder provider missing: {body}")
-if body.get("dimensions") is None:
+dim=body.get("dimensions")
+if dim is None:
     raise SystemExit(f"embedder dimensions unavailable: {body}")
+if dim != expected:
+    raise SystemExit(f"embedder dimension mismatch: expected {expected}, got {dim}")
 if body.get("error"):
     raise SystemExit(f"embedder reports error: {body.get('error')}")
+if require_reindex_clear and body.get("reindex_required"):
+    raise SystemExit(f"document chunk reindex still required: {body.get('chunk_embedder_versions')}")
 PY
 fi
 
