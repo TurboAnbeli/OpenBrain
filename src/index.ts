@@ -26,8 +26,11 @@ import { createApi } from "./api/routes.js";
 import { createMcpServer } from "./mcp/server.js";
 import { checkAuth, oauthProtectedResourceMetadata } from "./auth.js";
 import { loadCrossEncoder } from "./api/cross_encoder.js";
+import { StaleReindexWorker } from "./jobs/stale-reindex-worker.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+
+let reindexWorker: StaleReindexWorker | null = null;
 
 async function main(): Promise<void> {
   console.log("╔══════════════════════════════════════════╗");
@@ -73,6 +76,14 @@ serve({ fetch: api.fetch, port: apiPort, hostname: apiHost, websocket: { server:
     console.log(`[api]   DELETE /memories/:id     — delete thought`);
     console.log(`[api]   GET  /stats             — brain statistics`);
     console.log(`[api]   GET  /health            — health check`);
+  });
+
+  // ── Stale-reindex background worker ──────────────────────────
+
+  reindexWorker = new StaleReindexWorker({ pool: getPool() });
+  // Don't await — runs in background
+  reindexWorker.start().catch((err) => {
+    console.error("[stale-reindex] Worker crashed:", err instanceof Error ? err.message : String(err));
   });
 
   // ── MCP Server (HTTP, both transports) ─────────────────────────
@@ -245,12 +256,14 @@ serve({ fetch: api.fetch, port: apiPort, hostname: apiHost, websocket: { server:
 // Graceful shutdown
 process.on("SIGINT", async () => {
   console.log("\n[shutdown] Received SIGINT, closing...");
+  reindexWorker?.stop();
   await closePool();
   process.exit(0);
 });
 
 process.on("SIGTERM", async () => {
   console.log("\n[shutdown] Received SIGTERM, closing...");
+  reindexWorker?.stop();
   await closePool();
   process.exit(0);
 });
