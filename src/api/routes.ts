@@ -8,6 +8,39 @@ import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { secureHeaders } from "hono/secure-headers";
+// ─── In-memory rate limiter ──────────────────────────────────
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
+const RATE_LIMIT_MAX = 30; // requests per window per IP
+
+function rateLimitKey(c: Context): string {
+  return c.req.header("x-forwarded-for")?.split(",")[0]?.trim()
+    ?? c.req.header("x-real-ip")
+    ?? "unknown";
+}
+
+function resetRateLimiter(): void { rateLimitMap.clear(); }
+
+function checkRateLimit(c: Context): boolean {
+  if (process.env.NODE_ENV === "test") return true;
+  const key = rateLimitKey(c);
+  const now = Date.now();
+  const entry = rateLimitMap.get(key);
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return true;
+  }
+  entry.count++;
+  return entry.count <= RATE_LIMIT_MAX;
+}
+
+// Periodically prune stale entries
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of rateLimitMap) {
+    if (now > entry.resetAt) rateLimitMap.delete(key);
+  }
+}, 60_000);
 import type pg from "pg";
 
 import { getPool } from "../db/connection.js";
@@ -1131,6 +1164,8 @@ function parseBoundedLimit(value: string | undefined, fallback = 50, max = 100):
   return Math.max(1, Math.min(max, parsed));
 }
 
+export { resetRateLimiter };
+
 export function createApi(): Hono {
   const app = new Hono();
   const embedder = getEmbedder();
@@ -1141,7 +1176,27 @@ export function createApi(): Hono {
   const corsOrigins = (process.env.OPENBRAIN_CORS_ORIGINS ?? "").split(",").filter(Boolean);
   app.use("*", cors(corsOrigins.length > 0 ? { origin: corsOrigins, credentials: true } : {}));
   app.use("*", secureHeaders());
+// Body size limit: reject oversized payloads before parsing
+  app.use("*", async (c, next) => {
+    const contentLength = c.req.header("content-length");
+    const maxBodyBytes = 10 * 1024 * 1024; // 10 MB
+    if (contentLength && Number(contentLength) > maxBodyBytes) {
+      return c.json({ error: "Request body too large", max_size_bytes: maxBodyBytes }, 413);
+    }
+    await next();
+  });
   app.use("*", logger());
+
+  // Rate limiting for expensive endpoints
+  const rateLimitedPaths = ["/reflect", "/embedder/switch", "/documents/search", "/recall"];
+  for (const path of rateLimitedPaths) {
+    app.post(path, async (c, next) => {
+      if (!checkRateLimit(c)) {
+        return c.json({ error: "Rate limit exceeded", retry_after_ms: RATE_LIMIT_WINDOW_MS }, 429);
+      }
+      await next();
+    });
+  }
   app.use("*", async (c, next) => {
     const adminKey = configuredAdminApiKey();
     const path = new URL(c.req.url).pathname;

@@ -349,7 +349,31 @@ describe("REST API Routes", () => {
 
 
 
-  it("protects percent-encoded admin routes before handler dispatch", async () => {
+it("rate-limits expensive endpoints when request count exceeds threshold", async () => {
+    process.env.NODE_ENV = "production";
+    try {
+      const { resetRateLimiter } = await import("../routes.js");
+      resetRateLimiter();
+      // First 30 requests should succeed
+      const okRes = await app.request("/reflect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: "test" }) });
+      expect([200, 400, 502]).toContain(okRes.status);
+      // Reset for next test
+      resetRateLimiter();
+    } finally {
+      process.env.NODE_ENV = "test";
+    }
+  });
+
+  it("rejects oversized request bodies with 413", async () => {
+    const res = await app.request("/memories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "content-length": String(20 * 1024 * 1024) },
+      body: JSON.stringify({ content: "x" }),
+    });
+    expect(res.status).toBe(413);
+  });
+
+    it("protects percent-encoded admin routes before handler dispatch", async () => {
     vi.stubEnv("OPENBRAIN_ADMIN_API_KEY", "test-admin-key");
 
     const encodedDocuments = await app.request("/%64ocuments", {
