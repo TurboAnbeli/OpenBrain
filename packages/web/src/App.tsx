@@ -1,20 +1,25 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import CodeMirror from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
 import { CheckCircle2, Database, FileText, GitCompare, Layers3, Pencil, RefreshCw, Save, Search, Upload, X } from "lucide-react";
 
 import { getDocument, getRevisionDiff, getStoredAdminApiKey, importUrlDocument, listDocumentChunks, listDocumentRevisions, listDocuments, reindexDocument, setStoredAdminApiKey, updateDocument, uploadDocument } from "./api";
-import { DirectiveAdminPanel } from "./DirectiveAdminPanel";
-import { ReflectPlaygroundPanel } from "./ReflectPlaygroundPanel";
-import { ProvenanceBrowserPanel } from "./ProvenanceBrowserPanel";
-import { BrainStateDashboard } from "./BrainStateDashboard";
 import { buildDocumentUpdatePayload, buildLineDiffRows, createDocumentDraft, isDocumentDraftDirty, type DocumentDraft } from "./editorState";
 import type { DocumentDetail, DocumentSummary } from "./types";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader } from "./components/ui/card";
 import { Input } from "./components/ui/input";
+
+const DirectiveAdminPanel = lazy(() => import("./DirectiveAdminPanel").then((m) => ({ default: m.DirectiveAdminPanel })));
+const BrainStateDashboard = lazy(() => import("./BrainStateDashboard").then((m) => ({ default: m.BrainStateDashboard })));
+const ReflectPlaygroundPanel = lazy(() => import("./ReflectPlaygroundPanel").then((m) => ({ default: m.ReflectPlaygroundPanel })));
+const ProvenanceBrowserPanel = lazy(() => import("./ProvenanceBrowserPanel").then((m) => ({ default: m.ProvenanceBrowserPanel })));
+
+function LazyPanel({ children }: { children: React.ReactNode }) {
+  return <Suspense fallback={<div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-6 text-center text-sm text-zinc-400">Loading panel…</div>}>{children}</Suspense>;
+}
 
 function formatDate(value: string | null) {
   if (!value) return "—";
@@ -272,10 +277,10 @@ export default function App() {
         </Card>
 
         <div className="grid gap-4">
-          <DirectiveAdminPanel />
-          <BrainStateDashboard />
-          <ReflectPlaygroundPanel />
-          <ProvenanceBrowserPanel />
+          <LazyPanel><DirectiveAdminPanel /></LazyPanel>
+          <LazyPanel><BrainStateDashboard /></LazyPanel>
+          <LazyPanel><ReflectPlaygroundPanel /></LazyPanel>
+          <LazyPanel><ProvenanceBrowserPanel /></LazyPanel>
 
           <Card>
             <CardHeader>
