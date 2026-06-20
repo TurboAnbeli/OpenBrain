@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createMemoryBankDirective, deleteMemoryBankDirective, listMemoryBankDirectives, reindexDocument, setStoredAdminApiKey, updateDocument, updateMemoryBankDirective } from "./api";
+import { createMemoryBankDirective, deleteMemoryBankDirective, listMemoryBankDirectives, reflect, reindexDocument, setStoredAdminApiKey, updateDocument, updateMemoryBankDirective } from "./api";
 
 describe("updateDocument", () => {
   afterEach(() => {
@@ -72,6 +72,60 @@ describe("updateDocument", () => {
     );
   });
 
+});
+
+describe("reflect API helper", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    setStoredAdminApiKey("");
+  });
+
+  it("POSTs reflect requests to /reflect without admin credentials", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          query: "what changed?",
+          bank_id: "openbrain",
+          evidence_count: 0,
+          model_used: "gemma4:31b:cloud",
+          answer: null,
+          reflect_telemetry: {
+            model: "gemma4:31b:cloud",
+            bank_id: "openbrain",
+            mental_model_count: 0,
+            observation_count: 0,
+            raw_fact_count: 0,
+            stale_mental_models: [],
+          },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }
+      )
+    );
+    setStoredAdminApiKey("test-admin-key");
+
+    const payload = {
+      query: "what changed?",
+      bank_id: "openbrain",
+      include_sources: false,
+      model_hint: "gemma4:31b:cloud",
+    };
+    const result = await reflect(payload);
+
+    expect(result.answer).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/web/api/reflect",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+    );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(init.headers).not.toHaveProperty("X-OpenBrain-Admin-Key");
+  });
 });
 
 describe("memory bank directive API helpers", () => {

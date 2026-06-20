@@ -131,6 +131,118 @@ export function importUrlDocument(url: string, title?: string, project?: string,
   });
 }
 
+export interface ReflectRequest {
+  query: string;
+  bank_id?: string;
+  project?: string;
+  created_by?: string;
+  model_hint?: string;
+  top_k?: number;
+  threshold?: number;
+  include_sources?: boolean;
+}
+
+export interface ReflectTelemetry {
+  model: string;
+  bank_id: string;
+  embedding_ms?: number;
+  search_ms?: number;
+  llm_ms?: number;
+  total_ms?: number;
+  mental_model_count: number;
+  observation_count: number;
+  raw_fact_count: number;
+  stale_mental_models: string[];
+  [key: string]: unknown;
+}
+
+export interface ReflectMemoryBankDirective {
+  id: string;
+  name: string;
+  severity: string;
+  priority: number;
+}
+
+export interface ReflectMemoryBank {
+  id: string;
+  name: string;
+  mission: string | null;
+  disposition: unknown;
+  directives: ReflectMemoryBankDirective[];
+}
+
+export interface ReflectMentalModel {
+  id: string;
+  name?: string;
+  query?: string;
+  content: string;
+  structured?: unknown;
+  tags?: string[];
+  trigger_tags?: string[];
+  priority?: number;
+  refresh_meta?: unknown;
+  stale?: boolean;
+  project?: string | null;
+  created_by?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  similarity?: number;
+}
+
+export interface ReflectObservation {
+  id: string;
+  content: string;
+  proof_count?: number;
+  tags?: string[];
+  trend?: string | null;
+  project?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  similarity?: number;
+}
+
+export interface ReflectRawFact {
+  id: string;
+  content: string;
+  type?: string;
+  topics?: string[];
+  project?: string | null;
+  created_at?: string | null;
+  similarity?: number;
+}
+
+export interface ReflectCascadeItem {
+  id: string;
+  label?: string | null;
+  content: string;
+}
+
+export interface ReflectResponse {
+  query: string;
+  bank_id: string;
+  evidence_count: number;
+  model_used: string;
+  answer: string | null;
+  reflect_telemetry: ReflectTelemetry;
+  cascade?: {
+    mental_models: ReflectCascadeItem[];
+    consolidated_observations: ReflectCascadeItem[];
+    raw_facts: ReflectCascadeItem[];
+  };
+  mental_models?: ReflectMentalModel[];
+  observations?: ReflectObservation[];
+  raw_facts?: ReflectRawFact[];
+  memory_bank?: ReflectMemoryBank | null;
+}
+
+export function reflect(payload: ReflectRequest) {
+  return requestJson<ReflectResponse>("/reflect", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export interface MemoryBankDirective {
   id: string;
   bank_id: string;
