@@ -199,6 +199,7 @@ export interface ReflectObservation {
   created_at?: string | null;
   updated_at?: string | null;
   similarity?: number;
+  stale?: boolean;
 }
 
 export interface ReflectRawFact {
@@ -209,6 +210,7 @@ export interface ReflectRawFact {
   project?: string | null;
   created_at?: string | null;
   similarity?: number;
+  stale?: boolean;
 }
 
 export interface ReflectCascadeItem {
@@ -280,6 +282,7 @@ export interface Experience {
   created_by: string | null;
   created_at: string | null;
   similarity?: number;
+  stale?: boolean;
 }
 
 export interface ExperienceFilters {
@@ -310,6 +313,7 @@ export interface MentalModel {
   created_at: string | null;
   updated_at: string | null;
   similarity?: number;
+  stale?: boolean;
 }
 
 export interface MentalModelFilters {
@@ -345,6 +349,7 @@ export interface ConsolidatedObservation {
   created_at: string | null;
   updated_at: string | null;
   similarity?: number;
+  stale?: boolean;
 }
 
 export interface ObservationSearchPayload {
@@ -566,4 +571,18 @@ export function updateConsolidatedObservation(id: string, payload: ConsolidatedO
     headers: adminHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
   });
+}
+
+export interface EmbedderInfo {
+  provider: string;
+  model: string;
+  dimension: number;
+  reindex_required: boolean;
+  total_chunks: number;
+  chunks_with_known_version: number;
+  chunks_with_unknown_version: number;
+}
+
+export function getEmbedderInfo() {
+  return requestJson<EmbedderInfo>("/embedder/info");
 }
