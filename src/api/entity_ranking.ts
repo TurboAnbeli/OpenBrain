@@ -29,7 +29,7 @@
  * keeps the fast path fast for queries that don't mention proper nouns.
  */
 
-import type { SearchResult } from "../db/queries.js";
+import type { EntitySearchResult, SearchResult } from "../db/queries.js";
 import { extractQueryEntities } from "./entity_extraction.js";
 
 const ENTITY_K = 30;   // lower k → higher weight for entity hits
@@ -43,6 +43,37 @@ export interface EntityRankedResult {
   proof_count: number;
   similarity?: number;
   overlap_count?: number;
+}
+
+export interface EntityRankedSearchResult extends EntityRankedResult {
+  similarity: number;
+}
+
+export interface EntityRankedEntityResult extends EntityRankedSearchResult {
+  overlap_count: number;
+}
+
+export function toEntityRankedSearchResults(results: SearchResult[]): EntityRankedSearchResult[] {
+  return results.map((result) => ({
+    id: result.id,
+    content: result.content,
+    metadata: result.metadata,
+    created_at: result.created_at,
+    proof_count: result.proof_count,
+    similarity: result.similarity,
+  }));
+}
+
+export function toEntityRankedEntityResults(results: EntitySearchResult[]): EntityRankedEntityResult[] {
+  return results.map((result) => ({
+    id: result.id,
+    content: result.content,
+    metadata: result.metadata,
+    created_at: result.created_at,
+    proof_count: result.proof_count,
+    overlap_count: result.overlap_count,
+    similarity: 0,
+  }));
 }
 
 export function shouldUseEntityRanking(query: string): boolean {
@@ -62,11 +93,11 @@ export function extractQueryEntityNames(query: string): string[] {
  * in the output for debugging.
  */
 export function entityWeightedRRF(
-  entityResults: Array<EntityRankedResult & { overlap_count: number }>,
-  otherResultsLists: EntityRankedResult[][],
+  entityResults: EntityRankedEntityResult[],
+  otherResultsLists: EntityRankedSearchResult[][],
   top: number = 10
-): EntityRankedResult[] {
-  const scored = new Map<string, { score: number; item: EntityRankedResult }>();
+): EntityRankedSearchResult[] {
+  const scored = new Map<string, { score: number; item: EntityRankedSearchResult }>();
 
   // Entity stream: weighted by lower k
   entityResults.forEach((r, idx) => {

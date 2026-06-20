@@ -119,6 +119,8 @@ import {
   shouldUseEntityRanking,
   extractQueryEntityNames,
   entityWeightedRRF,
+  toEntityRankedEntityResults,
+  toEntityRankedSearchResults,
 } from "./entity_ranking.js";
 import { extractEntities } from "./entity_extraction.js";
 import { guardExperienceRetainDirectives } from "./experience_guard.js";
@@ -1549,10 +1551,10 @@ export function createApi(): Hono {
       if (useEntity && entityResultsRaw.length > 0) {
         fusedResults = applyProofCountBoost(
           entityWeightedRRF(
-            entityResultsRaw as any,
-            [denseFused as any, bm25Results as any],
+            toEntityRankedEntityResults(entityResultsRaw),
+            [toEntityRankedSearchResults(denseFused), toEntityRankedSearchResults(bm25Results)],
             fusedLimit
-          ) as any
+          )
         );
       } else {
         fusedResults = applyProofCountBoost(

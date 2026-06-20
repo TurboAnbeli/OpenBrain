@@ -51,6 +51,8 @@ import {
   shouldUseEntityRanking,
   extractQueryEntityNames,
   entityWeightedRRF,
+  toEntityRankedEntityResults,
+  toEntityRankedSearchResults,
 } from "../api/entity_ranking.js";
 import { extractEntities } from "../api/entity_extraction.js";
 
@@ -417,10 +419,10 @@ export function createMcpServer(): Server {
           if (useEntity && entityResultsRaw.length > 0) {
             fusedResults = applyProofCountBoost(
               entityWeightedRRF(
-                entityResultsRaw as any,
-                [denseFused as any, bm25Results as any],
+                toEntityRankedEntityResults(entityResultsRaw),
+                [toEntityRankedSearchResults(denseFused), toEntityRankedSearchResults(bm25Results)],
                 fusedLimit
-              ) as any
+              )
             );
           } else {
             fusedResults = applyProofCountBoost(

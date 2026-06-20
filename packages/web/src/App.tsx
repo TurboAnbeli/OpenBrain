@@ -7,7 +7,7 @@ import { CheckCircle2, ChevronDown, ChevronRight, Database, Download, FileText, 
 import { exportAllDocuments, exportDocument, getDocument, getRevisionDiff, getStoredAdminApiKey, importUrlDocument, listDocumentChunks, listDocumentRevisions, listDocuments, reindexDocument, setStoredAdminApiKey, updateDocument, uploadDocument } from "./api";
 import { buildDocumentUpdatePayload, buildLineDiffRows, createDocumentDraft, isDocumentDraftDirty, type DocumentDraft } from "./editorState";
 import type { DocumentDetail, DocumentSummary } from "./types";
-import { useWebSocket } from "./hooks/useWebSocket";
+import { useWebSocket, type WsEventType } from "./hooks/useWebSocket";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader } from "./components/ui/card";
@@ -124,7 +124,7 @@ export default function App() {
   // Wire WebSocket events to TanStack Query cache invalidation
   useEffect(() => {
     const unsubs: (() => void)[] = [];
-    const events: Array<{ type: string; queryKeys: (string[])[] }> = [
+    const events: Array<{ type: WsEventType; queryKeys: (string[])[] }> = [
       { type: "document_updated", queryKeys: [["documents"], ["document"]] },
       { type: "document_created", queryKeys: [["documents"]] },
       { type: "document_deleted", queryKeys: [["documents"], ["document"]] },
@@ -132,7 +132,7 @@ export default function App() {
       { type: "revision_added", queryKeys: [["document-revisions"], ["document"]] },
     ];
     for (const evt of events) {
-      unsubs.push(wsSubscribe(evt.type as any, () => {
+      unsubs.push(wsSubscribe(evt.type, () => {
         for (const key of evt.queryKeys) {
           queryClient.invalidateQueries({ queryKey: key });
         }

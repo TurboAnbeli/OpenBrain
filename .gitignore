@@ -42,3 +42,7 @@ models/
 *.tsbuildinfo
 packages/*/vite.config.js
 packages/*/vite.config.d.ts
+
+# Local source backup artifacts
+*.bak
+*.backup-*
