@@ -1,10 +1,8 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import CodeMirror from "@uiw/react-codemirror";
-import { markdown } from "@codemirror/lang-markdown";
 import { CheckCircle2, ChevronDown, ChevronRight, Database, Download, FileText, GitCompare, Layers3, Pencil, RefreshCw, Save, Search, Upload, X } from "lucide-react";
 
-import { exportAllDocuments, exportDocument, getDocument, getRevisionDiff, getStoredAdminApiKey, importUrlDocument, listDocumentChunks, listDocumentRevisions, listDocuments, reindexDocument, setStoredAdminApiKey, updateDocument, uploadDocument } from "./api";
+import { assertOkResponse, exportAllDocuments, exportDocument, getDocument, getRevisionDiff, getStoredAdminApiKey, importUrlDocument, listDocumentChunks, listDocumentRevisions, listDocuments, reindexDocument, setStoredAdminApiKey, updateDocument, uploadDocument } from "./api";
 import { buildDocumentUpdatePayload, buildLineDiffRows, createDocumentDraft, isDocumentDraftDirty, type DocumentDraft } from "./editorState";
 import type { DocumentDetail, DocumentSummary } from "./types";
 import { useWebSocket, type WsEventType } from "./hooks/useWebSocket";
@@ -20,6 +18,34 @@ const ProvenanceBrowserPanel = lazy(() => import("./ProvenanceBrowserPanel").the
 
 function LazyPanel({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-6 text-center text-sm text-zinc-400">Loading panel…</div>}>{children}</Suspense>;
+}
+
+type LazyCodeMirrorProps = {
+  value: string;
+  height: string;
+  editable?: boolean;
+  onChange?: (value: string) => void;
+  basicSetup?: { lineNumbers?: boolean; foldGutter?: boolean };
+  theme?: "dark" | "light" | "none";
+};
+
+const LazyCodeMirror = lazy(async () => {
+  const [{ default: CodeMirror }, { markdown }] = await Promise.all([
+    import("@uiw/react-codemirror"),
+    import("@codemirror/lang-markdown"),
+  ]);
+  function MarkdownCodeMirror(props: LazyCodeMirrorProps) {
+    return <CodeMirror {...props} extensions={[markdown()]} />;
+  }
+  return { default: MarkdownCodeMirror };
+});
+
+function MarkdownEditor(props: LazyCodeMirrorProps) {
+  return (
+    <Suspense fallback={<div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-6 text-center text-sm text-zinc-400">Loading editor…</div>}>
+      <LazyCodeMirror {...props} />
+    </Suspense>
+  );
 }
 
 function formatDate(value: string | null) {
@@ -278,10 +304,7 @@ export default function App() {
     try {
       setExportError(null);
       const response = await exportDocument(docId);
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`${response.status} ${response.statusText}: ${text}`);
-      }
+      await assertOkResponse(response);
       const blob = await response.blob();
       downloadBlob(blob, safeDownloadName(docTitle, "md"));
     } catch (err) {
@@ -414,11 +437,10 @@ export default function App() {
                   <p className="mt-1 text-emerald-100/80">Saving records a revision, regenerates document chunks, and refreshes search embeddings automatically.</p>
                 </div>
                 <div className="min-w-0 overflow-hidden">
-                  <CodeMirror
+                  <MarkdownEditor
                     value={draft.content}
                     height="520px"
-                    extensions={[markdown()]}
-                    editable
+                                        editable
                     onChange={(value) => setDraft((current) => ({ ...current, content: value }))}
                     basicSetup={{ lineNumbers: true, foldGutter: true }}
                     theme="dark"
@@ -438,11 +460,10 @@ export default function App() {
               </div>
             ) : (
               <div className="min-w-0 overflow-hidden">
-                <CodeMirror
+                <MarkdownEditor
                   value={detailQuery.data.content}
                   height="420px"
-                  extensions={[markdown()]}
-                  editable={false}
+                                    editable={false}
                   basicSetup={{ lineNumbers: true, foldGutter: true }}
                   theme="dark"
                 />

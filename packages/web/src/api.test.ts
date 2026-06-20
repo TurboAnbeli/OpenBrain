@@ -1,11 +1,43 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createMemoryBankDirective, deleteMemoryBankDirective, expandMemoryLinks, exportAllDocuments, exportDocument, listExperiences, listMemoryBankDirectives, listMemoryLinks, listMentalModels, reflect, reindexDocument, searchConsolidatedObservations, setStoredAdminApiKey, updateDocument, updateMemoryBankDirective } from "./api";
+import { createMemoryBankDirective, deleteMemoryBankDirective, expandMemoryLinks, exportAllDocuments, exportDocument, getDocument, getRevisionDiff, listDocumentChunks, listDocumentRevisions, listExperiences, listMemoryBankDirectives, listMemoryLinks, listMentalModels, reflect, reindexDocument, searchConsolidatedObservations, setStoredAdminApiKey, getStoredAdminApiKey, updateDocument, updateMemoryBankDirective } from "./api";
 
 describe("updateDocument", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     setStoredAdminApiKey("");
+  });
+
+  it("stores admin API keys under the stable OpenBrain namespace", () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    });
+
+    setStoredAdminApiKey("test-admin-key");
+
+    expect(storage.get("openbrain.admin_api_key")).toBe("test-admin-key");
+    expect(getStoredAdminApiKey()).toBe("test-admin-key");
+
+    setStoredAdminApiKey("");
+    expect(storage.has("openbrain.admin_api_key")).toBe(false);
+  });
+
+  it("migrates admin API keys from the legacy truncated storage key", () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    });
+    const legacyKey = "openbrain" + "_admin_api_" + "key";
+    storage.set(legacyKey, "legacy-admin-key");
+
+    expect(getStoredAdminApiKey()).toBe("legacy-admin-key");
+    expect(storage.get("openbrain.admin_api_key")).toBe("legacy-admin-key");
+    expect(storage.has(legacyKey)).toBe(false);
   });
 
   it("PATCHes the document editor payload to /documents/:id", async () => {
@@ -36,6 +68,33 @@ describe("updateDocument", () => {
         }),
       })
     );
+  });
+
+  it("encodes document IDs in path helpers", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ id: "doc/1", title: "Encoded", content: "Body", count: 0, revisions: [], chunks: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    await getDocument("doc/1");
+    await updateDocument("doc/1", { title: "Encoded" });
+    await listDocumentRevisions("doc/1");
+    await getRevisionDiff("doc/1", 2);
+    await listDocumentChunks("doc/1");
+    await reindexDocument("doc/1");
+    await exportDocument("doc/1");
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/web/api/documents/doc%2F1",
+      "/web/api/documents/doc%2F1",
+      "/web/api/documents/doc%2F1/revisions",
+      "/web/api/documents/doc%2F1/revisions/2/diff",
+      "/web/api/documents/doc%2F1/chunks",
+      "/web/api/documents/doc%2F1/reindex",
+      "/web/api/documents/doc%2F1/export",
+    ]);
   });
 
   it("sends the stored admin API key on protected document actions", async () => {

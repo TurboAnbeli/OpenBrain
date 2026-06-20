@@ -58,16 +58,22 @@ function bundleMetrics() {
   let js = 0;
   let css = 0;
   let gzip = 0;
+  let webMainStaticCodemirrorImport = false;
   const chunks = [];
   try {
     for (const file of walk(dist)) {
       const bytes = statSync(file).size;
-      const gz = gzipSync(readFileSync(file)).length;
+      const content = readFileSync(file);
+      const gz = gzipSync(content).length;
       total += bytes;
       gzip += gz;
+      const relativePath = relative(dist, file);
+      if (/^assets\/index-.*\.js$/.test(relativePath) && content.toString("utf8").includes("from\"./codemirror-")) {
+        webMainStaticCodemirrorImport = true;
+      }
       if (file.endsWith(".js")) js += bytes;
       if (file.endsWith(".css")) css += bytes;
-      chunks.push({ path: relative(dist, file), bytes, gzip_bytes: gz });
+      chunks.push({ path: relativePath, bytes, gzip_bytes: gz });
     }
   } catch {
     return { web_dist_present: false };
@@ -79,6 +85,7 @@ function bundleMetrics() {
     web_dist_js_bytes: js,
     web_dist_css_bytes: css,
     web_dist_gzip_bytes: gzip,
+    web_main_static_codemirror_import: webMainStaticCodemirrorImport,
     largest_web_chunks: chunks.slice(0, 8),
   };
 }
@@ -97,6 +104,9 @@ if (CHECK) {
     if (typeof metrics[key] === "number" && metrics[key] > max) {
       failures.push(key + "=" + metrics[key] + " exceeds budget " + max);
     }
+  }
+  if (metrics.web_main_static_codemirror_import) {
+    failures.push("main bundle statically imports codemirror chunk");
   }
   if (failures.length > 0) {
     console.error("Optimization metric budget failures:");

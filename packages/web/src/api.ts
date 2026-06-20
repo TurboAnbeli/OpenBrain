@@ -2,13 +2,23 @@ import type { DocumentChunk, DocumentDetail, DocumentRevision, DocumentSummary, 
 
 const API_BASE = import.meta.env.VITE_OPENBRAIN_API_URL ?? "/web/api";
 
-const ADMIN_API_KEY_STORAGE_KEY = "openbrain_admin_api_key";
+const ADMIN_API_KEY_STORAGE_KEY = "openbrain.admin_api_key";
+const LEGACY_ADMIN_API_KEY_STORAGE_KEYS = ["openbrain" + "_admin_api_" + "key"];
 let adminApiKeyFallback: string | undefined;
 
 export function getStoredAdminApiKey(): string | undefined {
   try {
-    const stored = globalThis.sessionStorage?.getItem(ADMIN_API_KEY_STORAGE_KEY)?.trim();
+    const storage = globalThis.sessionStorage;
+    const stored = storage?.getItem(ADMIN_API_KEY_STORAGE_KEY)?.trim();
     if (stored) return stored;
+    for (const legacyKey of LEGACY_ADMIN_API_KEY_STORAGE_KEYS) {
+      const legacy = storage?.getItem(legacyKey)?.trim();
+      if (legacy) {
+        storage?.setItem(ADMIN_API_KEY_STORAGE_KEY, legacy);
+        storage?.removeItem(legacyKey);
+        return legacy;
+      }
+    }
   } catch {
     // sessionStorage may be unavailable in tests, SSR, or hardened browser contexts.
   }
@@ -19,10 +29,12 @@ export function setStoredAdminApiKey(key: string): void {
   const trimmed = key.trim();
   adminApiKeyFallback = trimmed || undefined;
   try {
+    const storage = globalThis.sessionStorage;
+    for (const legacyKey of LEGACY_ADMIN_API_KEY_STORAGE_KEYS) storage?.removeItem(legacyKey);
     if (trimmed) {
-      globalThis.sessionStorage?.setItem(ADMIN_API_KEY_STORAGE_KEY, trimmed);
+      storage?.setItem(ADMIN_API_KEY_STORAGE_KEY, trimmed);
     } else {
-      globalThis.sessionStorage?.removeItem(ADMIN_API_KEY_STORAGE_KEY);
+      storage?.removeItem(ADMIN_API_KEY_STORAGE_KEY);
     }
   } catch {
     // Keep the in-memory fallback so non-browser tests still exercise header wiring.
@@ -34,13 +46,23 @@ function adminHeaders(base: Record<string, string> = {}): Record<string, string>
   return key ? { ...base, "X-OpenBrain-Admin-Key": key } : base;
 }
 
+function pathId(id: string): string {
+  return encodeURIComponent(id);
+}
+
+
+export async function responseError(response: Response): Promise<Error> {
+  const text = await response.text();
+  return new Error(response.status + " " + response.statusText + ": " + text);
+}
+
+export async function assertOkResponse(response: Response): Promise<void> {
+  if (!response.ok) throw await responseError(response);
+}
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, init);
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`${response.status} ${response.statusText}: ${text}`);
-  }
+  const response = await fetch(API_BASE + path, init);
+  await assertOkResponse(response);
   return response.json() as Promise<T>;
 }
 
@@ -65,11 +87,11 @@ export function listDocuments(filters: DocumentListFilters) {
 }
 
 export function getDocument(id: string) {
-  return requestJson<DocumentDetail>(`/documents/${id}`);
+  return requestJson<DocumentDetail>("/documents/" + pathId(id));
 }
 
 export function updateDocument(id: string, payload: UpdateDocumentInput) {
-  return requestJson<DocumentDetail>(`/documents/${id}`, {
+  return requestJson<DocumentDetail>("/documents/" + pathId(id), {
     method: "PATCH",
     headers: adminHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
@@ -77,17 +99,17 @@ export function updateDocument(id: string, payload: UpdateDocumentInput) {
 }
 
 export function listDocumentRevisions(id: string) {
-  return requestJson<{ document_id: string; count: number; revisions: DocumentRevision[] }>(`/documents/${id}/revisions`);
+  return requestJson<{ document_id: string; count: number; revisions: DocumentRevision[] }>("/documents/" + pathId(id) + "/revisions");
 }
 
 export function getRevisionDiff(id: string, revisionNumber: number) {
   return requestJson<{ document_id: string; revision_number: number; revision: DocumentRevision; current: DocumentDetail; diff: RevisionDiff }>(
-    `/documents/${id}/revisions/${revisionNumber}/diff`
+    "/documents/" + pathId(id) + "/revisions/" + revisionNumber + "/diff"
   );
 }
 
 export function listDocumentChunks(id: string) {
-  return requestJson<{ document_id: string; count: number; chunks: DocumentChunk[] }>(`/documents/${id}/chunks`);
+  return requestJson<{ document_id: string; count: number; chunks: DocumentChunk[] }>("/documents/" + pathId(id) + "/chunks");
 }
 
 export interface ReindexResult {
@@ -99,7 +121,7 @@ export interface ReindexResult {
 }
 
 export function reindexDocument(id: string) {
-  return requestJson<ReindexResult>(`/documents/${id}/reindex`, {
+  return requestJson<ReindexResult>("/documents/" + pathId(id) + "/reindex", {
     method: "POST",
     headers: adminHeaders({ "Content-Type": "application/json" }),
   });
@@ -594,16 +616,9 @@ export interface ExportAllBundle {
 }
 
 export function exportDocument(id: string): Promise<Response> {
-  return fetch(`${API_BASE}/documents/${id}/export`, { headers: adminHeaders() });
+  return fetch(API_BASE + "/documents/" + pathId(id) + "/export", { headers: adminHeaders() });
 }
 
-export async function exportAllDocuments(): Promise<ExportAllBundle> {
-  const response = await fetch(`${API_BASE}/documents/export-all`, {
-    headers: adminHeaders(),
-  });
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`${response.status} ${response.statusText}: ${text}`);
-  }
-  return response.json() as Promise<ExportAllBundle>;
+export function exportAllDocuments(): Promise<ExportAllBundle> {
+  return requestJson<ExportAllBundle>("/documents/export-all", { headers: adminHeaders() });
 }
