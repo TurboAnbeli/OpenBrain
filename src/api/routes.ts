@@ -1186,12 +1186,19 @@ export function createApi(): Hono {
     await next();
   });
   app.use("*", logger());
+  app.use("*", async (c, next) => {
+    await next();
+    if (c.req.path.startsWith("/web/api/")) {
+      c.header("Cache-Control", "no-store");
+    }
+  });
 
   // Rate limiting for expensive endpoints
   const rateLimitedPaths = ["/reflect", "/embedder/switch", "/documents/search", "/recall"];
   for (const path of rateLimitedPaths) {
     app.post(path, async (c, next) => {
       if (!checkRateLimit(c)) {
+        c.header("Retry-After", String(RATE_LIMIT_WINDOW_MS / 1000));
         return c.json({ error: "Rate limit exceeded", retry_after_ms: RATE_LIMIT_WINDOW_MS }, 429);
       }
       await next();
