@@ -124,31 +124,13 @@ import { extractEntities } from "./entity_extraction.js";
 import { guardExperienceRetainDirectives } from "./experience_guard.js";
 import { chunkMarkdown } from "../import/markdown.js";
 
-const HYDE_MODEL = process.env.OPENBRAIN_HYDE_MODEL ?? "smollm2:1.7b";
-const HYDE_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
-const HYDE_ENABLED = (process.env.OPENBRAIN_HYDE_ENABLED ?? "true").toLowerCase() !== "false";
-// HyDE confidence cascade: skip the ~1.5 s hypothetical-answer generation when
-// the dense top hit is already strong. A confident match doesn't benefit from
-// expansion, and HyDE can dilute it (measured regression on confident
-// paraphrase queries, e.g. paraphrase-002 rank 3 → 7). Tunable for A/B.
-const HYDE_CONF_THRESHOLD = parseFloat(process.env.OPENBRAIN_HYDE_CONF_THRESHOLD ?? "0.66");
-const RERANK_MODEL =
-  process.env.OPENBRAIN_RERANK_MODEL ??
-  process.env.OPENBRAIN_HYDE_MODEL ??
-  "smollm2:1.7b";
-const RERANK_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
-const RERANK_ENABLED = (process.env.OPENBRAIN_RERANK_ENABLED ?? "true").toLowerCase() !== "false";
-const RERANK_TOPN = parseInt(process.env.OPENBRAIN_RERANK_TOPN ?? "6", 10);
-// MS MARCO cross-encoder OFF by default — measured regression on this KB
-// (2026-06-09 eval: standard R@1 77.4% → 68.8%, negation pass 0/5). Opt in
-// with OPENBRAIN_CROSS_ENCODER_ENABLED=true for A/B testing.
-const CROSS_ENCODER_ENABLED =
-  (process.env.OPENBRAIN_CROSS_ENCODER_ENABLED ?? "false").toLowerCase() === "true";
-const DEDUP_ENABLED = (process.env.OPENBRAIN_DEDUP_ENABLED ?? "true").toLowerCase() !== "false";
-const DEDUP_THRESHOLD = parseFloat(process.env.OPENBRAIN_DEDUP_THRESHOLD ?? "0.95");
-const SYNTHESIS_MODEL =
-  process.env.OPENBRAIN_SYNTHESIS_MODEL ?? "qwen3:1.7b";
-const SYNTHESIS_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
+// Search pipeline configuration — centralized in config/search.ts
+import {
+  HYDE_MODEL, HYDE_ENDPOINT, HYDE_ENABLED, HYDE_CONF_THRESHOLD,
+  RERANK_MODEL, RERANK_ENDPOINT, RERANK_ENABLED, RERANK_TOPN,
+  CROSS_ENCODER_ENABLED, DEDUP_ENABLED, DEDUP_THRESHOLD,
+  SYNTHESIS_MODEL, SYNTHESIS_ENDPOINT,
+} from "../config/search.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

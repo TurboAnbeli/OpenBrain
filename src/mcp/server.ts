@@ -54,24 +54,13 @@ import {
 } from "../api/entity_ranking.js";
 import { extractEntities } from "../api/entity_extraction.js";
 
-const HYDE_MODEL = process.env.OPENBRAIN_HYDE_MODEL ?? "smollm2:1.7b";
-const HYDE_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
-const HYDE_ENABLED = (process.env.OPENBRAIN_HYDE_ENABLED ?? "true").toLowerCase() !== "false";
-const RERANK_MODEL =
-  process.env.OPENBRAIN_RERANK_MODEL ??
-  process.env.OPENBRAIN_HYDE_MODEL ??
-  "smollm2:1.7b";
-const RERANK_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
-const RERANK_ENABLED = (process.env.OPENBRAIN_RERANK_ENABLED ?? "true").toLowerCase() !== "false";
-const RERANK_TOPN = parseInt(process.env.OPENBRAIN_RERANK_TOPN ?? "6", 10);
-// MS MARCO cross-encoder OFF by default — see routes.ts note.
-const CROSS_ENCODER_ENABLED =
-  (process.env.OPENBRAIN_CROSS_ENCODER_ENABLED ?? "false").toLowerCase() === "true";
-const DEDUP_ENABLED = (process.env.OPENBRAIN_DEDUP_ENABLED ?? "true").toLowerCase() !== "false";
-const DEDUP_THRESHOLD = parseFloat(process.env.OPENBRAIN_DEDUP_THRESHOLD ?? "0.95");
-const SYNTHESIS_MODEL =
-  process.env.OPENBRAIN_SYNTHESIS_MODEL ?? "qwen3:1.7b";
-const SYNTHESIS_ENDPOINT = process.env.OLLAMA_ENDPOINT ?? "http://127.0.0.1:11434";
+// Search pipeline configuration — centralized in config/search.ts
+import {
+  HYDE_MODEL, HYDE_ENDPOINT, HYDE_ENABLED,
+  RERANK_MODEL, RERANK_ENDPOINT, RERANK_ENABLED, RERANK_TOPN,
+  CROSS_ENCODER_ENABLED, DEDUP_ENABLED, DEDUP_THRESHOLD,
+  SYNTHESIS_MODEL, SYNTHESIS_ENDPOINT,
+} from "../config/search.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
