@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Brain, Clock3, MessageSquareText, Sparkles } from "lucide-react";
 
@@ -43,7 +43,13 @@ function buildReflectPayload(values: {
   return payload;
 }
 
-function SourceCard({ title, subtitle, content }: { title: string; subtitle?: string | null; content: string }) {
+export interface ReflectPlaygroundPanelProps {
+  prefilledQuery?: string | null;
+  onObservationClick?: (id: string) => void;
+  onMentalModelClick?: (id: string, query: string) => void;
+}
+
+function SourceCard({ title, subtitle, content, action }: { title: string; subtitle?: string | null; content: string; action?: React.ReactNode }) {
   return (
     <article className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -51,11 +57,20 @@ function SourceCard({ title, subtitle, content }: { title: string; subtitle?: st
         {subtitle ? <Badge>{subtitle}</Badge> : null}
       </div>
       <p className="mt-2 whitespace-pre-wrap text-sm text-zinc-300">{content}</p>
+      {action ? <div className="mt-2">{action}</div> : null}
     </article>
   );
 }
 
-function SourceSections({ result }: { result: ReflectResponse }) {
+function SourceSections({
+  result,
+  onObservationClick,
+  onMentalModelClick,
+}: {
+  result: ReflectResponse;
+  onObservationClick?: (id: string) => void;
+  onMentalModelClick?: (id: string, query: string) => void;
+}) {
   const mentalModels = result.mental_models ?? [];
   const observations = result.observations ?? [];
   const rawFacts = result.raw_facts ?? [];
@@ -94,6 +109,11 @@ function SourceSections({ result }: { result: ReflectResponse }) {
                 title={model.name ?? model.query ?? model.id}
                 subtitle={model.stale ? "stale" : formatSimilarity(model.similarity)}
                 content={model.content}
+                action={onMentalModelClick ? (
+                  <Button type="button" onClick={() => onMentalModelClick(model.id, model.query ?? model.name ?? "")} aria-label={`Inspect mental model ${model.id}`}>
+                    <MessageSquareText className="mr-2 h-4 w-4" /> Inspect
+                  </Button>
+                ) : undefined}
               />
             ))}
           </div>
@@ -110,6 +130,11 @@ function SourceSections({ result }: { result: ReflectResponse }) {
                 title={observation.trend ? `Observation · ${observation.trend}` : "Observation"}
                 subtitle={observation.proof_count !== undefined ? `${observation.proof_count} proofs` : formatSimilarity(observation.similarity)}
                 content={observation.content}
+                action={onObservationClick ? (
+                  <Button type="button" onClick={() => onObservationClick(observation.id)} aria-label={`Inspect observation ${observation.id}`}>
+                    <MessageSquareText className="mr-2 h-4 w-4" /> Inspect
+                  </Button>
+                ) : undefined}
               />
             ))}
           </div>
@@ -135,7 +160,7 @@ function SourceSections({ result }: { result: ReflectResponse }) {
   );
 }
 
-export function ReflectPlaygroundPanel() {
+export function ReflectPlaygroundPanel({ prefilledQuery, onObservationClick, onMentalModelClick }: ReflectPlaygroundPanelProps) {
   const [query, setQuery] = useState("");
   const [bankId, setBankId] = useState("openbrain");
   const [modelHint, setModelHint] = useState("");
@@ -144,6 +169,12 @@ export function ReflectPlaygroundPanel() {
   const [includeSources, setIncludeSources] = useState(true);
   const [lastIncludedSources, setLastIncludedSources] = useState(true);
   const [validationError, setValidationError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (prefilledQuery != null && prefilledQuery !== "") {
+      setQuery(prefilledQuery);
+    }
+  }, [prefilledQuery]);
 
   const reflectMutation = useMutation({ mutationFn: (payload: ReflectRequest) => reflect(payload) });
   const result = reflectMutation.data;
@@ -251,7 +282,7 @@ export function ReflectPlaygroundPanel() {
               </div>
             ) : null}
 
-            {lastIncludedSources ? <SourceSections result={result} /> : <p className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-sm text-zinc-400">Sources omitted for this reflection.</p>}
+            {lastIncludedSources ? <SourceSections result={result} onObservationClick={onObservationClick} onMentalModelClick={onMentalModelClick} /> : <p className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-sm text-zinc-400">Sources omitted for this reflection.</p>}
           </div>
         ) : null}
       </CardContent>

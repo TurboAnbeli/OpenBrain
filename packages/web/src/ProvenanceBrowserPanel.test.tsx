@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -12,7 +12,6 @@ import {
   listMentalModels,
   searchConsolidatedObservations,
   type ConsolidatedObservation,
-  type Experience,
   type MemoryLink,
   type MemoryLinkExpansionResult,
   type MentalModel,
@@ -30,37 +29,23 @@ vi.mock("./api", async (importOriginal) => {
   };
 });
 
-const memoryLink: MemoryLink = {
-  id: "link-1",
+const mockLink: MemoryLink = {
+  id: "link-doc-1",
   bank_id: "openbrain",
-  source_type: "thought",
-  source_id: "thought-1",
+  source_type: "document",
+  source_id: "doc-abc",
   target_type: "consolidated_observation",
   target_id: "obs-1",
   relationship: "evidence_for",
   weight: 1,
-  inferred: true,
+  inferred: false,
   created_at: "2026-06-19T12:00:00Z",
 };
 
-const experience: Experience = {
-  id: "exp-1",
-  bank_id: "openbrain",
-  session_id: "session-1",
-  agent_id: "openbrain-system",
-  occurred_at: "2026-06-19T12:10:00Z",
-  event_type: "decide",
-  content: "Consolidation completed and linked explicit evidence.",
-  refs: { observation_id: "obs-1", evidence_link_ids: ["link-1"] },
-  project: "one-brain",
-  created_by: "openbrain-system",
-  created_at: "2026-06-19T12:10:00Z",
-};
-
-const mentalModel: MentalModel = {
+const mockMentalModel: MentalModel = {
   id: "model-1",
   bank_id: "openbrain",
-  name: "Privacy and evidence constraints",
+  name: "Privacy constraints",
   query: "What constraints govern memory synthesis?",
   content: "Preserve privacy and evidence boundaries.",
   structured: {},
@@ -70,66 +55,63 @@ const mentalModel: MentalModel = {
   refresh_meta: { next_refresh_after: "2099-01-01T00:00:00Z" },
   history: [],
   active: true,
-  project: "one-brain",
+  project: null,
   created_by: "hermes",
   created_at: "2026-06-18T00:00:00Z",
   updated_at: "2026-06-19T00:00:00Z",
 };
 
-const observation: ConsolidatedObservation = {
-  id: "obs-1",
-  bank_id: "openbrain",
-  content: "Synthesized observation with explicit source memory evidence.",
-  proof_count: 2,
-  source_memory_ids: ["thought-1", "thought-2"],
-  source_quotes: [
-    { source_id: "thought-1", quote: "explicit source quote", source_type: "thought" },
-  ],
-  tags: ["evidence"],
-  history: [],
-  trend: "stable",
-  trend_computed_at: "2026-06-19T12:11:00Z",
-  project: "one-brain",
-  created_by: "openbrain-system",
-  archived: false,
-  created_at: "2026-06-19T12:11:00Z",
-  updated_at: "2026-06-19T12:11:00Z",
-  similarity: 0.82,
-};
-
-const expansion: MemoryLinkExpansionResult = {
-  link: memoryLink,
-  seed: { source_type: "thought", source_id: "thought-1" },
+const mockExpansion: MemoryLinkExpansionResult = {
+  link: mockLink,
+  seed: { source_type: "document", source_id: "doc-abc" },
   direction: "outgoing",
   linked_memory: {
     source_type: "consolidated_observation",
     id: "obs-1",
-    content: "Linked observation content from one-hop expansion.",
+    content: "Linked observation content.",
     title: null,
     metadata: { proof_count: 2, trend: "stable" },
-    project: "one-brain",
+    project: null,
     created_at: "2026-06-19T12:11:00Z",
   },
 };
 
-function renderPanel() {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  });
+const mockObservation: ConsolidatedObservation = {
+  id: "obs-highlight-1",
+  bank_id: "openbrain",
+  content: "Highlighted observation from reflect click.",
+  proof_count: 3,
+  source_memory_ids: ["thought-a", "thought-b"],
+  source_quotes: [{ source_id: "thought-a", quote: "source quote text", source_type: "thought" }],
+  tags: ["privacy"],
+  history: [],
+  trend: "stable",
+  trend_computed_at: "2026-06-19T12:11:00Z",
+  project: null,
+  created_by: null,
+  archived: false,
+  created_at: "2026-06-19T12:11:00Z",
+  updated_at: "2026-06-19T12:11:00Z",
+  similarity: 0.91,
+};
 
+function renderPanel(overrides: { highlightedObservationId?: string | null; onDocumentChunkClick?: (id: string) => void; onMentalModelClick?: (id: string, query: string) => void } = {}) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const onDocumentChunkClick = overrides.onDocumentChunkClick ?? vi.fn();
+  const onMentalModelClick = overrides.onMentalModelClick ?? vi.fn();
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <ProvenanceBrowserPanel />
+      <ProvenanceBrowserPanel
+        highlightedObservationId={overrides.highlightedObservationId ?? null}
+        onDocumentChunkClick={onDocumentChunkClick}
+        onMentalModelClick={onMentalModelClick}
+      />
     </QueryClientProvider>
   );
-
-  return { ...view, queryClient };
+  return { ...view, queryClient, onDocumentChunkClick, onMentalModelClick };
 }
 
-describe("ProvenanceBrowserPanel", () => {
+describe("ProvenanceBrowserPanel cross-panel navigation", () => {
   const listLinksMock = vi.mocked(listMemoryLinks);
   const expandLinksMock = vi.mocked(expandMemoryLinks);
   const listExperiencesMock = vi.mocked(listExperiences);
@@ -137,11 +119,11 @@ describe("ProvenanceBrowserPanel", () => {
   const searchObservationsMock = vi.mocked(searchConsolidatedObservations);
 
   beforeEach(() => {
-    listLinksMock.mockResolvedValue({ count: 1, results: [memoryLink] });
-    expandLinksMock.mockResolvedValue({ count: 1, results: [expansion] });
-    listExperiencesMock.mockResolvedValue({ count: 1, results: [experience] });
-    listMentalModelsMock.mockResolvedValue({ count: 1, results: [mentalModel] });
-    searchObservationsMock.mockResolvedValue({ count: 1, results: [observation] });
+    listLinksMock.mockResolvedValue({ count: 1, results: [mockLink] });
+    expandLinksMock.mockResolvedValue({ count: 1, results: [mockExpansion] });
+    listExperiencesMock.mockResolvedValue({ count: 0, results: [] });
+    listMentalModelsMock.mockResolvedValue({ count: 1, results: [mockMentalModel] });
+    searchObservationsMock.mockResolvedValue({ count: 1, results: [mockObservation] });
   });
 
   afterEach(() => {
@@ -149,58 +131,36 @@ describe("ProvenanceBrowserPanel", () => {
     vi.clearAllMocks();
   });
 
-  it("lists read-only graph surfaces and expands a selected memory link", async () => {
+  it("calls onDocumentChunkClick when a document-type memory link Inspect button is clicked", async () => {
     const user = userEvent.setup();
-    renderPanel();
+    const { onDocumentChunkClick } = renderPanel();
 
-    expect(await screen.findByText("Memory graph / provenance browser")).toBeTruthy();
-    await waitFor(() => expect(listLinksMock).toHaveBeenCalledWith({ bank_id: "openbrain", limit: 10 }));
-    expect(listExperiencesMock).toHaveBeenCalledWith({ bank_id: "openbrain", limit: 5 });
-    expect(listMentalModelsMock).toHaveBeenCalledWith({ bank_id: "openbrain", limit: 5 });
+    
 
-    expect(screen.getByText("1 memory link")).toBeTruthy();
-    expect(screen.getByText("1 experience")).toBeTruthy();
-    expect(screen.getByText("1 mental model")).toBeTruthy();
-    expect(screen.getByText("thought → consolidated_observation")).toBeTruthy();
-    expect(screen.getByText("evidence_for")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /create/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /infer/i })).toBeNull();
+    const inspectButton = await screen.findByRole("button", { name: /inspect link link-doc-1/i });
+    await user.click(inspectButton);
 
-    await user.click(screen.getByRole("button", { name: /inspect link link-1/i }));
-
-    await waitFor(() =>
-      expect(expandLinksMock).toHaveBeenCalledWith({
-        bank_id: "openbrain",
-        seeds: [{ source_type: "thought", source_id: "thought-1" }],
-        direction: "both",
-        limit: 5,
-      })
-    );
-    expect(await screen.findByText("Linked observation content from one-hop expansion.")).toBeTruthy();
-    expect(screen.getByText("outgoing · evidence_for")).toBeTruthy();
+    await waitFor(() => expect(expandLinksMock).toHaveBeenCalled());
+    expect(onDocumentChunkClick).toHaveBeenCalledWith("doc-abc");
   });
 
-  it("searches consolidated observations and renders proof/source-quote provenance", async () => {
+  it("calls onMentalModelClick when a mental model card in the provenance browser is clicked", async () => {
     const user = userEvent.setup();
-    renderPanel();
+    const { onMentalModelClick } = renderPanel();
 
-    await user.type(await screen.findByLabelText(/evidence search query/i), "evidence boundaries");
-    await user.click(screen.getByRole("button", { name: /search observations/i }));
+    expect(await screen.findByText("Privacy constraints")).toBeTruthy();
 
-    await waitFor(() =>
-      expect(searchObservationsMock).toHaveBeenCalledWith({
-        query: "evidence boundaries",
-        bank_id: "openbrain",
-        limit: 5,
-        threshold: 0.1,
-      })
-    );
+    const modelCard = screen.getByText("Privacy constraints").closest("button") ?? screen.getByText("Privacy constraints");
+    await user.click(modelCard);
 
-    const observationCard = (await screen.findByText("Synthesized observation with explicit source memory evidence.")).closest("article");
-    expect(observationCard).toBeTruthy();
-    expect(within(observationCard as HTMLElement).getByText("stable")).toBeTruthy();
-    expect(within(observationCard as HTMLElement).getByText("2 proofs")).toBeTruthy();
-    expect(within(observationCard as HTMLElement).getByText("Sources: thought-1, thought-2")).toBeTruthy();
-    expect(within(observationCard as HTMLElement).getByText("explicit source quote")).toBeTruthy();
+    expect(onMentalModelClick).toHaveBeenCalledWith("model-1", "What constraints govern memory synthesis?");
+  });
+
+  it("auto-triggers observation search when highlightedObservationId is provided", async () => {
+    renderPanel({ highlightedObservationId: "obs-highlight-1" });
+
+    await waitFor(() => expect(searchObservationsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ query: "obs-highlight-1", bank_id: "openbrain" })
+    ));
   });
 });

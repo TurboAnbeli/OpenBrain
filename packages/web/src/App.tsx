@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import CodeMirror from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
@@ -70,6 +70,40 @@ export default function App() {
   const [draft, setDraft] = useState<DocumentDraft>(emptyDraft);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [adminKeyInput, setAdminKeyInput] = useState(() => getStoredAdminApiKey() ?? "");
+
+  // Cross-panel navigation state
+  const [navigateToDocumentId, setNavigateToDocumentId] = useState<string | null>(null);
+  const [navigateToObservationId, setNavigateToObservationId] = useState<string | null>(null);
+  const [navigateToReflectQuery, setNavigateToReflectQuery] = useState<string | null>(null);
+  const [navigateToMentalModelId, setNavigateToMentalModelId] = useState<string | null>(null);
+
+  // Cross-panel callbacks
+  const openDocument = useCallback((documentId: string) => {
+    setNavigateToDocumentId(documentId);
+  }, []);
+
+  const openObservation = useCallback((observationId: string) => {
+    setNavigateToObservationId(observationId);
+  }, []);
+
+  const prefillReflect = useCallback((query: string) => {
+    setNavigateToReflectQuery(query);
+  }, []);
+
+  const inspectMentalModel = useCallback((modelId: string, query: string) => {
+    setNavigateToMentalModelId(modelId);
+    setNavigateToReflectQuery(query);
+  }, []);
+
+  // Navigate to document when navigateToDocumentId is set
+  useEffect(() => {
+    if (navigateToDocumentId) {
+      setSelectedId(navigateToDocumentId);
+      setSelectedRevision(null);
+      setSaveMessage(null);
+      setNavigateToDocumentId(null);
+    }
+  }, [navigateToDocumentId]);
   const queryClient = useQueryClient();
 
   const filters = useMemo(() => ({ q: query || undefined, project: project || undefined, status: "active", limit: 25 }), [query, project]);
@@ -272,8 +306,16 @@ export default function App() {
 
         <div className="grid gap-4">
           <DirectiveAdminPanel />
-          <ReflectPlaygroundPanel />
-          <ProvenanceBrowserPanel />
+          <ReflectPlaygroundPanel
+            prefilledQuery={navigateToReflectQuery}
+            onObservationClick={openObservation}
+            onMentalModelClick={inspectMentalModel}
+          />
+          <ProvenanceBrowserPanel
+            highlightedObservationId={navigateToObservationId}
+            onDocumentChunkClick={openDocument}
+            onMentalModelClick={inspectMentalModel}
+          />
 
           <Card>
             <CardHeader>
@@ -329,6 +371,10 @@ export default function App() {
               {detailQuery.data ? (
                 <div className="grid gap-4">
                   <DraftMetadata document={detailQuery.data} />
+                  <div className="flex flex-wrap gap-4 text-sm text-zinc-400">
+                    <span>{chunksQuery.data?.count ?? chunksQuery.data?.chunks?.length ?? "—"} chunks</span>
+                    <span>Last reindex: {detailQuery.data.updated_at ? formatDate(detailQuery.data.updated_at) : "—"}</span>
+                  </div>
                   {isEditing ? (
                     <div className="grid gap-3">
                       <label className="grid gap-1 text-sm text-zinc-300">

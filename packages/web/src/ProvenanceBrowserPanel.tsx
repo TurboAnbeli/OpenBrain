@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { GitBranch, Link2, Search, ShieldCheck } from "lucide-react";
 
@@ -12,6 +12,7 @@ import {
   type MemoryLink,
   type MemoryLinkExpansionPayload,
   type MemoryLinkExpansionResult,
+  type MentalModel,
   type ObservationSearchPayload,
 } from "./api";
 import { Badge } from "./components/ui/badge";
@@ -34,7 +35,13 @@ function metadataValue(value: unknown): string | null {
   return null;
 }
 
-function MemoryLinkCard({ link, onInspect, pending }: { link: MemoryLink; onInspect: (link: MemoryLink) => void; pending: boolean }) {
+export interface ProvenanceBrowserPanelProps {
+  highlightedObservationId?: string | null;
+  onDocumentChunkClick?: (documentId: string) => void;
+  onMentalModelClick?: (id: string, query: string) => void;
+}
+
+function MemoryLinkCard({ link, onInspect, pending, onDocumentChunkClick }: { link: MemoryLink; onInspect: (link: MemoryLink) => void; pending: boolean; onDocumentChunkClick?: (documentId: string) => void }) {
   return (
     <article className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -57,7 +64,7 @@ function MemoryLinkCard({ link, onInspect, pending }: { link: MemoryLink; onInsp
   );
 }
 
-function ExpansionCard({ result }: { result: MemoryLinkExpansionResult }) {
+function ExpansionCard({ result, onDocumentChunkClick }: { result: MemoryLinkExpansionResult; onDocumentChunkClick?: (documentId: string) => void }) {
   const linked = result.linked_memory;
   const proofCount = metadataValue(linked?.metadata?.proof_count);
   const trend = metadataValue(linked?.metadata?.trend);
@@ -68,10 +75,15 @@ function ExpansionCard({ result }: { result: MemoryLinkExpansionResult }) {
         <Badge>{result.direction} · {result.link.relationship}</Badge>
       </div>
       <p className="mt-2 whitespace-pre-wrap text-sm text-blue-50">{linked?.content ?? "Linked memory content unavailable."}</p>
-      <div className="mt-2 flex flex-wrap gap-2 text-xs text-blue-100/80">
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-blue-100/80">
         {linked ? <span>{linked.source_type}:{truncateId(linked.id)}</span> : null}
         {proofCount ? <span>{proofCount} proofs</span> : null}
         {trend ? <span>{trend}</span> : null}
+        {linked && linked.source_type === "document" && onDocumentChunkClick ? (
+          <Button type="button" onClick={() => onDocumentChunkClick(linked.id)} aria-label={`Inspect document chunk ${linked.id}`}>
+            <Link2 className="mr-2 h-4 w-4" /> Inspect
+          </Button>
+        ) : null}
       </div>
     </article>
   );
@@ -104,7 +116,34 @@ function ObservationCard({ observation }: { observation: ConsolidatedObservation
   );
 }
 
-export function ProvenanceBrowserPanel() {
+function MentalModelCard({ model, onMentalModelClick }: { model: MentalModel; onMentalModelClick?: (id: string, query: string) => void }) {
+  return (
+    <article className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          {onMentalModelClick ? (
+            <button type="button" className="font-medium text-zinc-100 hover:text-violet-300 transition" onClick={() => onMentalModelClick(model.id, model.query)}>
+              {model.name}
+            </button>
+          ) : (
+            <h3 className="font-medium text-zinc-100">{model.name}</h3>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Badge>{model.active ? "active" : "inactive"}</Badge>
+          <Badge>priority {model.priority}</Badge>
+        </div>
+      </div>
+      <p className="mt-2 line-clamp-3 text-sm text-zinc-300">{model.content}</p>
+      <div className="mt-2 flex flex-wrap gap-2 text-xs text-zinc-500">
+        <span>{truncateId(model.id)}</span>
+        {model.tags.length > 0 ? <span>tags: {model.tags.join(", ")}</span> : null}
+      </div>
+    </article>
+  );
+}
+
+export function ProvenanceBrowserPanel({ highlightedObservationId, onDocumentChunkClick, onMentalModelClick }: ProvenanceBrowserPanelProps) {
   const [bankId, setBankId] = useState("openbrain");
   const [relationship, setRelationship] = useState("");
   const [observationQuery, setObservationQuery] = useState("");
@@ -121,6 +160,12 @@ export function ProvenanceBrowserPanel() {
   const expandMutation = useMutation({ mutationFn: (payload: MemoryLinkExpansionPayload) => expandMemoryLinks(payload) });
   const observationSearchMutation = useMutation({ mutationFn: (payload: ObservationSearchPayload) => searchConsolidatedObservations(payload) });
 
+  useEffect(() => {
+    if (highlightedObservationId) {
+      observationSearchMutation.mutate({ query: highlightedObservationId, bank_id: trimmedBankId, limit: 5, threshold: 0.1 });
+    }
+  }, [highlightedObservationId]);
+
   function inspectLink(link: MemoryLink) {
     expandMutation.mutate({
       bank_id: trimmedBankId,
@@ -128,6 +173,9 @@ export function ProvenanceBrowserPanel() {
       direction: "both",
       limit: 5,
     });
+    if (link.source_type === "document" && onDocumentChunkClick) {
+      onDocumentChunkClick(link.source_id);
+    }
   }
 
   function searchObservations(event: FormEvent<HTMLFormElement>) {
@@ -140,6 +188,7 @@ export function ProvenanceBrowserPanel() {
   const links = linksQuery.data?.results ?? [];
   const expanded = expandMutation.data?.results ?? [];
   const observations = observationSearchMutation.data?.results ?? [];
+  const mentalModels = mentalModelsQuery.data?.results ?? [];
 
   return (
     <Card>
@@ -190,7 +239,7 @@ export function ProvenanceBrowserPanel() {
             {linksQuery.isLoading ? <p className="text-sm text-zinc-400">Loading memory links…</p> : null}
             {links.length === 0 && !linksQuery.isLoading ? <p className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-sm text-zinc-400">No memory links found.</p> : null}
             <div className="grid gap-2">
-              {links.map((link) => <MemoryLinkCard key={link.id} link={link} onInspect={inspectLink} pending={expandMutation.isPending} />)}
+              {links.map((link) => <MemoryLinkCard key={link.id} link={link} onInspect={inspectLink} pending={expandMutation.isPending} onDocumentChunkClick={onDocumentChunkClick} />)}
             </div>
           </section>
 
@@ -199,10 +248,19 @@ export function ProvenanceBrowserPanel() {
             {expandMutation.isPending ? <p className="text-sm text-zinc-400">Expanding graph links…</p> : null}
             {expanded.length === 0 && !expandMutation.isPending ? <p className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-sm text-zinc-400">Select a memory link to inspect one-hop evidence.</p> : null}
             <div className="grid gap-2">
-              {expanded.map((result) => <ExpansionCard key={`${result.link.id}-${result.direction}-${result.linked_memory?.id ?? "missing"}`} result={result} />)}
+              {expanded.map((result) => <ExpansionCard key={`${result.link.id}-${result.direction}-${result.linked_memory?.id ?? "missing"}`} result={result} onDocumentChunkClick={onDocumentChunkClick} />)}
             </div>
           </section>
         </div>
+
+        {mentalModels.length > 0 ? (
+          <section className="space-y-2">
+            <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-blue-300">Mental models</h3>
+            <div className="grid gap-2">
+              {mentalModels.map((model) => <MentalModelCard key={model.id} model={model} onMentalModelClick={onMentalModelClick} />)}
+            </div>
+          </section>
+        ) : null}
 
         <section className="space-y-2">
           <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-emerald-300">Observation provenance search</h3>
