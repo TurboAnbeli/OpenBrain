@@ -22,4 +22,19 @@ body {
   border-radius: 0.75rem;
   border: 1px solid #27272a;
   overflow: hidden;
+  max-width: 100%;
+}
+
+.cm-scroller {
+  overflow-x: auto !important;
+}
+
+/* Prevent CodeMirror from breaking mobile layout */
+.cm-editor .cm-content {
+  max-width: 100%;
+  word-break: break-word;
+}
+
+.cm-editor .cm-line {
+  max-width: 100%;
 }

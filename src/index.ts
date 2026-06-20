@@ -18,6 +18,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { serve } from "@hono/node-server";
+import { WebSocketServer } from "ws";
 
 import { initializeDatabase, closePool, getPool } from "./db/connection.js";
 import { backfillFts } from "./db/queries.js";
@@ -60,7 +61,9 @@ async function main(): Promise<void> {
   const apiPort = parseInt(process.env.API_PORT ?? "8000", 10);
   const apiHost = process.env.API_HOST ?? "0.0.0.0";
 
-  serve({ fetch: api.fetch, port: apiPort, hostname: apiHost }, () => {
+  const wss = new WebSocketServer({ noServer: true });
+
+serve({ fetch: api.fetch, port: apiPort, hostname: apiHost, websocket: { server: wss } }, () => {
     console.log(`[api] REST API listening on http://${apiHost}:${apiPort}`);
     console.log(`[api]   POST /memories         — capture thought`);
     console.log(`[api]   POST /memories/batch    — batch capture`);

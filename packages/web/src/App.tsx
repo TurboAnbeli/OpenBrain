@@ -2,11 +2,12 @@ import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import CodeMirror from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
-import { CheckCircle2, Database, FileText, GitCompare, Layers3, Pencil, RefreshCw, Save, Search, Upload, X } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, Database, Download, FileText, GitCompare, Layers3, Pencil, RefreshCw, Save, Search, Upload, X } from "lucide-react";
 
-import { getDocument, getRevisionDiff, getStoredAdminApiKey, importUrlDocument, listDocumentChunks, listDocumentRevisions, listDocuments, reindexDocument, setStoredAdminApiKey, updateDocument, uploadDocument } from "./api";
+import { exportAllDocuments, exportDocument, getDocument, getRevisionDiff, getStoredAdminApiKey, importUrlDocument, listDocumentChunks, listDocumentRevisions, listDocuments, reindexDocument, setStoredAdminApiKey, updateDocument, uploadDocument } from "./api";
 import { buildDocumentUpdatePayload, buildLineDiffRows, createDocumentDraft, isDocumentDraftDirty, type DocumentDraft } from "./editorState";
 import type { DocumentDetail, DocumentSummary } from "./types";
+import { useWebSocket } from "./hooks/useWebSocket";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader } from "./components/ui/card";
@@ -26,7 +27,7 @@ function formatDate(value: string | null) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 
-function DocumentRow({ document, selected, onSelect }: { document: DocumentSummary; selected: boolean; onSelect: () => void }) {
+function DocumentRow({ document, selected, onSelect, onExport }: { document: DocumentSummary; selected: boolean; onSelect: () => void; onExport: () => void }) {
   return (
     <button
       type="button"
@@ -41,6 +42,14 @@ function DocumentRow({ document, selected, onSelect }: { document: DocumentSumma
           <div className="mt-1 text-xs text-zinc-500">{document.source_uri ?? document.source_type}</div>
         </div>
         <Badge>{document.status}</Badge>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onExport(); }}
+          className="shrink-0 rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 transition hover:border-violet-500 hover:text-violet-300"
+          title="Export as markdown"
+        >
+          <Download className="h-3.5 w-3.5" />
+        </button>
       </div>
       <p className="mt-3 line-clamp-2 text-sm text-zinc-400">{document.content_preview}</p>
       <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-500">
@@ -67,16 +76,70 @@ function DraftMetadata({ document }: { document: DocumentDetail }) {
   );
 }
 
+/** Collapsible section with a disclosure header for mobile/tablet */
+function CollapsibleSection({ title, icon, children, defaultOpen = false }: { title: string; icon?: React.ReactNode; children: React.ReactNode; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 shadow-lg shadow-black/20">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center justify-between border-b border-zinc-800 px-4 py-3 text-left transition hover:bg-zinc-900/50"
+      >
+        <div className="flex items-center gap-2 font-medium text-zinc-100">
+          {icon}
+          {title}
+        </div>
+        {open ? <ChevronDown className="h-4 w-4 text-zinc-400" /> : <ChevronRight className="h-4 w-4 text-zinc-400" />}
+      </button>
+      {open && <div className="p-4">{children}</div>}
+    </div>
+  );
+}
+
+type MobileTab = "document" | "explorer" | "directives" | "brain" | "reflect" | "provenance";
+
+const MOBILE_TABS: { id: MobileTab; label: string; icon: React.ReactNode }[] = [
+  { id: "document", label: "Document", icon: <FileText className="h-4 w-4" /> },
+  { id: "explorer", label: "Explorer", icon: <Search className="h-4 w-4" /> },
+  { id: "directives", label: "Directives", icon: <Layers3 className="h-4 w-4" /> },
+  { id: "brain", label: "Brain", icon: <Database className="h-4 w-4" /> },
+  { id: "reflect", label: "Reflect", icon: <RefreshCw className="h-4 w-4" /> },
+  { id: "provenance", label: "Provenance", icon: <GitCompare className="h-4 w-4" /> },
+];
+
 export default function App() {
+  const [mobileTab, setMobileTab] = useState<MobileTab>("document");
   const [query, setQuery] = useState("");
   const [project, setProject] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
   const [isEditing, setIsEditing] = useState(false);
-  const [draft, setDraft] = useState<DocumentDraft>(emptyDraft);
+  const [draft, setDraft] = useState<DocumentDraft>(emptyDraft());
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [adminKeyInput, setAdminKeyInput] = useState(() => getStoredAdminApiKey() ?? "");
   const queryClient = useQueryClient();
+  const { connected: wsConnected, subscribe: wsSubscribe } = useWebSocket();
+
+  // Wire WebSocket events to TanStack Query cache invalidation
+  useEffect(() => {
+    const unsubs: (() => void)[] = [];
+    const events: Array<{ type: string; queryKeys: (string[])[] }> = [
+      { type: "document_updated", queryKeys: [["documents"], ["document"]] },
+      { type: "document_created", queryKeys: [["documents"]] },
+      { type: "document_deleted", queryKeys: [["documents"], ["document"]] },
+      { type: "document_reindexed", queryKeys: [["documents"], ["document"], ["document-revisions"]] },
+      { type: "revision_added", queryKeys: [["document-revisions"], ["document"]] },
+    ];
+    for (const evt of events) {
+      unsubs.push(wsSubscribe(evt.type as any, () => {
+        for (const key of evt.queryKeys) {
+          queryClient.invalidateQueries({ queryKey: key });
+        }
+      }));
+    }
+    return () => { for (const u of unsubs) u(); };
+  }, [wsSubscribe, queryClient]);
 
   const filters = useMemo(() => ({ q: query || undefined, project: project || undefined, status: "active", limit: 25 }), [query, project]);
   const documentsQuery = useQuery({ queryKey: ["documents", filters], queryFn: () => listDocuments(filters) });
@@ -178,14 +241,286 @@ export default function App() {
     },
   });
 
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const handleExportDocument = async (docId: string, docTitle: string) => {
+    try {
+      setExportError(null);
+      const response = await exportDocument(docId);
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`${response.status} ${response.statusText}: ${text}`);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = (docTitle || "document").replace(/[^a-zA-Z0-9_-]/g, "_") + ".md";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleExportAll = async () => {
+    try {
+      setExportError(null);
+      const bundle = await exportAllDocuments();
+      const json = JSON.stringify(bundle, null, 2);
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `openbrain-export-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  // --- Panel fragments rendered in different layout contexts ---
+
+  const explorerPanel = (
+    <Card className="min-h-[calc(100vh-9rem)] lg:min-h-[calc(100vh-9rem)]">
+      <CardHeader>
+        <div className="flex items-center gap-2 font-medium"><Search className="h-4 w-4" /> Explorer</div>
+        <div className="mt-3 grid gap-2">
+          <Input placeholder="Search title/source/body…" value={query} onChange={(event) => setQuery(event.target.value)} />
+          <Input placeholder="Project filter" value={project} onChange={(event) => setProject(event.target.value)} />
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {documentsQuery.isLoading ? <p className="text-sm text-zinc-400">Loading documents…</p> : null}
+        {documentsQuery.isError ? <p className="text-sm text-red-300">{String(documentsQuery.error)}</p> : null}
+        {documentsQuery.data?.documents.map((document) => (
+          <DocumentRow
+            key={document.id}
+            document={document}
+            selected={document.id === activeDocumentId}
+            onSelect={() => {
+              setSelectedId(document.id);
+              setSelectedRevision(null);
+              setSaveMessage(null);
+            }}
+            onExport={() => handleExportDocument(document.id, document.title)}
+          />
+        ))}
+      </CardContent>
+    </Card>
+  );
+
+  const directivePanel = (
+    <LazyPanel><DirectiveAdminPanel /></LazyPanel>
+  );
+
+  const brainPanel = (
+    <LazyPanel><BrainStateDashboard /></LazyPanel>
+  );
+
+  const reflectPanel = (
+    <LazyPanel><ReflectPlaygroundPanel /></LazyPanel>
+  );
+
+  const provenancePanel = (
+    <LazyPanel><ProvenanceBrowserPanel /></LazyPanel>
+  );
+
+  const documentCard = (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <div className="flex items-center gap-2 text-sm text-zinc-400"><FileText className="h-4 w-4" /> Current source</div>
+            <h2 className="mt-1 text-2xl font-semibold">{isEditing ? draft.title || "Untitled draft" : detailQuery.data?.title ?? "Select a document"}</h2>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {detailQuery.data ? <Badge>{detailQuery.data.source_type}</Badge> : null}
+            {detailQuery.data && !isEditing ? (
+              <>
+                <Button onClick={() => setIsEditing(true)}><Pencil className="mr-2 h-4 w-4" /> Edit</Button>
+                <Button
+                  onClick={() => reindexMutation.mutate()}
+                  disabled={reindexMutation.isPending}
+                  className="border-zinc-600 text-zinc-300"
+                  title="Regenerate search chunks and embeddings for this document"
+                >
+                  <RefreshCw className="mr-2 h-4 w-4" /> {reindexMutation.isPending ? "Reindexing..." : "Reindex"}
+                </Button>
+              </>
+            ) : null}
+            {detailQuery.data && isEditing ? (
+              <>
+                <Button
+                  onClick={() => saveMutation.mutate()}
+                  disabled={!dirty || !validDraft || saveMutation.isPending}
+                  title={!dirty ? "No changes to save" : !validDraft ? "Title and content are required" : "Save document"}
+                >
+                  <Save className="mr-2 h-4 w-4" /> {saveMutation.isPending ? "Saving…" : "Save"}
+                </Button>
+                <Button
+                  onClick={() => {
+                    setDraft(createDocumentDraft(detailQuery.data!));
+                    setIsEditing(false);
+                    setSaveMessage(null);
+                  }}
+                  disabled={saveMutation.isPending}
+                >
+                  <X className="mr-2 h-4 w-4" /> Cancel
+                </Button>
+              </>
+            ) : null}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {detailQuery.isError ? <p className="text-sm text-red-300">{String(detailQuery.error)}</p> : null}
+        {saveMutation.isError ? <p className="mb-3 text-sm text-red-300">{String(saveMutation.error)}</p> : null}
+        {reindexMutation.isError ? <p className="mb-3 text-sm text-red-300">Reindex failed: {String(reindexMutation.error)}</p> : null}
+        {saveMessage ? <p className="mb-3 text-sm text-emerald-300">{saveMessage}</p> : null}
+        {detailQuery.data ? (
+          <div className="grid gap-4">
+            <DraftMetadata document={detailQuery.data} />
+            {isEditing ? (
+              <div className="grid gap-3">
+                <label className="grid gap-1 text-sm text-zinc-300">
+                  Title
+                  <Input value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} />
+                </label>
+                <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
+                  <div className="flex items-center gap-2 font-medium"><CheckCircle2 className="h-4 w-4" /> Save behavior</div>
+                  <p className="mt-1 text-emerald-100/80">Saving records a revision, regenerates document chunks, and refreshes search embeddings automatically.</p>
+                </div>
+                <div className="min-w-0 overflow-hidden">
+                  <CodeMirror
+                    value={draft.content}
+                    height="520px"
+                    extensions={[markdown()]}
+                    editable
+                    onChange={(value) => setDraft((current) => ({ ...current, content: value }))}
+                    basicSetup={{ lineNumbers: true, foldGutter: true }}
+                    theme="dark"
+                  />
+                </div>
+                <label className="grid gap-1 text-sm text-zinc-300">
+                  Edit reason
+                  <Input
+                    placeholder="Why are you changing this document?"
+                    value={draft.editReason}
+                    onChange={(event) => setDraft((current) => ({ ...current, editReason: event.target.value }))}
+                  />
+                </label>
+                <div className="text-xs text-zinc-500">
+                  {dirty ? "Unsaved changes" : "No changes"} · {draft.content.length.toLocaleString()} chars
+                </div>
+              </div>
+            ) : (
+              <div className="min-w-0 overflow-hidden">
+                <CodeMirror
+                  value={detailQuery.data.content}
+                  height="420px"
+                  extensions={[markdown()]}
+                  editable={false}
+                  basicSetup={{ lineNumbers: true, foldGutter: true }}
+                  theme="dark"
+                />
+              </div>
+            )}
+          </div>
+        ) : (
+          <p className="text-sm text-zinc-400">Pick a document from the explorer to load full content.</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+
+  const revisionsAndChunksCard = (
+    <div className="grid gap-4 xl:grid-cols-2">
+      <Card>
+        <CardHeader><div className="flex items-center gap-2 font-medium"><GitCompare className="h-4 w-4" /> Revisions & diff</div></CardHeader>
+        <CardContent className="space-y-3">
+          {revisionsQuery.data?.revisions.length === 0 ? <p className="text-sm text-zinc-400">No revisions recorded yet.</p> : null}
+          {revisionsQuery.data?.revisions.map((revision) => (
+            <button
+              key={revision.id}
+              type="button"
+              onClick={() => setSelectedRevision(revision.revision_number)}
+              className={`w-full rounded-lg border p-3 text-left text-sm transition ${selectedRevision === revision.revision_number ? "border-violet-500 bg-violet-500/10" : "border-zinc-800 hover:border-zinc-700"}`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-medium">Rev {revision.revision_number}</span>
+                <Badge>{revision.status}</Badge>
+              </div>
+              {revision.edit_reason ? <div className="mt-1 text-zinc-300">{revision.edit_reason}</div> : null}
+              <div className="mt-1 flex items-center gap-2 text-xs text-zinc-500">
+                <span>{revision.created_by ?? "unknown"}</span>
+                <span>·</span>
+                <span>{formatDate(revision.created_at)}</span>
+              </div>
+            </button>
+          ))}
+          {diffQuery.data ? (
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-sm text-zinc-300">
+              <div className="font-medium text-zinc-100">Revision {diffQuery.data.revision.revision_number} → Current</div>
+              {diffQuery.data.revision.edit_reason ? <div className="mt-1 text-xs text-zinc-400">Reason: {diffQuery.data.revision.edit_reason}</div> : null}
+              {diffQuery.data.revision.created_by ? <div className="text-xs text-zinc-500">By {diffQuery.data.revision.created_by}</div> : null}
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <span>+{diffQuery.data.diff.added_lines} lines</span>
+                <span>-{diffQuery.data.diff.removed_lines} lines</span>
+                <span>{diffQuery.data.diff.char_delta} chars</span>
+                <span>{diffQuery.data.diff.changed ? "changed" : "unchanged"}</span>
+              </div>
+              <div className="mt-3 max-h-80 overflow-auto rounded-md border border-zinc-800 font-mono text-xs">
+                {lineDiffRows.map((row, index) => (
+                  <div
+                    key={`${row.kind}-${index}-${row.oldLineNumber ?? "n"}-${row.newLineNumber ?? "n"}`}
+                    className={`grid grid-cols-[3rem_3rem_1fr] gap-2 px-2 py-0.5 ${
+                      row.kind === "added" ? "bg-emerald-500/10 text-emerald-100" : row.kind === "removed" ? "bg-red-500/10 text-red-100" : "text-zinc-400"
+                    }`}
+                  >
+                    <span className="text-right text-zinc-600">{row.oldLineNumber ?? ""}</span>
+                    <span className="text-right text-zinc-600">{row.newLineNumber ?? ""}</span>
+                    <span><span className="mr-2 text-zinc-500">{row.kind === "added" ? "+" : row.kind === "removed" ? "-" : " "}</span>{row.text || " "}</span>
+                  </div>
+                ))}
+                {lineDiffRows.length === 0 ? <div className="p-3 text-zinc-500">No line-level changes.</div> : null}
+              </div>
+              {lineDiffRows.length >= 200 ? <p className="mt-2 text-xs text-zinc-500">Showing first 200 diff rows.</p> : null}
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><div className="flex items-center gap-2 font-medium"><Layers3 className="h-4 w-4" /> Chunks</div></CardHeader>
+        <CardContent className="space-y-3">
+          {chunksQuery.data?.chunks.slice(0, 6).map((chunk) => (
+            <div key={chunk.id} className="rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+              <div className="mb-2 flex items-center justify-between text-xs text-zinc-500">
+                <span>Chunk {chunk.chunk_index}</span>
+                <span>{chunk.token_count ?? "—"} tokens</span>
+              </div>
+              <p className="line-clamp-4 text-sm text-zinc-300">{chunk.content}</p>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  );
+
   return (
-    <div className="min-h-screen px-6 py-6 text-zinc-100">
-      <header className="mx-auto mb-6 flex max-w-7xl flex-col gap-4 md:flex-row md:items-center md:justify-between">
+    <div className="min-h-screen px-3 py-4 text-zinc-100 sm:px-6 sm:py-6">
+      <header className="mx-auto mb-4 flex max-w-7xl flex-col gap-3 sm:mb-6 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex items-center gap-3 text-sm uppercase tracking-[0.3em] text-violet-300">
             <Database className="h-4 w-4" /> OpenBrain
           </div>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">One Brain Document Editor</h1>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl inline-flex items-center gap-2">One Brain Document Editor <span className={wsConnected ? "inline-block h-2 w-2 rounded-full bg-emerald-400" : "inline-block h-2 w-2 rounded-full bg-zinc-600"} title={wsConnected ? "Live — connected" : "Disconnected"} /><span className="text-xs font-normal tracking-normal">{wsConnected ? "Live" : "Offline"}</span></h1>
           <p className="mt-1 text-sm text-zinc-400">Direct PostgreSQL-backed editor for source docs, chunks, revisions, and diff metrics.</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
@@ -199,7 +534,7 @@ export default function App() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") setStoredAdminApiKey(adminKeyInput);
               }}
-              className="h-8 w-40 border-zinc-700 bg-zinc-900 text-xs"
+              className="h-8 w-32 border-zinc-700 bg-zinc-900 text-xs sm:w-40"
             />
             <Button
               onClick={() => {
@@ -230,11 +565,14 @@ export default function App() {
           <Button onClick={() => setShowImport((v) => !v)}>
             <FileText className="mr-2 h-4 w-4" /> Import URL
           </Button>
+          <Button onClick={handleExportAll}>
+            <Download className="mr-2 h-4 w-4" /> Export All
+          </Button>
         </div>
       </header>
 
         {showImport ? (
-          <div className="mx-auto mb-4 flex max-w-7xl items-center gap-2">
+          <div className="mx-auto mb-4 flex max-w-7xl flex-col gap-2 sm:flex-row sm:items-center">
             <Input
               placeholder="https://example.com/doc.md"
               value={importUrl}
@@ -242,219 +580,84 @@ export default function App() {
               className="max-w-lg"
               onKeyDown={(e) => { if (e.key === "Enter") importUrlMutation.mutate(); }}
             />
-            <Button onClick={() => importUrlMutation.mutate()} disabled={!importUrl || importUrlMutation.isPending}>
-              {importUrlMutation.isPending ? "Importing..." : "Import"}
-            </Button>
-            <Button onClick={() => { setShowImport(false); setImportUrl(""); }}>Cancel</Button>
+            <div className="flex gap-2">
+              <Button onClick={() => importUrlMutation.mutate()} disabled={!importUrl || importUrlMutation.isPending}>
+                {importUrlMutation.isPending ? "Importing..." : "Import"}
+              </Button>
+              <Button onClick={() => { setShowImport(false); setImportUrl(""); }}>Cancel</Button>
+            </div>
             {importUrlMutation.isError ? <span className="text-sm text-red-300">{String(importUrlMutation.error)}</span> : null}
+            {exportError ? <span className="text-sm text-red-300">{exportError}</span> : null}
           </div>
         ) : null}
-      <main className="mx-auto grid max-w-7xl gap-4 lg:grid-cols-[390px_1fr]">
-        <Card className="min-h-[calc(100vh-9rem)]">
-          <CardHeader>
-            <div className="flex items-center gap-2 font-medium"><Search className="h-4 w-4" /> Explorer</div>
-            <div className="mt-3 grid gap-2">
-              <Input placeholder="Search title/source/body…" value={query} onChange={(event) => setQuery(event.target.value)} />
-              <Input placeholder="Project filter" value={project} onChange={(event) => setProject(event.target.value)} />
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {documentsQuery.isLoading ? <p className="text-sm text-zinc-400">Loading documents…</p> : null}
-            {documentsQuery.isError ? <p className="text-sm text-red-300">{String(documentsQuery.error)}</p> : null}
-            {documentsQuery.data?.documents.map((document) => (
-              <DocumentRow
-                key={document.id}
-                document={document}
-                selected={document.id === activeDocumentId}
-                onSelect={() => {
-                  setSelectedId(document.id);
-                  setSelectedRevision(null);
-                  setSaveMessage(null);
-                }}
-              />
-            ))}
-          </CardContent>
-        </Card>
+
+      {/* ---- MOBILE LAYOUT (< 640px): tab-based single-column ---- */}
+      <nav className="mb-4 flex gap-1 overflow-x-auto sm:hidden" aria-label="Mobile navigation">
+        {MOBILE_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setMobileTab(tab.id)}
+            className={`flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition ${
+              mobileTab === tab.id
+                ? "bg-violet-500/20 text-violet-200 ring-1 ring-violet-500"
+                : "text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200"
+            }`}
+          >
+            {tab.icon}
+            <span>{tab.label}</span>
+          </button>
+        ))}
+      </nav>
+
+      <div className="sm:hidden">
+        {/* Mobile: single panel at a time */}
+        {mobileTab === "explorer" && explorerPanel}
+        {mobileTab === "directives" && directivePanel}
+        {mobileTab === "brain" && brainPanel}
+        {mobileTab === "reflect" && reflectPanel}
+        {mobileTab === "provenance" && provenancePanel}
+        {mobileTab === "document" && (
+          <div className="grid gap-4">
+            {documentCard}
+            {revisionsAndChunksCard}
+          </div>
+        )}
+      </div>
+
+      {/* ---- TABLET LAYOUT (640-1024px): stacked with collapsible panels ---- */}
+      <div className="hidden sm:grid lg:hidden sm:max-w-7xl sm:mx-auto sm:gap-4">
+        <div className="grid gap-4">
+          {explorerPanel}
+          {documentCard}
+          {revisionsAndChunksCard}
+        </div>
+        <CollapsibleSection title="Directive Admin" icon={<Layers3 className="h-4 w-4" />} defaultOpen={false}>
+          {directivePanel}
+        </CollapsibleSection>
+        <CollapsibleSection title="Brain State Dashboard" icon={<Database className="h-4 w-4" />} defaultOpen={false}>
+          {brainPanel}
+        </CollapsibleSection>
+        <CollapsibleSection title="Reflect Playground" icon={<RefreshCw className="h-4 w-4" />} defaultOpen={false}>
+          {reflectPanel}
+        </CollapsibleSection>
+        <CollapsibleSection title="Provenance Browser" icon={<GitCompare className="h-4 w-4" />} defaultOpen={false}>
+          {provenancePanel}
+        </CollapsibleSection>
+      </div>
+
+      {/* ---- DESKTOP LAYOUT (> 1024px): original two-column ---- */}
+      <main className="hidden lg:grid lg:max-w-7xl lg:mx-auto lg:gap-4 lg:grid-cols-[390px_1fr]">
+        {explorerPanel}
 
         <div className="grid gap-4">
-          <LazyPanel><DirectiveAdminPanel /></LazyPanel>
-          <LazyPanel><BrainStateDashboard /></LazyPanel>
-          <LazyPanel><ReflectPlaygroundPanel /></LazyPanel>
-          <LazyPanel><ProvenanceBrowserPanel /></LazyPanel>
+          {directivePanel}
+          {brainPanel}
+          {reflectPanel}
+          {provenancePanel}
 
-          <Card>
-            <CardHeader>
-              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                <div>
-                  <div className="flex items-center gap-2 text-sm text-zinc-400"><FileText className="h-4 w-4" /> Current source</div>
-                  <h2 className="mt-1 text-2xl font-semibold">{isEditing ? draft.title || "Untitled draft" : detailQuery.data?.title ?? "Select a document"}</h2>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  {detailQuery.data ? <Badge>{detailQuery.data.source_type}</Badge> : null}
-                  {detailQuery.data && !isEditing ? (
-                    <>
-                      <Button onClick={() => setIsEditing(true)}><Pencil className="mr-2 h-4 w-4" /> Edit</Button>
-                      <Button
-                        onClick={() => reindexMutation.mutate()}
-                        disabled={reindexMutation.isPending}
-                        className="border-zinc-600 text-zinc-300"
-                        title="Regenerate search chunks and embeddings for this document"
-                      >
-                        <RefreshCw className="mr-2 h-4 w-4" /> {reindexMutation.isPending ? "Reindexing..." : "Reindex"}
-                      </Button>
-                    </>
-                  ) : null}
-                  {detailQuery.data && isEditing ? (
-                    <>
-                      <Button
-                        onClick={() => saveMutation.mutate()}
-                        disabled={!dirty || !validDraft || saveMutation.isPending}
-                        title={!dirty ? "No changes to save" : !validDraft ? "Title and content are required" : "Save document"}
-                      >
-                        <Save className="mr-2 h-4 w-4" /> {saveMutation.isPending ? "Saving…" : "Save"}
-                      </Button>
-                      <Button
-                        onClick={() => {
-                          setDraft(createDocumentDraft(detailQuery.data!));
-                          setIsEditing(false);
-                          setSaveMessage(null);
-                        }}
-                        disabled={saveMutation.isPending}
-                      >
-                        <X className="mr-2 h-4 w-4" /> Cancel
-                      </Button>
-                    </>
-                  ) : null}
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {detailQuery.isError ? <p className="text-sm text-red-300">{String(detailQuery.error)}</p> : null}
-              {saveMutation.isError ? <p className="mb-3 text-sm text-red-300">{String(saveMutation.error)}</p> : null}
-              {reindexMutation.isError ? <p className="mb-3 text-sm text-red-300">Reindex failed: {String(reindexMutation.error)}</p> : null}
-              {saveMessage ? <p className="mb-3 text-sm text-emerald-300">{saveMessage}</p> : null}
-              {detailQuery.data ? (
-                <div className="grid gap-4">
-                  <DraftMetadata document={detailQuery.data} />
-                  {isEditing ? (
-                    <div className="grid gap-3">
-                      <label className="grid gap-1 text-sm text-zinc-300">
-                        Title
-                        <Input value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} />
-                      </label>
-                      <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
-                        <div className="flex items-center gap-2 font-medium"><CheckCircle2 className="h-4 w-4" /> Save behavior</div>
-                        <p className="mt-1 text-emerald-100/80">Saving records a revision, regenerates document chunks, and refreshes search embeddings automatically.</p>
-                      </div>
-                      <CodeMirror
-                        value={draft.content}
-                        height="520px"
-                        extensions={[markdown()]}
-                        editable
-                        onChange={(value) => setDraft((current) => ({ ...current, content: value }))}
-                        basicSetup={{ lineNumbers: true, foldGutter: true }}
-                        theme="dark"
-                      />
-                      <label className="grid gap-1 text-sm text-zinc-300">
-                        Edit reason
-                        <Input
-                          placeholder="Why are you changing this document?"
-                          value={draft.editReason}
-                          onChange={(event) => setDraft((current) => ({ ...current, editReason: event.target.value }))}
-                        />
-                      </label>
-                      <div className="text-xs text-zinc-500">
-                        {dirty ? "Unsaved changes" : "No changes"} · {draft.content.length.toLocaleString()} chars
-                      </div>
-                    </div>
-                  ) : (
-                    <CodeMirror
-                      value={detailQuery.data.content}
-                      height="420px"
-                      extensions={[markdown()]}
-                      editable={false}
-                      basicSetup={{ lineNumbers: true, foldGutter: true }}
-                      theme="dark"
-                    />
-                  )}
-                </div>
-              ) : (
-                <p className="text-sm text-zinc-400">Pick a document from the explorer to load full content.</p>
-              )}
-            </CardContent>
-          </Card>
-
-          <div className="grid gap-4 xl:grid-cols-2">
-            <Card>
-              <CardHeader><div className="flex items-center gap-2 font-medium"><GitCompare className="h-4 w-4" /> Revisions & diff</div></CardHeader>
-              <CardContent className="space-y-3">
-                {revisionsQuery.data?.revisions.length === 0 ? <p className="text-sm text-zinc-400">No revisions recorded yet.</p> : null}
-                {revisionsQuery.data?.revisions.map((revision) => (
-                  <button
-                    key={revision.id}
-                    type="button"
-                    onClick={() => setSelectedRevision(revision.revision_number)}
-                    className={`w-full rounded-lg border p-3 text-left text-sm transition ${selectedRevision === revision.revision_number ? "border-violet-500 bg-violet-500/10" : "border-zinc-800 hover:border-zinc-700"}`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium">Rev {revision.revision_number}</span>
-                      <Badge>{revision.status}</Badge>
-                    </div>
-                    {revision.edit_reason ? <div className="mt-1 text-zinc-300">{revision.edit_reason}</div> : null}
-                    <div className="mt-1 flex items-center gap-2 text-xs text-zinc-500">
-                      <span>{revision.created_by ?? "unknown"}</span>
-                      <span>·</span>
-                      <span>{formatDate(revision.created_at)}</span>
-                    </div>
-                  </button>
-                ))}
-                {diffQuery.data ? (
-                  <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-sm text-zinc-300">
-                    <div className="font-medium text-zinc-100">Revision {diffQuery.data.revision.revision_number} → Current</div>
-                    {diffQuery.data.revision.edit_reason ? <div className="mt-1 text-xs text-zinc-400">Reason: {diffQuery.data.revision.edit_reason}</div> : null}
-                    {diffQuery.data.revision.created_by ? <div className="text-xs text-zinc-500">By {diffQuery.data.revision.created_by}</div> : null}
-                    <div className="mt-2 grid grid-cols-2 gap-2">
-                      <span>+{diffQuery.data.diff.added_lines} lines</span>
-                      <span>-{diffQuery.data.diff.removed_lines} lines</span>
-                      <span>{diffQuery.data.diff.char_delta} chars</span>
-                      <span>{diffQuery.data.diff.changed ? "changed" : "unchanged"}</span>
-                    </div>
-                    <div className="mt-3 max-h-80 overflow-auto rounded-md border border-zinc-800 font-mono text-xs">
-                      {lineDiffRows.map((row, index) => (
-                        <div
-                          key={`${row.kind}-${index}-${row.oldLineNumber ?? "n"}-${row.newLineNumber ?? "n"}`}
-                          className={`grid grid-cols-[3rem_3rem_1fr] gap-2 px-2 py-0.5 ${
-                            row.kind === "added" ? "bg-emerald-500/10 text-emerald-100" : row.kind === "removed" ? "bg-red-500/10 text-red-100" : "text-zinc-400"
-                          }`}
-                        >
-                          <span className="text-right text-zinc-600">{row.oldLineNumber ?? ""}</span>
-                          <span className="text-right text-zinc-600">{row.newLineNumber ?? ""}</span>
-                          <span><span className="mr-2 text-zinc-500">{row.kind === "added" ? "+" : row.kind === "removed" ? "-" : " "}</span>{row.text || " "}</span>
-                        </div>
-                      ))}
-                      {lineDiffRows.length === 0 ? <div className="p-3 text-zinc-500">No line-level changes.</div> : null}
-                    </div>
-                    {lineDiffRows.length >= 200 ? <p className="mt-2 text-xs text-zinc-500">Showing first 200 diff rows.</p> : null}
-                  </div>
-                ) : null}
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader><div className="flex items-center gap-2 font-medium"><Layers3 className="h-4 w-4" /> Chunks</div></CardHeader>
-              <CardContent className="space-y-3">
-                {chunksQuery.data?.chunks.slice(0, 6).map((chunk) => (
-                  <div key={chunk.id} className="rounded-lg border border-zinc-800 bg-zinc-950 p-3">
-                    <div className="mb-2 flex items-center justify-between text-xs text-zinc-500">
-                      <span>Chunk {chunk.chunk_index}</span>
-                      <span>{chunk.token_count ?? "—"} tokens</span>
-                    </div>
-                    <p className="line-clamp-4 text-sm text-zinc-300">{chunk.content}</p>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          </div>
+          {documentCard}
+          {revisionsAndChunksCard}
         </div>
       </main>
     </div>

@@ -132,6 +132,9 @@ import {
   SYNTHESIS_MODEL, SYNTHESIS_ENDPOINT,
 } from "../config/search.js";
 
+import { upgradeWebSocket } from "@hono/node-server";
+import { registerWsClient, broadcastWsEvent, wsEvent } from "./ws-broadcaster.js";
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const ADMIN_UUID_SEGMENT = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
@@ -1240,6 +1243,37 @@ export function createApi(): Hono {
   app.get("/health", (c) =>
     c.json({ status: "healthy", service: "open-brain-api" })
   );
+  // ─── WebSocket real-time updates ────────────────────────────────
+  app.get("/ws", upgradeWebSocket((c) => {
+    return {
+      onOpen(_evt, ws) {
+        const unregister = registerWsClient(ws);
+        console.log("[ws] Client connected");
+        (ws.raw as unknown as { on?: (event: string, cb: () => void) => void })?.on?.("close", () => {
+          unregister();
+          console.log("[ws] Client disconnected");
+        });
+      },
+      onMessage(_evt, ws) {
+        // Clients can send ping messages to keep the connection alive
+        try {
+          const data = typeof _evt.data === "string" ? _evt.data : new TextDecoder().decode(_evt.data as ArrayBuffer);
+          if (data === "ping") {
+            ws.send("pong");
+          }
+        } catch {
+          // ignore malformed messages
+        }
+      },
+      onClose(_evt, ws) {
+        console.log("[ws] Client closed");
+      },
+      onError(_evt, ws) {
+        console.error("[ws] Client error");
+      },
+    };
+  }));
+
 
   // ─── Capture Memory ──────────────────────────────────────────────
 
@@ -3366,6 +3400,7 @@ export function createApi(): Hono {
         event_ended_at: body.event_ended_at,
       });
 
+      broadcastWsEvent(wsEvent("document_created", result.id));
       return c.json(serializeDocument(result));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -3443,6 +3478,50 @@ export function createApi(): Hono {
     }
 
     return c.json(serializeDocument(document));
+  });
+
+
+  // ─── Export Endpoints ─────────────────────────────────────────────
+
+  app.get("/documents/export-all", async (c) => {
+    try {
+      const documents = await listDocuments(pool, { status: "active", limit: 100, offset: 0 });
+      const bundle = {
+        version: 1,
+        exported_at: new Date().toISOString(),
+        documents: documents.map(serializeDocumentSummary),
+      };
+      c.header("Content-Disposition", 'attachment; filename="openbrain-export.json"');
+      c.header("Content-Type", "application/json");
+      return c.json(bundle);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Export-all failed:", message);
+      return c.json({ error: "Failed to export documents", detail: message }, 502);
+    }
+  });
+
+  app.get("/documents/:id/export", async (c) => {
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "id must be a valid UUID" }, 400);
+    }
+
+    try {
+      const result = await getDocument(pool, id);
+      if (!result) {
+        return c.json({ error: `Document not found: ${id}` }, 404);
+      }
+
+      const filename = (result.title || "document").replace(/[^a-zA-Z0-9_-]/g, "_") + ".md";
+      c.header("Content-Disposition", `attachment; filename="${filename}"`);
+      c.header("Content-Type", "text/markdown; charset=utf-8");
+      return c.text(result.content);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[api] Document export failed:", message);
+      return c.json({ error: "Failed to export document", detail: message }, 502);
+    }
   });
 
   app.get("/documents/:id", async (c) => {
@@ -3575,10 +3654,13 @@ export function createApi(): Hono {
 
         const { document, chunks } = await updateDocumentWithChunks(pool, id, patch, chunkInputs);
         await linkDocumentChunkEntities(pool, chunks);
+        broadcastWsEvent(wsEvent("document_updated", document.id, { reindexed: true }));
+        broadcastWsEvent(wsEvent("revision_added", document.id));
         return c.json(serializeDocumentUpdateResponse(document, true, chunks.length));
       }
 
       const result = await updateDocument(pool, id, patch);
+      broadcastWsEvent(wsEvent("document_updated", result.id, { reindexed: false }));
       return c.json(serializeDocumentUpdateResponse(result, false));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -3608,6 +3690,7 @@ export function createApi(): Hono {
       if (!result.deleted) {
         return c.json({ error: `Document not found: ${id}` }, 404);
       }
+      broadcastWsEvent(wsEvent("document_deleted", id));
       return c.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -3645,6 +3728,7 @@ export function createApi(): Hono {
         edit_reason: "manual reindex",
       }, chunkInputs);
       await linkDocumentChunkEntities(pool, chunks);
+      broadcastWsEvent(wsEvent("document_reindexed", updated.id));
       return c.json(serializeDocumentUpdateResponse(updated, true, chunks.length));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -3690,6 +3774,7 @@ export function createApi(): Hono {
       }
       const { document: updated, chunks } = await updateDocumentWithChunks(pool, document.id, { content }, chunkInputs);
       await linkDocumentChunkEntities(pool, chunks);
+      broadcastWsEvent(wsEvent("document_created", updated.id));
       return c.json({ ...serializeDocumentUpdateResponse(updated, true, chunks.length) }, 201);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -3759,6 +3844,8 @@ export function createApi(): Hono {
         );
       }
       const { document: updated, chunks } = await updateDocumentWithChunks(pool, document.id, { content: fetchedContent }, chunkInputs);
+      await linkDocumentChunkEntities(pool, chunks);
+      broadcastWsEvent(wsEvent("document_created", updated.id));
       await linkDocumentChunkEntities(pool, chunks);
       return c.json({ ...serializeDocumentUpdateResponse(updated, true, chunks.length) }, 201);
     } catch (err) {

@@ -586,3 +586,24 @@ export interface EmbedderInfo {
 export function getEmbedderInfo() {
   return requestJson<EmbedderInfo>("/embedder/info");
 }
+
+export interface ExportAllBundle {
+  version: number;
+  exported_at: string;
+  documents: DocumentSummary[];
+}
+
+export function exportDocument(id: string): Promise<Response> {
+  return fetch(`${API_BASE}/documents/${id}/export`);
+}
+
+export async function exportAllDocuments(): Promise<ExportAllBundle> {
+  const response = await fetch(`${API_BASE}/documents/export-all`, {
+    headers: adminHeaders(),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`${response.status} ${response.statusText}: ${text}`);
+  }
+  return response.json() as Promise<ExportAllBundle>;
+}
